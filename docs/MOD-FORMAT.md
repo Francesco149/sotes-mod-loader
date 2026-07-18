@@ -14,9 +14,17 @@ mods\<name>\
 ```
 
 `init.lua` runs once at startup with a per-mod **`mod`** table already in scope — no
-`require` needed. Each mod runs in its **own environment** (its globals don't collide
-with other mods') inside a **protected call**: a Lua error is caught, the mod is
-flagged, and neither the game nor the other mods are affected.
+`require` needed. It runs on the **engine (main) thread** (deferred to the first
+per-frame safepoint by the executor), so a mod may touch the engine directly from init.
+Each mod runs in its **own environment** (its globals don't collide with other mods')
+inside a **protected call**: a Lua error is caught, the mod is flagged, and neither the
+game nor the other mods are affected.
+
+> **Threading model:** all mod code — `init.lua`, `on_frame`, and `mod.main` jobs — runs
+> on the one engine thread, so engine reads/writes/calls are safe by construction. From
+> another thread (e.g. a future UI thread) do reads via guarded `mod.mem` and push any
+> engine work through `mod.main`. (Without a game window the executor stays disarmed and
+> mods run on the loader thread instead — degraded, no `on_frame`.)
 
 ### `mod.*` API — available now (P0–P1)
 
@@ -28,6 +36,8 @@ flagged, and neither the game nor the other mods are affected.
 | `mod.log(...)` | fn | print-style line → `oss_modloader.log`, attributed to this mod |
 | `mod.mem.*` | table | **guarded** memory service (below) — never faults on a bad address |
 | `mod.game.*` | table | **togglable** game-knowledge bindings (below) — the RE'd structs/pointers |
+| `mod.on_frame(fn)` | fn | run `fn()` every frame on the engine thread |
+| `mod.main(fn)` | fn | run `fn()` once at the next safepoint on the engine thread (fire-and-forget) |
 
 **`mod.mem`** (all reads/writes VirtualQuery-guarded — a bad address returns `nil`/`false`, never a crash):
 
@@ -48,14 +58,16 @@ mod.mem.module(name) -> base | nil   mod.mem.base() -> exe base   mod.mem.reloc(
 mod.game.list()                 -> { {id=, desc=, enabled=}, ... }
 mod.game.enable(id)/disable(id)/enabled(id)     -- live toggle (a stability valve)
 -- SotES bindings (grow as we RE more):
-mod.game.roster.members()       -> { {code,name,actor,level,x,y,hp,hp_max,mp,mp_max}, ... }
-mod.game.coordinates.get([code])/player()       -> {x,y,actor,code}   (centi-px)
+mod.game.roster.members()       -> { {code,name,actor,level,x,y,hp,hp_max,mp,mp_max,active}, ... }
+mod.game.coordinates.get([code])/player()/target()   -> {x,y,actor,code}   (centi-px)
 ```
+
+`active` / `coordinates.target()` identify the **controlled** member — they resolve once
+the executor is armed (they use the input manager it captures at the safepoint).
 
 ### `mod.*` API — roadmap (later phases, see DESIGN.md)
 
 ```
-mod.main(fn) / mod.on_frame(fn)                               -- P2 main-thread exec
 mod.hook.entry(va, cb)                                        -- P3 Tier-1 observe
 mod.hook.typed(va, sig, {pre=,post=})  mod.hook.remove(h)     -- P3 Tier-2 typed
 mod.call(va, sig, ...)                                        -- FFI call (via mod.main)

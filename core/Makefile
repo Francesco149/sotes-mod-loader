@@ -26,10 +26,14 @@ LJ_INC := $(LJ_DIR)/src
 LJ_HOSTCC ?= $(LUAJIT_HOST_CC)
 
 # ── host sources ─────────────────────────────────────────────────────────────
-CSRC   := loader.c lua_host.c mem.c game_bindings.c sotes_bindings.c
-COBJ   := $(addprefix $(OBJ)/, $(CSRC:.c=.o))
+CSRC   := loader.c lua_host.c mem.c game_bindings.c sotes_bindings.c executor.c profile.c
+# MinHook (vendored, BSD-2): the trampoline backend for the safepoint hook (P2) + the
+# general chained hook registry (P3).
+MINHOOK := minhook/src/hook.c minhook/src/buffer.c minhook/src/trampoline.c \
+           minhook/src/hde/hde32.c minhook/src/hde/hde64.c
+COBJ   := $(addprefix $(OBJ)/, $(CSRC:.c=.o)) $(addprefix $(OBJ)/, $(notdir $(MINHOOK:.c=.o)))
 
-CFLAGS  := -O2 -Wall -Wextra -I$(LJ_INC)
+CFLAGS  := -O2 -Wall -Wextra -I$(LJ_INC) -Iminhook/include
 LDFLAGS := -shared -static -static-libgcc -s
 LIBS    := $(LJ_LIB) -lkernel32 -luser32
 
@@ -42,7 +46,15 @@ $(OUT): $(COBJ) version.def
 	@echo "  built $@"
 
 # our objects need the LuaJIT headers -> gate compilation on the lib being built.
-$(OBJ)/%.o: %.c loader_internal.h lua_host.h $(LJ_LIB)
+$(OBJ)/%.o: %.c loader_internal.h $(LJ_LIB)
+	@mkdir -p $(OBJ)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# MinHook (flattened into obj/)
+$(OBJ)/%.o: minhook/src/%.c
+	@mkdir -p $(OBJ)
+	$(CC) $(CFLAGS) -c $< -o $@
+$(OBJ)/%.o: minhook/src/hde/%.c
 	@mkdir -p $(OBJ)
 	$(CC) $(CFLAGS) -c $< -o $@
 

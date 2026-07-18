@@ -7,14 +7,18 @@
 // in P0).  Run it, then read oss_modloader.log.
 #include <windows.h>
 #include <stdio.h>
+#include <stdlib.h>
 
-int main(void) {
+int main(int argc, char **argv) {
     // Referencing a version.dll export forces the import -> our proxy loads.
     DWORD handle = 0;
     DWORD sz = GetFileVersionInfoSizeA("nonexistent.dummy", &handle);
+    // Optional argv[1] = ms to live (default 1500).  The executor's window-search
+    // fallback takes ~5s, so pass e.g. 7000 to let the fallback path complete.
+    int ms = (argc > 1) ? atoi(argv[1]) : 1500;
     printf("host_stub: version.dll import resolved (GetFileVersionInfoSizeA=%lu); "
-           "waiting for the loader thread...\n", sz);
-    Sleep(1500);   // let loader_thread scan mods\ + run init.lua
+           "living %d ms for the loader thread...\n", sz, ms);
+    Sleep((DWORD)ms);
     printf("host_stub: done\n");
     return 0;
 }

@@ -15,6 +15,7 @@
 #include "sotes_bindings.h"
 #include "game_bindings.h"
 #include "mem.h"
+#include "executor.h"
 #include "loader_internal.h"
 
 #include "lua.h"
@@ -37,6 +38,7 @@
 #define OFF_MP_EQUIP    0x88
 #define OFF_MP_BUFF     0xa0
 #define OFF_COMBAT_LV_MAX 0xe0     // max combat level (the HUD stars' "N")
+#define OFF_INPUT_CHAIN   0xc7a4   // actor -> input chain; *(*(actor+0xc7a4)) == input mgr iff CONTROLLED
 
 static const uint32_t CODES[3] = { 0xc35a, 0xc35b, 0xc35c };
 static const char    *NAMES[3] = { "Arche", "Sana", "Stella" };
@@ -83,6 +85,16 @@ static int actor_box_tracks(uintptr_t base) {
         !mem_readable((void *)(uintptr_t)box, 0x14)) return 0;
     return mem_rd32((void *)((uintptr_t)box + BOX_X), &bx4) &&
            mem_rd32((void *)(base + OFF_WORLD_X), &wx) && bx4 == wx;
+}
+// Is `actor` the CONTROLLED (player-driven) member? Its input chain resolves to the live
+// input manager — captured by the executor's safepoint hook (exec_ti_mgr).  Until the
+// executor is armed exec_ti_mgr()==0, so this reports 0 (unknown) rather than guessing.
+static int actor_is_active(uintptr_t actor) {
+    uint32_t p = 0, mgr = 0, tm = exec_ti_mgr();
+    if (!tm) return 0;
+    if (!mem_rd32((void *)(actor + OFF_INPUT_CHAIN), &p) || p <= 0x10000) return 0;
+    if (!mem_rd32((void *)(uintptr_t)p, &mgr)) return 0;
+    return mgr == tm;
 }
 
 // ── the throttled roster cache (g_ros[k] = actor for CODES[k]) ────────────────
@@ -155,6 +167,7 @@ static void push_member(lua_State *L, int k) {
     lua_pushinteger(L, hpm);                lua_setfield(L, -2, "hp_max");
     lua_pushinteger(L, (int)mpc);           lua_setfield(L, -2, "mp");
     lua_pushinteger(L, mpm);                lua_setfield(L, -2, "mp_max");
+    lua_pushboolean(L, actor_is_active(a)); lua_setfield(L, -2, "active");  // controlled member (needs the executor)
 }
 
 // mod.game.roster.members() -> { {code,name,actor,level,x,y,hp,...}, ... } present members.
@@ -200,11 +213,20 @@ static int l_coord_player(lua_State *L) {
     if (!gb_enabled("coordinates")) { lua_pushnil(L); return 1; }
     return coord_get_impl(L, 0xc35a);
 }
+// coordinates.target() -> the CONTROLLED member's coords (needs the executor's captured
+// input mgr); falls back to Arche until the executor is armed.
+static int l_coord_target(lua_State *L) {
+    if (!gb_enabled("coordinates")) { lua_pushnil(L); return 1; }
+    ensure_roster();
+    for (int k = 0; k < 3; k++) if (g_ros[k] && actor_is_active(g_ros[k])) return coord_get_impl(L, CODES[k]);
+    return coord_get_impl(L, 0xc35a);
+}
 
 static void install_coordinates(lua_State *L) {
     lua_newtable(L);
     lua_pushcfunction(L, l_coord_get);    lua_setfield(L, -2, "get");
     lua_pushcfunction(L, l_coord_player); lua_setfield(L, -2, "player");
+    lua_pushcfunction(L, l_coord_target); lua_setfield(L, -2, "target");
 }
 
 // ── registration ─────────────────────────────────────────────────────────────

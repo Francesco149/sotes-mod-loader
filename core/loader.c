@@ -20,6 +20,8 @@
 #include "loader_internal.h"
 #include "lua_host.h"
 #include "sotes_bindings.h"
+#include "executor.h"
+#include "profile.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -58,13 +60,14 @@ static int load_native(const char *filename) {
     return 0;
 }
 
-// A directory mod is a Lua mod iff it contains init.lua.
+// A directory mod is a Lua mod iff it contains init.lua.  We DEFER its init to the
+// executor so it runs on the engine (main) thread, never here on the loader thread.
 static int load_lua_dir(const char *dirname) {
     char init[MAX_PATH], moddir[MAX_PATH];
     _snprintf(moddir, MAX_PATH, "%smods\\%s", g_gamedir, dirname);
     _snprintf(init,   MAX_PATH, "%s\\init.lua", moddir);
     if (GetFileAttributesA(init) == INVALID_FILE_ATTRIBUTES) return 0;  // not a Lua mod
-    lh_run_mod(dirname, moddir, init);
+    exec_defer_mod(dirname, moddir, init);
     return 1;
 }
 
@@ -78,6 +81,7 @@ static DWORD WINAPI loader_thread(void *unused) {
     // Register the profile's native game bindings BEFORE the Lua game table finalizes,
     // so mod.game.<id> resolves them (game-agnostic core; SotES knowledge stays in its TU).
     if (g_is_sotes) { sotes_bindings_register(); ml_log("[loader] SotES profile — game bindings registered"); }
+    profile_select(g_is_sotes);   // pick the game profile (safepoint VA etc.) for the executor
 
     if (lh_init() != 0) ml_log("[loader] Lua host down — Lua mods skipped, native still load");
 
@@ -99,6 +103,16 @@ static DWORD WINAPI loader_thread(void *unused) {
         }
     } while (FindNextFileA(h, &fd));
     FindClose(h);
+
+    // Arm the main-thread executor: Lua mods init on the ENGINE thread at the first
+    // safepoint.  If there's no game window / no profile, fall back to running them here
+    // on the loader thread (degraded, but non-game hosts + the test stub still work).
+    if (exec_bootstrap())
+        ml_log("[loader] executor armed — %d Lua mod(s) will init on the main thread", nl);
+    else {
+        ml_log("[loader] executor not armed — running %d Lua mod(s) on the loader thread (fallback)", nl);
+        exec_run_deferred_inline();
+    }
 
     ml_log("[loader] done: %d native + %d Lua mod(s) from %smods\\", nn, nl, g_gamedir);
     return 0;
