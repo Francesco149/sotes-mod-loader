@@ -6,3 +6,8 @@
 # hands-free.  OFF by default — end users click "Launch" themselves; a launcher/dev turns
 # it on.  1 = dismiss, 0 = leave it (default).
 skip_launcher=0
+
+# When skip_launcher dismisses the launcher, which display mode to select.  Default 1
+# (windowed) — the sane default for a hands-free/dev launch.  0 = fullscreen.  (Only
+# applies when skip_launcher=1; otherwise the user picks in the launcher.)
+windowed=1

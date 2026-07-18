@@ -5,8 +5,9 @@
 
 // SotES EN-SE: per-frame input poll 0x437c70 (thiscall; ecx = the input manager) — the
 // executor's safepoint.  ImageBase-relative; the executor reloc's it by the ASLR delta.
-// The SE shows a #32770 launcher dialog first; its "Launch" button is control 10003.
-static const oss_profile SOTES_EN = { "sotes_en", 0x437c70, "#32770", 10003 };
+// The SE shows a #32770 launcher dialog first; controls (engine-quirks #3): 10003 "Launch",
+// 10020 "Windowed Mode" radio, 10022 "Fullscreen Mode" radio.
+static const oss_profile SOTES_EN = { "sotes_en", 0x437c70, "#32770", 10003, 10020, 10022 };
 
 static const oss_profile *g_current;
 

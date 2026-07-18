@@ -180,8 +180,14 @@ static BOOL CALLBACK find_launcher(HWND h, LPARAM lp) {
     char cls[64] = ""; GetClassNameA(h, cls, (int)sizeof cls);
     if (!p || !p->launcher_class || strcmp(cls, p->launcher_class) != 0) return TRUE;
     HWND btn = GetDlgItem(h, p->launch_ctrl_id);
-    if (btn) { SendMessageA(btn, BM_CLICK, 0, 0); *(int *)lp = 1; return FALSE; }
-    return TRUE;
+    if (!btn) return TRUE;                                  // not the launcher we expect
+    // Pick the display mode before launching (default WINDOWED; windowed=0 -> fullscreen).
+    int win = config_get_int("windowed", 1);
+    int radio = win ? p->windowed_ctrl_id : p->fullscreen_ctrl_id;
+    if (radio) { HWND rb = GetDlgItem(h, radio); if (rb) SendMessageA(rb, BM_CLICK, 0, 0); }
+    SendMessageA(btn, BM_CLICK, 0, 0);
+    ml_log("[exec] launcher dismissed (%s mode)", win ? "windowed" : "fullscreen");
+    *(int *)lp = 1; return FALSE;
 }
 static int dismiss_launcher(void) { int done = 0; EnumWindows(find_launcher, (LPARAM)&done); return done; }
 

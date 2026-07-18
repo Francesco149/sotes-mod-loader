@@ -11,8 +11,10 @@
 typedef struct {
     const char *id;
     uintptr_t   safepoint_va;    // ImageBase-relative per-frame fn (the executor's drain point)
-    const char *launcher_class;  // pre-game launcher window class to skip/dismiss (NULL = none)
-    int         launch_ctrl_id;  // the launcher's "Launch" button control id (for skip_launcher)
+    const char *launcher_class;   // pre-game launcher window class to skip/dismiss (NULL = none)
+    int         launch_ctrl_id;   // the launcher's "Launch" button control id (for skip_launcher)
+    int         windowed_ctrl_id; // the launcher's "Windowed Mode" radio (0 = none)
+    int         fullscreen_ctrl_id; // the launcher's "Fullscreen Mode" radio (0 = none)
 } oss_profile;
 
 // Select the active profile for this host (call once at init).  is_sotes comes from the
