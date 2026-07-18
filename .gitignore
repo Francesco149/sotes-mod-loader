@@ -1,0 +1,15 @@
+# build artifacts
+/build/
+core/obj/
+launcher/obj/
+*.o
+*.a
+*.dll
+*.exe
+
+# loader runtime logs (written beside the game exe, but ignore if any land here)
+oss_modloader.log
+
+# editor / OS cruft
+.DS_Store
+*.swp

@@ -1,0 +1,24 @@
+# examples/hello/mod.toml — a mod manifest.
+#
+# The manifest is OPTIONAL for a locally-dropped mod (the loader will run any
+# mods\<name>\init.lua on its own), but REQUIRED for a mod published to a registry:
+# the launcher reads it to show name/version/description and to resolve load order
+# and dependencies.  See docs/MOD-FORMAT.md.
+
+[mod]
+id          = "hello"
+name        = "Hello World"
+version     = "1.0.0"
+description = "Minimal reference mod: proves the loader runs init.lua and mod.log works."
+authors     = ["SotES Mod Loader"]
+
+# Which games this mod targets, by profile id (profiles/<id>.lua).  "*" = any game
+# (this one only logs, so it's game-agnostic).
+target_games = ["*"]
+
+[loader]
+min_version = "0.1.0"          # refuse to load under an older loader host
+
+[load]
+# order = 0                    # optional explicit load order (lower loads first)
+# after = ["some_other_mod"]   # optional: load after these mods (soft dependency)
