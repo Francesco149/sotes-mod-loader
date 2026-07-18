@@ -158,3 +158,8 @@ what the trainer already computes (party roster, player coordinates), now shared
 
 Each phase is independently testable; P6 gates on a 100%-green install→launch→voice flow
 before any release swap.
+
+**P0–P2 validated in-game** (2026-07-19, unpacked EN-SE): the executor armed on the real
+`0x437c70` (game kept running), `on_frame` fired every frame, and `mod.game.roster` read
+all three live party members with correct coords/HP + controlled-member detection. Evidence
++ reproduce steps: [TESTING.md](TESTING.md).
