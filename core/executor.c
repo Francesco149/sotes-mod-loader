@@ -19,6 +19,7 @@ static int g_armed;
 static uint32_t g_main_tid;   // engine thread id (captured at the first safepoint)
 
 uint32_t exec_main_tid(void) { return g_main_tid; }
+uint32_t *exec_main_tid_ptr(void) { return &g_main_tid; }   // hooks.c bakes this addr into the typed-hook gate
 
 // ── the register-capture observer thunk (Tier-1: convention-agnostic, can't modify) ──
 // MinHook patches the safepoint's first 5 bytes to jmp here.  We capture ecx (= the

@@ -31,6 +31,7 @@ int  exec_bootstrap(void);   // find + subclass the game window, post bootstrap;
 int  exec_armed(void);       // 1 once the safepoint hook is installed
 uint32_t exec_ti_mgr(void);  // the captured input manager (safepoint `this`); 0 until the first frame
 uint32_t exec_main_tid(void);// the engine/main thread id (captured at the first safepoint); 0 until then
+uint32_t *exec_main_tid_ptr(void); // &g_main_tid — the typed-hook gate thunk cmp's against it (hooks.c)
 
 void exec_on_safepoint(void *ti_mgr);   // MAIN THREAD drain — the hook (or a test) calls this each frame
 

@@ -5,16 +5,23 @@
 // registered observer callbacks -> the original.  Adding/removing a hook edits the chain,
 // never re-patching the bytes, so two mods hooking the same VA never fight over the 5 bytes.
 //
-// Tier-1 (this): register-capture OBSERVERS — a cb receives a context {ecx,edx,eax,esp,ret,va}
+// Tier-1: register-capture OBSERVERS — a cb receives a context {ecx,edx,eax,esp,ret,va}
 // and reads args via mod.mem; it cannot modify args or block (ultra-stable, no signature).
-// Callbacks run on the engine thread only (a hook that fires off-thread skips the Lua cb),
-// inside a pcall, with a per-VA reentrancy guard.  (Tier-2 typed pre/post/replace via FFI
-// closures is the next increment.)
+//
+// Tier-2: TYPED hooks — the mod declares the C signature and a LuaJIT FFI closure IS the
+// detour, so a `pre` cb gets typed args (mutate ctx.args / set ctx.blocked+ctx.ret to
+// short-circuit) and a `post` cb can rewrite ctx.ret.  A tiny C main-thread GATE fronts the
+// closure so an off-engine-thread call to the target never reenters the shared lua_State
+// (it tail-jumps the original instead).  A VA is Tier-1 xor Tier-2 (one MinHook per target);
+// within a tier, multiple mods chain safely.  Both tiers run cbs on the engine thread only,
+// inside a pcall (a faulting cb is disabled + logged), with a per-VA reentrancy guard.
 //
 // Lua surface (added to every mod's `mod` table):
-//   local h = mod.hook.entry(addr, function(ctx) ... end)   -- addr ABSOLUTE (use mod.mem.reloc)
-//   mod.hook.remove(h)
-//   mod.hook.count()   -- installed hook count (diagnostics)
+//   local h = mod.hook.entry(addr, function(ctx) ... end)          -- Tier-1 observe; addr ABSOLUTE
+//   local h = mod.hook.typed(addr, "int __thiscall(void*, int)",   -- Tier-2 typed
+//                            { pre = function(ctx) ... end, post = function(ctx) ... end })
+//   mod.hook.remove(h)     -- routes to the right tier by handle
+//   mod.hook.count()       -- Tier-1 installed VA count;  mod.hook.typed_count() -- Tier-2 VA count
 #ifndef OSS_HOOKS_H
 #define OSS_HOOKS_H
 

@@ -51,9 +51,15 @@ and a rework of the **voice patch** + **trainer** onto it.
 - **Tier 1 — entry observers (default, ultra-stable):** a register-capture thunk
   (`{ecx,edx,esp,ret,args}`), the trainer's model. No signature, convention-agnostic,
   can't modify/block → cannot destabilize the callee. Covers most needs.
-- **Tier 2 — typed hooks (opt-in, powerful):** the mod declares the C signature;
-  **LuaJIT FFI closures** marshal so a **pre** hook can modify args / block, a **post**
-  hook can modify the return. First-to-block wins + logged.
+- **Tier 2 — typed hooks (opt-in, powerful):** the mod declares the C signature; a
+  **LuaJIT FFI closure** IS the detour, marshaling typed args so a **pre** hook can modify
+  args / block and a **post** hook can modify the return. First-to-block wins + logged. A
+  tiny C **main-thread gate** fronts the closure (checks `fs:[0x24]` vs the engine tid): a
+  call to the target off the engine thread tail-jumps the original instead of reentering the
+  shared `lua_State` — so a hooked function that the game happens to call off-thread can't
+  corrupt the loader. (LuaJIT x86 callbacks handle `__cdecl/__stdcall/__thiscall/__fastcall`
+  incl. the non-cdecl callee stack cleanup — verified in `lj_ccallback.c`.) A VA is Tier-1
+  **xor** Tier-2 (one MinHook per target); mixing tiers on one VA is refused + logged.
 - Lock-free read path (snapshot/RCU); mutations on the safepoint under a lock. A hook is
   removed only when no call to it is in flight (quiescent state). Reentrancy-safe.
 
@@ -149,7 +155,7 @@ what the trainer already computes (party roster, player coordinates), now shared
 | **P0** | Scaffold: host LuaJIT, scan `mods\*` (native + Lua), `mod.log`, hello-world boots | **done** (LuaJIT proven on-target; loader path proven via `host_stub`) |
 | **P1** | `mod.mem` (guarded r/w, scan, module/reloc) **+ togglable `mod.game.*` bindings** (roster, coordinates) | **done** (verified via `examples/probe`; live data pending in-game) |
 | **P2** | Main-thread executor: WndProc bootstrap → safepoint hook → `mod.main`/`on_frame`; profile | **done** (drain/on_frame/`ti_mgr` verified via `exec_test`; MinHook install + bootstrap in-game) |
-| **P3** | Hook registry: Tier-1 chain (per-VA codegen thunk + dispatcher, multi-mod) | **done** (in-game: chain fires, `remove` works, `ctx.ecx` capture correct); Tier-2 typed next |
+| **P3** | Hook registry: Tier-1 chain (per-VA codegen thunk + dispatcher, multi-mod) **+ Tier-2 typed** (FFI-closure detour behind a main-thread gate; modify args/block/return) | **done** (Tier-1 in-game; Tier-2 host-verified across cdecl/stdcall/thiscall — modify/block/gate/exclusion — via `hook_typed_test`) |
 | P4 | Native bridge: C ABI, shared registry, `OssModInit` | |
 | P5 | UI host: DX11 main window + in-game mirror, `ui.panel`/`ui.window` | |
 | P6 | Voice mod: port + exhaustive install/launch test → swap the release | |

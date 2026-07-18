@@ -5,8 +5,10 @@ in-game smoke test against the real unpacked SE.
 
 ## Host-side (no game)
 
-Built beside `version.dll`; run from **NTFS** (Windows blocks app-dir DLL side-load from
-`\\wsl$` paths):
+`nix develop --command make -C core tests` builds + runs the harness exes below via
+WSLInterop (statically linked — no DLL side-load, so they run straight from the repo path).
+The DLL and DLL-loading tests still run from **NTFS** (Windows blocks app-dir side-load from
+`\\wsl$`):
 
 | test | proves |
 |---|---|
@@ -14,6 +16,7 @@ Built beside `version.dll`; run from **NTFS** (Windows blocks app-dir DLL side-l
 | `core/test/host_stub.c` | full loader path: proxy load → `mods\` scan → LuaJIT → `init.lua` → `mod.log` |
 | `examples/probe/init.lua` | `mod.mem` (guarded, unmapped→nil) + `mod.game` list/toggle |
 | `core/test/exec_test.c` | executor: deferred init on the safepoint, `on_frame` cadence, `mod.main`, `ti_mgr` capture |
+| `core/test/hook_typed_test.c` | **Tier-2 typed hooks:** an FFI-closure detour modifies args / blocks / modifies the return across **cdecl/stdcall/thiscall** (callee-cleanup + ecx capture), the off-thread gate skips the chain, and cross-tier exclusion holds — all on local targets, `>> TYPED_HOOK_OK` |
 
 `host_stub.exe <ms>` takes an optional lifetime so the executor's ~5 s window-search
 fallback can complete (pass e.g. `7000`).

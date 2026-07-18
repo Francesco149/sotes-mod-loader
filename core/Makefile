@@ -74,8 +74,26 @@ $(LJ_LIB):
 	    BUILDMODE=static \
 	    XCFLAGS="-DLUAJIT_DISABLE_JIT"
 
+# ── host tests (no game; run via WSLInterop) ─────────────────────────────────
+# Link every core obj EXCEPT loader.o (DllMain + the real ml_log); each harness supplies
+# its own ml_log.  Built -O0 so MinHook always has a relocatable prologue on the targets.
+TESTDIR   := test
+TESTOBJ   := $(filter-out $(OBJ)/loader.o, $(COBJ))
+TESTLINK  := -static -static-libgcc
+TESTS     := ../build/exec_test.exe ../build/hook_typed_test.exe
+
+../build/%.exe: $(TESTDIR)/%.c $(TESTOBJ)
+	@mkdir -p ../build
+	$(CC) -O0 -Wall -I. -I$(LJ_INC) -Iminhook/include $(TESTLINK) -o $@ $< $(TESTOBJ) $(LIBS)
+
+.PHONY: tests
+tests: $(TESTS)
+	@cp $(TESTDIR)/exec_test_mod.lua $(TESTDIR)/hook_typed_test_mod.lua ../build/
+	@echo "== exec_test =="        && (cd ../build && ./exec_test.exe)
+	@echo "== hook_typed_test ==" && (cd ../build && ./hook_typed_test.exe)
+
 clean:
-	rm -rf $(OBJ) $(OUT)
+	rm -rf $(OBJ) $(OUT) $(TESTS)
 
 clean-luajit:
 	rm -rf $(LJ_DIR)

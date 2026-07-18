@@ -118,6 +118,8 @@ void lh_run_mod(const char *name, const char *dir, const char *init_lua_path) {
     ml_log("[lua] mod ok: %s", name);
 }
 
+lua_State *lh_state(void) { return g_L; }
+
 void lh_shutdown(void) {
     if (g_L) { lua_close(g_L); g_L = NULL; ml_log("[lua] state closed"); }
 }

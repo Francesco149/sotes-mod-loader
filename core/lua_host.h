@@ -18,6 +18,10 @@ int  lh_init(void);
 // load/run error is caught + logged; the mod is flagged, the loader continues.
 void lh_run_mod(const char *name, const char *dir, const char *init_lua_path);
 
+// The shared Lua state (NULL before lh_init).  A test/introspection seam — the loader
+// itself always reaches Lua through the typed helpers above.
+struct lua_State *lh_state(void);
+
 // Tear down the Lua state (on process detach / clean unload).
 void lh_shutdown(void);
 

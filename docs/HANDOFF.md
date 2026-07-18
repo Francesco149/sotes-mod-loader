@@ -3,19 +3,20 @@
 Rolling "where we are / what's next" for a fresh session. Orient: this → `DESIGN.md`
 (architecture + phase table) → `MOD-FORMAT.md` (the `mod.*` API) → `TESTING.md`.
 
-## State: P0–P3 DONE, all validated IN-GAME. Next = **P3 Tier-2** (typed hooks).
+## State: P0–P3 DONE (incl. **Tier-2 typed hooks**). Next = **P4** (native-mod C ABI).
 
 The loader is a usable modding API: a mod reads guarded memory (`mod.mem`), reads live
 RE'd game state (`mod.game.*`), runs per-frame/one-shot on the engine thread
-(`mod.on_frame`/`mod.main`), and **hooks any function alongside other mods** (`mod.hook`).
+(`mod.on_frame`/`mod.main`), and **hooks any function alongside other mods** (`mod.hook` —
+Tier-1 observe + Tier-2 typed modify/block/return).
 
 | phase | what | status |
 |---|---|---|
 | P0 | proxy `version.dll` + LuaJIT host + `mods\` scan (native + Lua) | ✅ |
 | P1 | `mod.mem` (guarded) + togglable `mod.game.*` bindings (roster, coordinates) | ✅ |
 | P2 | main-thread executor: WndProc bootstrap → safepoint hook `0x437c70` → `mod.main`/`on_frame` | ✅ |
-| P3 | chained hook registry — **Tier-1 observers** (`mod.hook.entry`/`remove`) | ✅ Tier-1; **Tier-2 next** |
-| P4 | native-mod C ABI (`OssModInit`) | ⬜ |
+| P3 | chained hook registry — **Tier-1 observers** (`mod.hook.entry`) **+ Tier-2 typed** (`mod.hook.typed`) | ✅ |
+| P4 | native-mod C ABI (`OssModInit`) | ⬜ **next** |
 | P5 | ImGui UI: loader-owned main window + in-game mirror (hotkey) | ⬜ |
 | P6 | voice patch → a Lua mod; exhaustive install/launch test → swap the release | ⬜ |
 | P7 | trainer → a mod; coexistence verified | ⬜ |
@@ -26,6 +27,13 @@ on the real `0x437c70` (game ran 24 min, no crash); `mod.game.roster` read all 3
 members (correct coords/HP + `active` detect); the hook registry's codegen thunk installed
 on `kb_poll`, register capture correct (`ctx.ecx == the real this`), 2 cbs on 1 VA both
 fired, `remove` worked. Evidence: `TESTING.md`.
+
+**Tier-2 validation** (host, `make -C core tests` → `>> TYPED_HOOK_OK`): a mod's
+`mod.hook.typed` installs an FFI-closure detour that **modifies args, blocks, and modifies
+the return** across **cdecl / __stdcall / __thiscall** (the callee-stack-cleanup + ecx-capture
+paths — the crashy bits — all clean); the **off-thread gate** skips the Lua chain; cross-tier
+exclusion holds both ways. In-game smoke: `examples/hook_typed/init.lua` (typed-hooks the real
+`kb_poll` thiscall, observe-only) — **ready to run, not yet exercised in-game.**
 
 ## Build / run
 
@@ -47,35 +55,51 @@ not `\\wsl$`). In-game: see `TESTING.md` (stage into the game dir, launch with
 - `sotes_bindings.c` — SotES roster+coordinates, profile-gated. **PORT-DEBT: heap-scan (task #7).**
 - `executor.c` — WndProc bootstrap, safepoint hook (register-capture asm thunk), job queue +
   on_frame, launcher dismiss (`skip_launcher`/`windowed`), `exec_main_tid`/`exec_ti_mgr`.
-- `hooks.c` — the chained hook registry: per-VA RWX codegen thunk → `hook_dispatch` → chain.
+- `hooks.c` — the chained hook registry (both tiers): Tier-1 per-VA codegen thunk →
+  `hook_dispatch` → observer chain; Tier-2 per-VA main-thread gate → FFI-closure dispatcher
+  (the embedded `TIER2_LUA`) → typed chain. `g_hk[]` carries a `tier` (VA is T1 xor T2).
 - `profile.c` — the C game profile (safepoint VA, launcher class + control ids).
 - `config.c` — `oss_loader.cfg` (key=value) reader. `minhook/` — vendored trampoline backend.
 
-## NEXT: P3 Tier-2 — typed hooks (`mod.hook.typed(va, sig, {pre=,post=})`)
+## P3 Tier-2 — typed hooks (LANDED)
 
-Tier-1 is an OBSERVER (the thunk `jmp`s to the original — can't modify args/block/return).
-Tier-2 must **modify args / block / modify the return**, so it needs a real detour that
-CALLS the chain and conditionally calls the original.
+`mod.hook.typed(va, "<ret> [__conv](args)", {pre=,post=})`. How it works (all in `hooks.c`
++ an embedded Lua chunk `TIER2_LUA`):
 
-Design (from `DESIGN.md`): the mod declares the C signature; **LuaJIT FFI closures** marshal.
-Cleanest path — an FFI closure IS the detour: `ffi.cast("<ret>(<conv>*)(<args>)", fn)` makes a
-Lua fn C-callable; use it as the MinHook detour directly (no codegen). The Lua pre-hook gets
-typed args (can modify / return a block value), then calls the original via an `ffi.cast` of
-the MinHook trampoline, then the post-hook can modify the return. Chain order defined;
-first-to-block wins + logged. Note: FFI callbacks in interpreter mode work (slower — fine here).
-Open Q: unify with the Tier-1 chain on the same VA, or a typed hook owns the VA (simpler v1).
-Reuse `hooks.c`'s per-VA rec/trampoline. Task **#11**.
+- **An FFI closure IS the detour** (the locked design). `ffi.cast(ctype, dispatch)` makes the
+  Lua chain-dispatcher C-callable; MinHook points the VA at it (via the gate, below). The
+  dispatcher marshals typed args into `ctx.args`, runs pre (may mutate args / set
+  `ctx.blocked`+`ctx.ret`), calls the original via `ffi.cast(ctype, trampoline)` unless
+  blocked, runs post (may rewrite `ctx.ret`). Each cb in `pcall` (fault → disabled + logged).
+- **A tiny C main-thread GATE fronts the closure** (`gen_gate_thunk`): `mov eax,fs:[0x24]; cmp
+  [&g_main_tid]; jne -> jmp tramp; jmp closure`. This is the keystone fix — a pure FFI-closure
+  detour would enter the shared `lua_State` on *whatever* thread calls the target; an
+  off-engine-thread call would corrupt every mod. The gate runs Lua only on the engine thread
+  and otherwise runs the original untouched. (EAX/EFLAGS are dead at a call boundary; ECX/EDX/
+  stack pass through, so thiscall `this` reaches the closure.)
+- **Verified fact:** LuaJIT x86 callbacks handle `__cdecl/__stdcall/__thiscall/__fastcall`
+  incl. the non-cdecl callee stack cleanup (`lj_ccallback.c:610-663`) — so a typed detour with
+  the target's real convention is stack-correct. The sig string **must match the real
+  convention + arg count** (wrong count → stack corruption; that's why Tier-1 is the default).
+- **One tier per VA** (one MinHook per target): a unified `g_hk[]` with a `tier` field; Tier-1
+  and Tier-2 refuse each other on the same VA (+log). Within a tier, mods chain.
+- **Handles:** Tier-2 handles are `>= 0x40000000`; `mod.hook.remove` routes by handle. Removal
+  marks the chain entry dead (MinHook + the closure stay installed — a later reclaim).
+
+Host-proven exhaustively by `core/test/hook_typed_test.c` (`make -C core tests`). Not yet run
+in-game — `examples/hook_typed/init.lua` is the smoke test (typed `kb_poll`, observe-only).
 
 ## Open debts / follow-ups
 
 - **#7 — retire the roster heap-scan** (`PORT-DEBT(sotes-roster-heapscan)`): replace the
   throttled full-heap actor scan in `sotes_bindings.c` with a direct pointer — candidate:
   `render_root+0x11e0` CHARACTER band (128 actor slots), `render_root=*(0x92dd38)`; validate live.
-- **#11 — P3 Tier-2** (above).
+- **#12 — Tier-2 follow-ups:** (a) run the in-game smoke test (`examples/hook_typed`); (b)
+  quiescent teardown — `remove` leaves the MinHook + FFI closure installed (dead-marked in the
+  chain); reclaim on empty. (c) unify tiers on one VA (a typed hook that also runs Tier-1
+  observers) — deferred; the xor rule is safe + simple for now.
 - Executor's safepoint hook could become the first CLIENT of the `hooks.c` registry (unify);
   kept separate for now to not disturb the proven executor.
-- Quiescent hook teardown: `mod.hook.remove` on an empty chain leaves the MinHook installed
-  (dispatch is a cheap no-op); reclaim/disable is a later refinement.
 
 ## Gotchas (hard-won)
 

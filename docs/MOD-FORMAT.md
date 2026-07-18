@@ -66,8 +66,11 @@ mod.game.coordinates.get([code])/player()/target()   -> {x,y,actor,code}   (cent
 `active` / `coordinates.target()` identify the **controlled** member — they resolve once
 the executor is armed (they use the input manager it captures at the safepoint).
 
-**`mod.hook`** — one trampoline per target VA dispatches an ordered chain of observer
-callbacks, so multiple mods hook the same function without clobbering each other:
+**`mod.hook`** — one trampoline per target VA dispatches an ordered chain, so multiple mods
+hook the same function without clobbering each other. Two tiers (a stability gradient):
+
+**Tier 1 — `mod.hook.entry` (observe, ultra-stable, DEFAULT).** No signature, can't modify
+args or block → cannot destabilize the callee.
 
 ```
 local h = mod.hook.entry(addr, function(ctx) ... end)   -- addr ABSOLUTE (mod.mem.reloc(va))
@@ -75,14 +78,39 @@ mod.hook.remove(h)          mod.hook.count()
 ```
 
 The callback receives `ctx = {ecx, edx, eax, esp, ret, va}` (read stack args via
-`mod.mem.read_u32(ctx.esp + 4 + 4*n)`). Tier-1 = **observe only** (can't modify args or
-block), runs on the engine thread inside a `pcall` — a faulting cb is auto-disabled.
-(Tier-2 typed pre/post/replace hooks via FFI closures are next.)
+`mod.mem.read_u32(ctx.esp + 4 + 4*n)`), runs on the engine thread inside a `pcall` — a
+faulting cb is auto-disabled.
+
+**Tier 2 — `mod.hook.typed` (modify args / block / modify return; opt-in, powerful).** The
+mod declares the target's real C signature; a **LuaJIT FFI closure** marshals it:
+
+```
+local h = mod.hook.typed(addr, "int __thiscall(void*, int)", {
+  pre  = function(ctx) ... end,   -- runs before the original
+  post = function(ctx) ... end,   -- runs after
+})
+mod.hook.remove(h)          mod.hook.typed_count()
+```
+
+The callback receives `ctx = { args = {...}, n, va, blocked, ret }` where `ctx.args` are the
+**typed** call arguments (arg 1 = `this` for `__thiscall`). A **pre** hook may mutate
+`ctx.args[i]` (the modified args reach the original), or set `ctx.blocked = true` (+ optional
+`ctx.ret`) to skip the original entirely. A **post** hook may rewrite `ctx.ret` (becomes the
+returned value). Multiple typed hooks on one VA chain (pre in order, post in reverse);
+first-to-block wins. Cbs run on the engine thread inside a `pcall` (a faulting one is disabled).
+
+- **Signature form:** `"<ret> [__conv](<args>)"`, e.g. `"void(int)"`, `"int __stdcall(int, int)"`,
+  `"int __thiscall(void*, int)"` (conv defaults to `__cdecl`). It **must match the target's
+  real convention + arg count** — a wrong count corrupts the caller's stack (that's why Tier-1
+  is the default; only reach for typed when you know the signature).
+- **One tier per VA:** a VA is Tier-1 **xor** Tier-2 (one MinHook per target). Mixing tiers on
+  one VA is refused + logged; within a tier, mods chain freely.
+- **Off-thread safety:** a tiny C gate runs the closure only on the engine thread; a call to the
+  target from another thread runs the original untouched (never reenters Lua).
 
 ### `mod.*` API — roadmap (later phases, see DESIGN.md)
 
 ```
-mod.hook.typed(va, sig, {pre=,post=})                        -- Tier-2 typed (modify args/block/return) — next
 mod.call(va, sig, ...)                                        -- FFI call (via mod.main)
 mod.ui.panel(name, draw)  mod.ui.window(name, draw, opts)     -- P5 UI (main window + in-game mirror)
 mod.overlay.panel(...) / mod.overlay.draw(fn)                 -- later DDraw7 overlay
