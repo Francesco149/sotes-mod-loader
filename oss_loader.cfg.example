@@ -1,0 +1,8 @@
+# oss_loader.cfg — SotES Mod Loader config.  Copy beside the game exe (next to version.dll)
+# and rename to `oss_loader.cfg`.  key=value, one per line; # or ; comments.  The launcher
+# (later) writes this; it's hand-editable too.  Missing file / keys = the defaults below.
+
+# Auto-dismiss the game's pre-launch launcher dialog (SotES #32770) so the game boots
+# hands-free.  OFF by default — end users click "Launch" themselves; a launcher/dev turns
+# it on.  1 = dismiss, 0 = leave it (default).
+skip_launcher=0

@@ -26,7 +26,7 @@ LJ_INC := $(LJ_DIR)/src
 LJ_HOSTCC ?= $(LUAJIT_HOST_CC)
 
 # ── host sources ─────────────────────────────────────────────────────────────
-CSRC   := loader.c lua_host.c mem.c game_bindings.c sotes_bindings.c executor.c profile.c
+CSRC   := loader.c lua_host.c mem.c game_bindings.c sotes_bindings.c executor.c profile.c config.c
 # MinHook (vendored, BSD-2): the trampoline backend for the safepoint hook (P2) + the
 # general chained hook registry (P3).
 MINHOOK := minhook/src/hook.c minhook/src/buffer.c minhook/src/trampoline.c \

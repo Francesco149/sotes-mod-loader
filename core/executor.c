@@ -4,6 +4,7 @@
 #include "profile.h"
 #include "mem.h"
 #include "lua_host.h"
+#include "config.h"
 #include "loader_internal.h"
 
 #include <windows.h>
@@ -165,10 +166,35 @@ static BOOL CALLBACK find_wnd(HWND h, LPARAM l) {
     if (strcmp(cls, "#32770") == 0) return TRUE;                             // skip the launcher dialog
     g_hwnd = h; return FALSE;
 }
+// Auto-dismiss the game's pre-launch launcher (opt-in: skip_launcher=1).  In-process
+// BM_CLICK of the profile's Launch button — works from this (loader) thread; it does NOT
+// from an external process.  OFF by default: end users click Launch themselves.
+static BOOL CALLBACK find_launcher(HWND h, LPARAM lp) {
+    DWORD pid = 0; GetWindowThreadProcessId(h, &pid);
+    if (pid != GetCurrentProcessId()) return TRUE;
+    const oss_profile *p = profile_current();
+    char cls[64] = ""; GetClassNameA(h, cls, (int)sizeof cls);
+    if (!p || !p->launcher_class || strcmp(cls, p->launcher_class) != 0) return TRUE;
+    HWND btn = GetDlgItem(h, p->launch_ctrl_id);
+    if (btn) { SendMessageA(btn, BM_CLICK, 0, 0); *(int *)lp = 1; return FALSE; }
+    return TRUE;
+}
+static int dismiss_launcher(void) { int done = 0; EnumWindows(find_launcher, (LPARAM)&done); return done; }
+
 int exec_bootstrap(void) {
     if (!profile_current()) { ml_log("[exec] no game profile — executor disabled (fallback)"); return 0; }
-    for (int i = 0; i < 200 && !g_hwnd; i++) { EnumWindows(find_wnd, 0); if (!g_hwnd) Sleep(25); }
-    if (!g_hwnd) { ml_log("[exec] game window not found — fallback (mods run on the loader thread)"); return 0; }
+    const oss_profile *p = profile_current();
+    int skip = config_get_int("skip_launcher", 0) && p->launcher_class;
+    // Wait INDEFINITELY for the game window: it will appear as the game boots, and a bounded
+    // timeout risks failing to arm on a slow boot (window-scanning is cheap; if the game
+    // truly hangs the user kills it).  Optionally auto-dismiss the launcher while we wait.
+    ml_log("[exec] waiting for the game window%s ...", skip ? " (skip_launcher: will dismiss the launcher)" : "");
+    int launched = 0;
+    while (!g_hwnd) {
+        if (skip && !launched) launched = dismiss_launcher();
+        EnumWindows(find_wnd, 0);
+        if (!g_hwnd) Sleep(25);
+    }
     g_orig_wndproc = (WNDPROC)SetWindowLongPtrA(g_hwnd, GWLP_WNDPROC, (LONG_PTR)boot_wndproc);
     if (!g_orig_wndproc) { ml_log("[exec] window subclass failed — fallback"); return 0; }
     ml_log("[exec] game window %p subclassed — posting bootstrap to the main thread", (void *)g_hwnd);

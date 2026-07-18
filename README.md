@@ -61,6 +61,10 @@ mods\<name>.dll          <- and/or native mods
 
 Launch normally. `oss_modloader.log` (beside the exe) records each mod loaded.
 
+**Config** (optional): drop `oss_loader.cfg` beside `version.dll` (see
+[`oss_loader.cfg.example`](oss_loader.cfg.example)). `skip_launcher=1` auto-dismisses the
+game's `#32770` launcher for a hands-free boot (OFF by default — end users click Launch).
+
 ## Writing a mod
 
 See [`docs/MOD-FORMAT.md`](docs/MOD-FORMAT.md). The smallest mod is

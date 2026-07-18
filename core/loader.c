@@ -22,6 +22,7 @@
 #include "sotes_bindings.h"
 #include "executor.h"
 #include "profile.h"
+#include "config.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -77,6 +78,8 @@ static int load_lua_dir(const char *dirname) {
 // safe, early enough for hooks.
 static DWORD WINAPI loader_thread(void *unused) {
     (void)unused;
+
+    config_load(g_gamedir);   // oss_loader.cfg (skip_launcher etc.), before the executor arms
 
     // Register the profile's native game bindings BEFORE the Lua game table finalizes,
     // so mod.game.<id> resolves them (game-agnostic core; SotES knowledge stays in its TU).
