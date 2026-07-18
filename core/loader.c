@@ -19,13 +19,27 @@
 
 #include "loader_internal.h"
 #include "lua_host.h"
+#include "sotes_bindings.h"
 
 #include <stdio.h>
 #include <string.h>
 #include <stdarg.h>
+#include <ctype.h>
 
 char        g_gamedir[MAX_PATH];   // our dir (= game dir), trailing '\'
 static char g_logpath[MAX_PATH];
+static int  g_is_sotes;            // host exe matches the SotES profile (register its bindings)
+
+// tiny case-insensitive substring (avoid linking shlwapi for StrStrIA)
+static const char *istr(const char *hay, const char *needle) {
+    if (!hay || !needle) return NULL;
+    for (; *hay; hay++) {
+        const char *h = hay, *n = needle;
+        while (*h && *n && tolower((unsigned char)*h) == tolower((unsigned char)*n)) { h++; n++; }
+        if (!*n) return hay;
+    }
+    return NULL;
+}
 
 void ml_log(const char *fmt, ...) {
     FILE *f = fopen(g_logpath, "a"); if (!f) return;
@@ -60,6 +74,10 @@ static int load_lua_dir(const char *dirname) {
 // safe, early enough for hooks.
 static DWORD WINAPI loader_thread(void *unused) {
     (void)unused;
+
+    // Register the profile's native game bindings BEFORE the Lua game table finalizes,
+    // so mod.game.<id> resolves them (game-agnostic core; SotES knowledge stays in its TU).
+    if (g_is_sotes) { sotes_bindings_register(); ml_log("[loader] SotES profile — game bindings registered"); }
 
     if (lh_init() != 0) ml_log("[loader] Lua host down — Lua mods skipped, native still load");
 
@@ -96,7 +114,9 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID reserved) {
         _snprintf(g_logpath, MAX_PATH, "%soss_modloader.log", g_gamedir);
 
         char host[MAX_PATH] = ""; GetModuleFileNameA(NULL, host, MAX_PATH);
-        ml_log("[loader] %s %s — attach host=%s dir=%s", OSS_ML_NAME, OSS_ML_VERSION, host, g_gamedir);
+        char *hslash = strrchr(host, '\\'); const char *hbase = hslash ? hslash + 1 : host;
+        g_is_sotes = istr(hbase, "sotes") != NULL;   // profile select (stub — generalizes later)
+        ml_log("[loader] %s %s — attach host=%s dir=%s sotes=%d", OSS_ML_NAME, OSS_ML_VERSION, host, g_gamedir, g_is_sotes);
 
         // Load only if a mods\ folder sits beside us (game-agnostic: no exe-name gate,
         // but don't act as a random version.dll shim in some unrelated app's folder).

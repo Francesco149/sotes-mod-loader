@@ -95,6 +95,38 @@ Per-game facts, auto-selected by the host exe: per-frame safepoint VA, window cl
 no-hook / boot-teardown windows, shared struct cdefs + key globals. Keeps the core
 game-agnostic; sibling projects drop in their own profile. (`profiles/sotes_en.lua`.)
 
+### Memory service — `mod.mem` (P1)
+
+The low-level substrate everything reads/writes through. Every access is
+**VirtualQuery-guarded** (loader invariant #4): a stale/garbage pointer yields
+`nil`/`false`, never an access violation. Typed reads/writes (`u8..f64`, `bytes`,
+`cstr`, `ptr`), an AOB `scan` over the exe image, `module`/`base`, and `reloc` (VA +
+ASLR delta from the PE ImageBase). Lifted from the trainer's proven guards. FFI
+(`ffi.cdef` + `ffi.cast`) composes on top for typed `this->field` struct views.
+
+### Game bindings — `mod.game.*` (the RE'd engine knowledge)
+
+As we reverse the engine, the known **structs + pointer chains** (roster, coordinates,
+camera, map, scene, saves, …) are centralized in the loader core and exposed to every
+mod as `mod.game.<id>` — so no mod re-RE's them, and a fix propagates once. This mirrors
+what the trainer already computes (party roster, player coordinates), now shared.
+
+- **Togglable per module (the stability valve).** Each binding is independently
+  enable/disable-able at runtime (`mod.game.enable/disable/list`). Disabling **hides**
+  `mod.game.<id>` *and* makes its accessors inert through any captured reference — so if
+  a binding proves unstable it's turned off without touching the rest. (All reads are
+  guarded, so a binding returns `nil` on bad data rather than faulting; a future
+  refinement auto-disables a binding that trips repeatedly.)
+- **Core generic, bindings profile-local.** The registry + `mod.game` plumbing are
+  game-agnostic; the SotES bindings live in their own TU (`sotes_bindings.c`), gated on
+  the host exe, and can move to a loadable profile module later (P4).
+- **First bindings:** `mod.game.roster` (party members by entity code `0xc35a/b/c`) and
+  `mod.game.coordinates` (member world x/y), lifting the trainer's discovery + validation.
+- **PORT-DEBT(sotes-roster-heapscan):** locating actors is currently a throttled
+  full-heap scan (robust but fragile — can momentarily see a post-warp "ghost"). It's a
+  known-good *temporary* method; retire it via further RE of a **direct roster/party
+  pointer** (candidate: the `render_root+0x11e0` CHARACTER band, `render_root=*(0x92dd38)`).
+
 ## Locked decisions
 
 - **Name:** *SotES Mod Loader*; Lua namespace `mod.*`; DLL `version.dll`; log `oss_modloader.log`.
@@ -114,9 +146,9 @@ game-agnostic; sibling projects drop in their own profile. (`profiles/sotes_en.l
 
 | Phase | What | Status |
 |---|---|---|
-| **P0** | Scaffold: host LuaJIT, scan `mods\*` (native + Lua), `mod.log`, hello-world boots | **core built + LuaJIT proven on-target; injection test pending (Windows)** |
-| P1 | Memory + FFI: guarded r/w, scan, module/reloc, struct cdefs | next |
-| P2 | Main-thread executor: WndProc bootstrap → safepoint → `mod.main`/`on_frame`; SotES profile | |
+| **P0** | Scaffold: host LuaJIT, scan `mods\*` (native + Lua), `mod.log`, hello-world boots | **done** (LuaJIT proven on-target; loader path proven via `host_stub`) |
+| **P1** | `mod.mem` (guarded r/w, scan, module/reloc) **+ togglable `mod.game.*` bindings** (roster, coordinates) | **done** (verified via `examples/probe`; live data pending in-game) |
+| P2 | Main-thread executor: WndProc bootstrap → safepoint → `mod.main`/`on_frame`; SotES profile | next |
 | P3 | Hook registry: Tier-1 chain (MinHook + dispatcher), then Tier-2 typed; safepoint-gated | |
 | P4 | Native bridge: C ABI, shared registry, `OssModInit` | |
 | P5 | UI host: DX11 main window + in-game mirror, `ui.panel`/`ui.window` | |

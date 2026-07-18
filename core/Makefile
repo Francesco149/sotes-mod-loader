@@ -26,7 +26,7 @@ LJ_INC := $(LJ_DIR)/src
 LJ_HOSTCC ?= $(LUAJIT_HOST_CC)
 
 # ── host sources ─────────────────────────────────────────────────────────────
-CSRC   := loader.c lua_host.c
+CSRC   := loader.c lua_host.c mem.c game_bindings.c sotes_bindings.c
 COBJ   := $(addprefix $(OBJ)/, $(CSRC:.c=.o))
 
 CFLAGS  := -O2 -Wall -Wextra -I$(LJ_INC)
