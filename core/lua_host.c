@@ -16,6 +16,7 @@
 #include "mem.h"
 #include "game_bindings.h"
 #include "executor.h"
+#include "hooks.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -65,6 +66,7 @@ static void push_mod_table(lua_State *L, const char *name, const char *dir) {
     gb_push_lua(L);                          lua_setfield(L, -2, "game");  // shared game bindings
     exec_push_main(L);                       lua_setfield(L, -2, "main");     // run on the main thread (P2)
     exec_push_on_frame(L);                   lua_setfield(L, -2, "on_frame"); // per-frame callback (P2)
+    hooks_push_table(L);                     lua_setfield(L, -2, "hook");     // chained hook registry (P3)
 }
 
 int lh_init(void) {
@@ -79,6 +81,7 @@ int lh_init(void) {
     mem_install_lua(g_L);       // the shared mod.mem table
     gb_finalize_lua(g_L);       // the shared mod.game table (bindings registered before this)
     exec_init(g_L);             // the main-thread executor (mod.main / mod.on_frame)
+    hooks_init(g_L);            // the chained hook registry (mod.hook.entry / remove)
 
     ml_log("[lua] LuaJIT up (%s, JIT off, FFI on)", LUAJIT_VERSION);
     return 0;

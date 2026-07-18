@@ -38,6 +38,7 @@ game nor the other mods are affected.
 | `mod.game.*` | table | **togglable** game-knowledge bindings (below) — the RE'd structs/pointers |
 | `mod.on_frame(fn)` | fn | run `fn()` every frame on the engine thread |
 | `mod.main(fn)` | fn | run `fn()` once at the next safepoint on the engine thread (fire-and-forget) |
+| `mod.hook.*` | table | chained multi-mod hook registry (below) — observe any function |
 
 **`mod.mem`** (all reads/writes VirtualQuery-guarded — a bad address returns `nil`/`false`, never a crash):
 
@@ -65,11 +66,23 @@ mod.game.coordinates.get([code])/player()/target()   -> {x,y,actor,code}   (cent
 `active` / `coordinates.target()` identify the **controlled** member — they resolve once
 the executor is armed (they use the input manager it captures at the safepoint).
 
+**`mod.hook`** — one trampoline per target VA dispatches an ordered chain of observer
+callbacks, so multiple mods hook the same function without clobbering each other:
+
+```
+local h = mod.hook.entry(addr, function(ctx) ... end)   -- addr ABSOLUTE (mod.mem.reloc(va))
+mod.hook.remove(h)          mod.hook.count()
+```
+
+The callback receives `ctx = {ecx, edx, eax, esp, ret, va}` (read stack args via
+`mod.mem.read_u32(ctx.esp + 4 + 4*n)`). Tier-1 = **observe only** (can't modify args or
+block), runs on the engine thread inside a `pcall` — a faulting cb is auto-disabled.
+(Tier-2 typed pre/post/replace hooks via FFI closures are next.)
+
 ### `mod.*` API — roadmap (later phases, see DESIGN.md)
 
 ```
-mod.hook.entry(va, cb)                                        -- P3 Tier-1 observe
-mod.hook.typed(va, sig, {pre=,post=})  mod.hook.remove(h)     -- P3 Tier-2 typed
+mod.hook.typed(va, sig, {pre=,post=})                        -- Tier-2 typed (modify args/block/return) — next
 mod.call(va, sig, ...)                                        -- FFI call (via mod.main)
 mod.ui.panel(name, draw)  mod.ui.window(name, draw, opts)     -- P5 UI (main window + in-game mirror)
 mod.overlay.panel(...) / mod.overlay.draw(fn)                 -- later DDraw7 overlay

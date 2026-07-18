@@ -149,7 +149,7 @@ what the trainer already computes (party roster, player coordinates), now shared
 | **P0** | Scaffold: host LuaJIT, scan `mods\*` (native + Lua), `mod.log`, hello-world boots | **done** (LuaJIT proven on-target; loader path proven via `host_stub`) |
 | **P1** | `mod.mem` (guarded r/w, scan, module/reloc) **+ togglable `mod.game.*` bindings** (roster, coordinates) | **done** (verified via `examples/probe`; live data pending in-game) |
 | **P2** | Main-thread executor: WndProc bootstrap → safepoint hook → `mod.main`/`on_frame`; profile | **done** (drain/on_frame/`ti_mgr` verified via `exec_test`; MinHook install + bootstrap in-game) |
-| P3 | Hook registry: Tier-1 chain (MinHook + dispatcher), then Tier-2 typed; safepoint-gated | next |
+| **P3** | Hook registry: Tier-1 chain (per-VA codegen thunk + dispatcher, multi-mod) | **done** (in-game: chain fires, `remove` works, `ctx.ecx` capture correct); Tier-2 typed next |
 | P4 | Native bridge: C ABI, shared registry, `OssModInit` | |
 | P5 | UI host: DX11 main window + in-game mirror, `ui.panel`/`ui.window` | |
 | P6 | Voice mod: port + exhaustive install/launch test → swap the release | |

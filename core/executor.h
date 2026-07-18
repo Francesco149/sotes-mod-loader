@@ -30,6 +30,7 @@ void exec_run_deferred_inline(void);           // fallback: run deferred mods no
 int  exec_bootstrap(void);   // find + subclass the game window, post bootstrap; 1 = armed, 0 = fallback
 int  exec_armed(void);       // 1 once the safepoint hook is installed
 uint32_t exec_ti_mgr(void);  // the captured input manager (safepoint `this`); 0 until the first frame
+uint32_t exec_main_tid(void);// the engine/main thread id (captured at the first safepoint); 0 until then
 
 void exec_on_safepoint(void *ti_mgr);   // MAIN THREAD drain — the hook (or a test) calls this each frame
 

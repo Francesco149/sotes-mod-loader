@@ -16,6 +16,9 @@
 
 static lua_State *g_L;
 static int g_armed;
+static uint32_t g_main_tid;   // engine thread id (captured at the first safepoint)
+
+uint32_t exec_main_tid(void) { return g_main_tid; }
 
 // ── the register-capture observer thunk (Tier-1: convention-agnostic, can't modify) ──
 // MinHook patches the safepoint's first 5 bytes to jmp here.  We capture ecx (= the
@@ -98,6 +101,7 @@ static void run_onframe(void) {
 void exec_on_safepoint(void *ti_mgr) {
     static volatile long in_sp;
     if (InterlockedExchange(&in_sp, 1)) return;   // reentrancy guard
+    if (!g_main_tid) g_main_tid = GetCurrentThreadId();   // this IS the engine thread
     g_ti_mgr = (uint32_t)(uintptr_t)ti_mgr;
     if (!g_inited) { g_inited = 1; run_deferred(); }   // mods init here — on the main thread
     drain_jobs();
