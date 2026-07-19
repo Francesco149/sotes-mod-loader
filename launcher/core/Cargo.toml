@@ -11,6 +11,15 @@ toml.workspace = true
 sha2.workspace = true
 hex.workspace = true
 anyhow.workspace = true
+# HTTPS fetch (install downloads) — behind the `http` feature so `cargo test` on the plumbing
+# stays light + fast. ureq is a small blocking client on rustls+ring (no tokio, no OpenSSL);
+# ring — unlike reqwest's default aws-lc-rs — cross-compiles cleanly to windows-gnu, which is
+# the whole reason we're on rustls (see DESIGN "Tech decision").
+ureq = { version = "2", optional = true }
+
+[features]
+# Pulls in ureq for the real HTTPS `HttpFetcher`. The GUI enables this.
+http = ["dep:ureq"]
 
 [dev-dependencies]
 tempfile.workspace = true

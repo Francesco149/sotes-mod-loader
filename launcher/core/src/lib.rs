@@ -11,12 +11,14 @@
 //! | [`modconfig`]| config   | parse a mod's `mod.toml [config]` SCHEMA (the generic settings editor) |
 //! | [`cfg`]      | gamedir  | the loader's flat `oss_mods.cfg` / `oss_loader.cfg`, byte-compatible |
 //! | [`gamedir`]  | gamedir  | locate/validate the install + the `version.dll`↔`realver.dll` proxy swap |
+//! | [`install`]  | install  | resolve a version's files → download + sha256-verify → place; installed manifest |
 //!
-//! Still to land (next commits): HTTPS fetch + download (into the [`install`](self) flow), the
-//! installed-state manifest, and launching the game detached.
+//! Still to land (next commits): launching the game detached, and the GUI views that drive all
+//! of the above (Installed list with per-mod config, install/update/remove, the proxy + Launch).
 
 pub mod cfg;
 pub mod gamedir;
+pub mod install;
 pub mod modconfig;
 pub mod registry;
 pub mod verify;
