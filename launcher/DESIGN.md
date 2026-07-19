@@ -6,12 +6,14 @@ Ships **`sotes-mods`** as the default source. This is the P8 scope for a cold st
 is [`../docs/REGISTRY.md`](../docs/REGISTRY.md); the *mod format / config / versioning* it consumes is
 [`../docs/MOD-FORMAT.md`](../docs/MOD-FORMAT.md).
 
-> **Status:** Tech **decided — Rust + egui**, and the WSL→Windows path is proven end-to-end. The
-> plumbing crate `sml-core` (registry, sha256 verify, `mod.toml [config]` schema, byte-compatible
-> `oss_mods.cfg`) is built + tested on Linux (25 tests green); the `sml-gui` eframe app (Browse + a
-> live Config editor) cross-compiles to a **single 64-bit Windows `.exe`** from this Nix/WSL env
-> (`x86_64-pc-windows-gnu`, release = GUI subsystem). Install / proxy / launch — and running the GUI
-> on real Windows — are next.
+> **Status:** Tech **decided — Rust + egui**; the MVP loop is built and **verified running on real
+> Windows** (via WSL interop). `sml-core` (registry · sha256 verify · `mod.toml [config]` ·
+> byte-compatible `oss_mods.cfg` · gamedir/proxy · install + a ureq/rustls HTTP fetcher) is
+> unit-tested on Linux (34 tests); `sml-gui` (eframe) is a game-dir-centric app — **Installed**
+> (per-mod config, the Config button hidden when a mod has no `[config]`) · **Browse** · **Launch**
+> (proxy install/repair + start the game) — cross-built to a single 64-bit Windows `.exe`. Remaining:
+> wire the Browse view to install over HTTPS (core `fetch_registry` + `install_version` are done),
+> update/downgrade, sources management, and launcher-state persistence.
 
 ## What already exists to build on
 
@@ -109,10 +111,12 @@ rustflags). Running the GUI on real Windows + the install/proxy/launch modules c
 1. **Spike** ✅ → **Rust + egui** (above); the `sml-core` plumbing slice is built + tested on Linux.
 2. **MVP** in module order: gamedir+proxy → registry fetch/parse → install+verify → config editor →
    launch. Test against `../sotes-mods` (real source) + the scratch game copy.
-   *(Done so far: registry parse/validate/merge, sha256 verify, `mod.toml [config]` schema, byte-compatible
-   `oss_mods.cfg` I/O, and the eframe GUI shell — Browse + a live Config editor — cross-building to a Windows
-   `.exe`. Next: HTTPS fetch + download, the `version.dll`↔`realver.dll` proxy swap, the installed manifest,
-   and launch.)*
+   *(Done: registry parse/validate/merge · sha256 verify · `mod.toml [config]` schema · byte-compatible
+   `oss_mods.cfg` · gamedir + `version.dll`↔`realver.dll` proxy · install (download+verify+place,
+   user_supplied, installed manifest) + a ureq/rustls HTTP fetcher · the game-dir-centric eframe GUI
+   (Installed w/ per-mod config, Browse, Launch) — all cross-building to a Windows `.exe` and verified
+   running on real Windows via WSL interop. Next: wire Browse to install over HTTPS, then
+   update/downgrade/sources + launcher-state persistence.)*
 3. **v0.2** — sources/search/updates/deps/compat-surfacing.
 
 ## Open decisions (resolve at the start of P8)
