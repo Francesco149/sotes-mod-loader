@@ -79,12 +79,15 @@ static void convert_to_rgba(void *dstv, int dstPitch, const Frame *f) {
 // ── Phase B: own the game window — present into it + skip the game's own present ──
 static int  g_takeover;      // config ddraw_takeover: present into the game window (borderless), not just mirror
 static int  g_e_ready;       // the engine-thread device/swapchain on the game window is up
+static HWND g_game_hwnd;     // the game window (captured from the present hook) — for cursor mapping
 static void ddp_engine_present(HWND hwnd, const Frame *f);   // defined below
 extern "C" void ddp_set_takeover(int on)  { g_takeover = on ? 1 : 0; }
 extern "C" int  ddp_takeover_active(void) { return (g_takeover && g_e_ready) ? 1 : 0; }   // skip the game present only if we ARE presenting
 
 // ════════════════════════════ ENGINE THREAD: capture ════════════════════════════
 extern "C" void ddp_on_present(void *screen_ctx, void *hwnd) {
+    if (hwnd) g_game_hwnd = (HWND)hwnd;
+
     // Frame-pace: interval between presents (EMA), independent of whether the capture below succeeds.
     if (!g_qpf.QuadPart) QueryPerformanceFrequency(&g_qpf);
     LARGE_INTEGER now; QueryPerformanceCounter(&now);
@@ -352,4 +355,33 @@ static void ddp_engine_present(HWND hwnd, const Frame *f) {
     g_e_ctx->PSSetConstantBuffers(0, 1, &g_e_cb);
     g_e_ctx->Draw(3, 0);
     g_e_swap->Present(1, 0);   // vsync — smooths + paces the game loop
+}
+
+// ── cursor -> game-screen (640x480) mapping ──────────────────────────────────────────────────────────
+// Undo the on-screen transform (the takeover's aspect-fit pillarbox, or the game's windowed client
+// scale) so a mod / the trainer gets the cursor in the game's own 640x480 screen space.  On-demand from
+// the mod.game.mouse binding (engine thread).  Returns 1 if the cursor is over the game area (else 0,
+// but still fills gx/gy with the extrapolated position so a drag past the edge stays continuous).
+extern "C" int ddp_cursor_game(float *gx, float *gy) {
+    if (gx) *gx = 0;
+    if (gy) *gy = 0;
+    HWND h = g_game_hwnd;
+    if (!h) return 0;
+    POINT p; if (!GetCursorPos(&p)) return 0;
+    ScreenToClient(h, &p);
+    RECT rc; if (!GetClientRect(h, &rc)) return 0;
+    float cw = (float)(rc.right - rc.left), ch = (float)(rc.bottom - rc.top);
+    if (cw <= 0 || ch <= 0) return 0;
+    float ox = 0, oy = 0, sx, sy;
+    if (g_takeover && g_e_ready) {          // borderless: aspect-fit pillarbox within the client (== monitor)
+        float srcA = 640.0f / 480.0f, dstA = cw / ch, vw, vh;
+        if (dstA > srcA) { vh = ch; vw = vh * srcA; } else { vw = cw; vh = vw / srcA; }
+        ox = (cw - vw) * 0.5f; oy = (ch - vh) * 0.5f; sx = vw / 640.0f; sy = vh / 480.0f;
+    } else {                                 // windowed: the game BitBlt's 640x480 to the full client
+        sx = cw / 640.0f; sy = ch / 480.0f;
+    }
+    float x = (p.x - ox) / sx, y = (p.y - oy) / sy;
+    if (gx) *gx = x;
+    if (gy) *gy = y;
+    return (x >= 0 && y >= 0 && x < 640 && y < 480) ? 1 : 0;
 }

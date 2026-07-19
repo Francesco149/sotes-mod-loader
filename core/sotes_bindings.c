@@ -17,6 +17,7 @@
 #include "mem.h"
 #include "executor.h"
 #include "prof.h"
+#include "ddraw_present.h"   // ddp_cursor_game — cursor -> game 640x480 screen space (mod.game.mouse)
 #include "loader_internal.h"
 
 #include "lua.h"
@@ -40,6 +41,12 @@
 #define OFF_MP_BUFF     0xa0
 #define OFF_COMBAT_LV_MAX 0xe0     // max combat level (the HUD stars' "N")
 #define OFF_INPUT_CHAIN   0xc7a4   // actor -> input chain; *(*(actor+0xc7a4)) == input mgr iff CONTROLLED
+// camera / view object (render_root + OFF_CAM) — for cursor world-space mapping (trainer SE_CODE_MAP)
+#define OFF_CAM           0x104c   // render_root -> camera/view object POINTER
+#define CAM_VIEW_TOP      0x5c     // camera -> eased scroll top  (world centi-px) = view top edge
+#define CAM_VIEW_LEFT     0x60     // camera -> eased scroll left (world centi-px) = view left edge
+#define CAM_VP_W          0x64     // camera -> viewport width  (centi-px; 64000 = 640 px)
+#define CAM_VP_H          0x68     // camera -> viewport height (centi-px; 48000 = 480 px)
 
 static const uint32_t CODES[3] = { 0xc35a, 0xc35b, 0xc35c };
 static const char    *NAMES[3] = { "Arche", "Sana", "Stella" };
@@ -274,6 +281,39 @@ static void install_coordinates(lua_State *L) {
     lua_pushcfunction(L, l_coord_target); lua_setfield(L, -2, "target");
 }
 
+// ── Lua: mod.game.mouse ──────────────────────────────────────────────────────
+// mod.game.mouse.get() -> { screen_x, screen_y, over, world_x, world_y }.  screen_* is the cursor in the
+// game's own 640x480 space (the ddraw layer undoes the borderless pillarbox / windowed client scale);
+// world_* is world centi-px via the camera (view origin + screen*viewport-span), omitted at the title/
+// menu (no scene/camera).  The game ignores the mouse itself — this is for the trainer + mouse mods.
+static int l_mouse_get(lua_State *L) {
+    if (!gb_enabled("mouse")) { lua_pushnil(L); return 1; }
+    float gx = 0, gy = 0;
+    int over = ddp_cursor_game(&gx, &gy);
+    lua_newtable(L);
+    lua_pushnumber(L, gx);    lua_setfield(L, -2, "screen_x");
+    lua_pushnumber(L, gy);    lua_setfield(L, -2, "screen_y");
+    lua_pushboolean(L, over); lua_setfield(L, -2, "over");
+    // world-space: view origin (camera) + the screen fraction of the viewport span (cpx).
+    uint32_t root = 0, cam = 0, vleft = 0, vtop = 0, vpw = 0, vph = 0;
+    if (mem_rd32((void *)mem_reloc(VA_RENDER_ROOT), &root) && root &&
+        mem_rd32((void *)(uintptr_t)(root + OFF_CAM), &cam) && cam &&
+        mem_rd32((void *)(uintptr_t)(cam + CAM_VIEW_LEFT), &vleft) &&
+        mem_rd32((void *)(uintptr_t)(cam + CAM_VIEW_TOP), &vtop) &&
+        mem_rd32((void *)(uintptr_t)(cam + CAM_VP_W), &vpw) &&
+        mem_rd32((void *)(uintptr_t)(cam + CAM_VP_H), &vph) && vpw && vph) {
+        int wx = (int)vleft + (int)(gx * (float)vpw / 640.0f);   // vpw≈64000 for 640px => screen*100
+        int wy = (int)vtop  + (int)(gy * (float)vph / 480.0f);
+        lua_pushinteger(L, wx);  lua_setfield(L, -2, "world_x");
+        lua_pushinteger(L, wy);  lua_setfield(L, -2, "world_y");
+    }
+    return 1;
+}
+static void install_mouse(lua_State *L) {
+    lua_newtable(L);
+    lua_pushcfunction(L, l_mouse_get); lua_setfield(L, -2, "get");
+}
+
 // ── registration ─────────────────────────────────────────────────────────────
 void sotes_bindings_register(void) {
     static const gb_def ROSTER = {
@@ -284,6 +324,11 @@ void sotes_bindings_register(void) {
         "coordinates", "member world x/y in centi-px",
         install_coordinates, 1
     };
+    static const gb_def MOUSE = {
+        "mouse", "cursor in game 640x480 screen-space + world centi-px (screen_x/y, world_x/y, over)",
+        install_mouse, 1
+    };
     gb_register(&ROSTER);
     gb_register(&COORD);
+    gb_register(&MOUSE);
 }

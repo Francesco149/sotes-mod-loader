@@ -52,6 +52,11 @@ uint32_t ddp_present_interval_us(void);
 void ddp_set_takeover(int on);
 int  ddp_takeover_active(void);
 
+// Map the desktop cursor into the game's 640x480 screen space (undoing the borderless pillarbox / the
+// windowed client scale).  Fills gx/gy with the game-screen position; returns 1 if the cursor is over
+// the game area.  Used by mod.game.mouse for the screen-space half (world-space adds the camera).
+int ddp_cursor_game(float *gx, float *gy);
+
 #ifdef __cplusplus
 }
 #endif
