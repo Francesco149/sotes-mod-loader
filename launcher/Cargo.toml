@@ -24,3 +24,4 @@ toml = { version = "0.8", features = ["preserve_order"] }
 sha2 = "0.10"
 hex = "0.4"
 anyhow = "1"
+tempfile = "3"
