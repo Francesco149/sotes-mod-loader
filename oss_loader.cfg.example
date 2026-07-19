@@ -51,8 +51,9 @@ profile=0
 # the overlay.  Re-posts WM_ACTIVATEAPP only (no focus steal).  1 = on (default), 0 = off.
 keepactive=1
 
-# Dev auto-load (SotES only): drive the title + save-picker menus at boot to load a save, so
-# testing/profiling reaches actual gameplay instead of the title.  0 = off (default), 1 = on.
+# Auto-load a save at boot (SotES only): drive the title + save-picker menus straight into a save, so
+# launch takes you into your game instead of the title screen.  Handy as a QoL shortcut (and for
+# testing/profiling, which needs to reach actual gameplay).  0 = off (default), 1 = on.
 # autoload_slot selects the savedataNN file index; -1 (default) loads the picker's newest/default save.
 autoload=0
 autoload_slot=-1

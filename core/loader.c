@@ -115,7 +115,8 @@ static DWORD WINAPI loader_thread(void *unused) {
     // click it, which would otherwise freeze the game loop + the UI snapshot.  keepactive=0 opts out.
     if (config_get_int("keepactive", 1) || config_get_int("autoload", 0)) exec_keepactive();
 
-    // Dev harness: drive the menus into a save at boot so testing/profiling reaches gameplay.
+    // Auto-load a save at boot: drive the title/picker menus straight into a save — a QoL shortcut
+    // (and how testing/profiling reaches real gameplay).  Opt-in (autoload=1); SotES-only.
     if (g_is_sotes && config_get_int("autoload", 0)) {
         sotes_autoload_enable(config_get_int("autoload_slot", -1));
         ml_log("[loader] autoload enabled — will drive the title/picker into a save");
