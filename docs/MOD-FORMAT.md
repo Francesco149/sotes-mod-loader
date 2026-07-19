@@ -49,9 +49,14 @@ mod.mem.write_u8/.../f64/ptr(addr, v)                  -> bool (ok)
 mod.mem.read_bytes(addr, n) / read_cstr(addr [,max])   -> string | nil
 mod.mem.write_bytes(addr, str)                         -> bool
 mod.mem.readable(addr [,n]) / writable(addr [,n])      -> bool
+mod.mem.patch(addr, str)                               -> bool   (overwrite CODE too: RWX + memcpy + icache flush)
 mod.mem.scan("48 8B ?? C3")                            -> addr | nil   (AOB over the exe image; ?? = wildcard)
 mod.mem.module(name) -> base | nil   mod.mem.base() -> exe base   mod.mem.reloc(va) -> va + ASLR delta
 ```
+
+`patch` is the **arbitrary-patching** escape hatch for RE that isn't yet a semantic loader op; once
+a technique is RE'd + generalized it graduates to a `mod.game.*` op (below) and mods stop patching by
+hand.
 
 **`mod.game`** — the loader centralizes the RE'd engine structs + pointer chains as
 **togglable bindings** (see DESIGN.md “Game bindings”), each surfaced as `mod.game.<id>`:
@@ -59,10 +64,17 @@ mod.mem.module(name) -> base | nil   mod.mem.base() -> exe base   mod.mem.reloc(
 ```
 mod.game.list()                 -> { {id=, desc=, enabled=}, ... }
 mod.game.enable(id)/disable(id)/enabled(id)     -- live toggle (a stability valve)
--- SotES bindings (grow as we RE more):
+-- SotES bindings (grow as we RE more) — DATA accessors + semantic OPS:
 mod.game.roster.members()       -> { {code,name,actor,level,x,y,hp,hp_max,mp,mp_max,active}, ... }
 mod.game.coordinates.get([code])/player()/target()   -> {x,y,actor,code}   (centi-px)
+mod.game.mouse.get()            -> {screen_x, screen_y, over, world_x, world_y}
+mod.game.attract.set(on)        -- toggle the attract/demo mode (off keeps the title up)
+mod.game.save.load([slot])      -> ok   -- drive the menus into a save (slot < 0 = newest)
 ```
+
+The **ops** (`attract`, `save`) are the model for core→mod work: known RE (here the menu-drive) is
+exposed as a semantic loader op, so a mod ORCHESTRATES it (`mod.game.save.load(slot)`) instead of
+reimplementing it.  The `autoload` mod is exactly this — read its `slot` config, call `save.load`.
 
 `active` / `coordinates.target()` identify the **controlled** member — they resolve once
 the executor is armed (they use the input manager it captures at the safepoint).
@@ -213,16 +225,42 @@ authors     = ["you"]
 target_games = ["sotes_en"]           # profile ids, or ["*"] for any game
 
 [loader]
-min_version = "0.1.0"                 # refuse to load under an older loader
+api         = "1.0"                   # the mod API this mod targets (MAJOR.MINOR) — see "Versioning"
+min_version = "0.1.0"                 # refuse to load under an older loader host
 
 [load]
 order = 0                             # optional: lower loads first
 after = ["some_other_mod"]            # optional: soft dependency ordering
+
+# Settings the mod takes — the loader parses this (schema) and mod.config reads/writes the values;
+# the launcher renders the SAME table.  type = bool|int|float|string; default required; min/max/label/
+# description optional.  Values persist to oss_mods.cfg, namespaced "<id>.<key>".
+[config.enabled]
+type = "bool"
+default = true
+label = "Enabled"
 ```
+
+Read them in the mod: `mod.config.get("enabled")` (typed value or the default), `mod.config.set(k, v)`
+(clamps + persists, debounced), `mod.config.schema()` (for a generic editor).
 
 The manifest is optional for a hand-dropped local mod (the loader runs any
 `mods\<name>\init.lua` regardless) but **required to publish to a registry**, where the
-launcher reads it for name/version/description and load-order resolution.
+launcher reads it for name/version/description, config, and load-order resolution.
+
+## Versioning
+
+Three independent version axes keep incompatible pieces from loading:
+
+- **Mod API** (`[loader] api = "MAJOR.MINOR"`) — the loader↔mod contract (`mod.mem`/`mod.game`/`mod.ui`/…).
+  The loader has its own (`mod.api_version`); it **refuses a mod** whose MAJOR differs (a breaking change,
+  either direction) or whose MINOR is newer than the loader's (needs features this loader lacks).  Absent
+  ⇒ assumed `"1.0"`.  MAJOR bumps on a break; MINOR bumps on additive-only changes.
+- **Loader host version** (`[loader] min_version`, `mod.loader_version`) — the release/marketing version.
+- **Registry schema** (`registry_version` in a source's `registry.json`) — the package-manager format the
+  launcher reads (REGISTRY.md).
+
+(Native mods have a fourth: `OSS_ABI_VERSION` + struct-size growth in `oss_mod_api.h`.)
 
 ## Load order
 

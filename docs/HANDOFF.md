@@ -9,13 +9,21 @@ Rolling "where we are / what's next" for a fresh session. Orient: this → `DESI
 > THERE** (`SE_CODE_MAP.md` / `engine-quirks.md`), not only in this repo — loader docs cover the
 > loader, game facts belong to the port so both projects benefit. (README "Related".)
 
-## State: P0–P5 DONE + **DDraw present backend / borderless-fullscreen** + **`mod.game.mouse`** + **Phase C: the in-game overlay** (2026-07-19). Next = flip `ddraw_takeover` default-on after edge-testing, then **P6 voice**.
+## State: P0–P5 DONE + **DDraw present (borderless + windowed takeover)** + **in-game overlay** + **`mod.config`** + **semantic `mod.game` ops** + **mod API versioning** (2026-07-19). Next = **P8 launcher** (Go/Rust/Zig — TBD) + P6 voice / P7 trainer as mods.
 
 The loader now also OWNS THE DISPLAY: it hooks the DirectDraw present, and either mirrors the game in
-the companion window (`ddraw=1`, default) or takes the game window borderless-fullscreen with a vsync'd,
-sharp-bilinear D3D11 swapchain (`ddraw_takeover=1`, opt-in — user-confirmed smooth in-game).  In
-takeover the `mod.ui` host draws as an **in-game overlay** on top of the game frame (F10 toggles) —
-retiring the companion window there.  See "DDraw present backend" and "Phase C — the in-game overlay".
+the companion window (`ddraw=1`, default) or TAKES OVER the game window with a vsync'd, sharp-bilinear
+D3D11 swapchain — **`ddraw_takeover=1`** borderless-fullscreen OR **`=2`** a resizable normal window
+(both user-confirmed smooth).  In takeover the `mod.ui` host draws as an **in-game overlay** on top of
+the game frame (F10 toggles) — retiring the companion window there.  See "DDraw present backend",
+"Phase C — the in-game overlay", and "Mod config + semantic ops + versioning".
+
+The loader is a usable modding API — in Lua AND native C: guarded memory (`mod.mem`, incl. `patch` for
+code), live RE'd game state + **semantic ops** (`mod.game.*` — roster/coords/mouse, plus `attract`/
+`save` that expose RE'd menu-drives so a mod ORCHESTRATES instead of reimplementing), per-frame/one-shot
+engine work (`mod.on_frame`/`mod.main`), chained hooks (`mod.hook`), ImGui panels (`mod.ui`), and
+**per-mod settings** (`mod.config`, schema in `mod.toml [config]`).  Mods declare the API they need
+(`[loader] api`); the loader **refuses an incompatible one**.
 
 The loader is a usable modding API — in Lua AND native C: a mod reads guarded memory
 (`mod.mem` / `api->mem_*`), reads live RE'd game state (`mod.game.*`), runs per-frame/one-shot
@@ -34,7 +42,36 @@ companion window (`mod.ui`).
 | P5 | ImGui UI: loader-owned companion window — `mod.ui` + a lock-free snapshot pipeline | ✅ (host + in-game) |
 | P6 | voice patch → a Lua mod; exhaustive install/launch test → swap the release | ⬜ |
 | P7 | trainer → a mod; coexistence verified | ⬜ |
-| P8 | launcher (package manager: git-repo sources, install/update, Launch) | ⬜ |
+| P8 | launcher (package manager: git-repo sources, install/update, Launch) | ⬜ (NEXT) |
+
+## Mod config + semantic ops + versioning (NEW — 2026-07-19, groundwork for P8)
+
+Direction set this session: **known RE work becomes a semantic loader op; a mod collapses to telling
+the loader what to do + its config.** Arbitrary `mod.mem.patch`/`mod.hook` stay for the un-upstreamed
+frontier.  Landed:
+
+- **`mod.config`** — a mod declares its settings in **`mod.toml [config]`** (`type` bool/int/float/
+  string, `default`, `label`, `min`/`max`); `mod.config.get/set/schema`.  Schema parsed by a small
+  pure-Lua TOML subset reader in the loader (`CONFIG_LUA` in `lua_host.c`) — the SAME file a Go/Rust/Zig
+  launcher will read to render the SAME table.  Values in **`oss_mods.cfg`** (namespaced `<id>.<key>`,
+  machine-managed, separate from `oss_loader.cfg`), **debounced** write (a slider drag → one write, via
+  `config_mod_flush` on the safepoint).  `examples/config_demo` renders a generic editor from the schema.
+- **Semantic `mod.game` ops (SotES)** — `mod.game.attract.set(on)` (attract/demo toggle) and
+  `mod.game.save.load(slot)` (drive title→picker→save).  The old `core/sotes_autoload.c` + `autoload=`
+  flag are **retired** — the mechanism moved into `sotes_bindings.c`, and auto-loading a save is now the
+  **`autoload` mod** (in `../sotes-mods`, the first core→mod extraction): a few lines calling `save.load`.
+- **`mod.mem.patch(va, bytes)`** — general code patching (RWX + memcpy + icache flush).
+- **Mod API versioning** — `OSS_API_VERSION` (MAJOR.MINOR); a mod's `[loader] api` is checked before it
+  runs and an incompatible one is **REFUSED** (major mismatch = breaking; minor-too-new = missing
+  features; absent ⇒ "1.0").  `mod.api_version` for runtime checks.  See MOD-FORMAT "Versioning".
+
+All validated in-game (EN-SE): config round-trips + persists, the autoload mod reaches gameplay via
+`mod.game.save`, an api-"2.0" mod is refused.
+
+**Next (P8 launcher):** a single-binary package manager (Go/Rust/Zig — decide when starting; ImGui/C++
+also on the table) per `REGISTRY.md`, reading `mod.toml [config]` to render the generic settings editor
+and writing `oss_mods.cfg`.  Ships `../sotes-mods` as the default source.  The registry lives in
+`../sotes-mods` (already scaffolded: `registry.json` + `mods/autoload`).
 
 ## DDraw present backend + borderless-fullscreen (NEW — `core/ddraw_present.{h,cpp}`, 2026-07-19)
 
@@ -279,7 +316,7 @@ misattribute one frame if a mod reorders its widgets (self-correcting).
 - App-dir `version.dll` side-load works only from **NTFS**, not `\\wsl$` (Windows blocks remote-dir DLL load).
 - **The game IDLES its input poll when its window is UNFOCUSED** — the safepoint (`0x437c70`) stops firing and the log freezes at `[exec] safepoint hook armed` (looks exactly like a hang/crash, but the game is fine at the title). **`keepactive` is now a DEFAULT-ON built-in** (re-posts `WM_ACTIVATEAPP(TRUE)` *only when the game isn't foreground*, so normal play is untouched; needed so the companion UI window doesn't freeze the game when clicked). Disable with `keepactive=0`. *This cost hours of misdiagnosis once — a known-good build "hung" the moment the window lost foreground.* If a run stops at "safepoint hook armed" with no `[mod]`/`[prof]` lines, suspect focus first, not the code.
 - **Built-in defaults changed** (2026-07-19): `keepactive` and `skip_launcher` are now **default-ON**; the loader also arms the executor + UI **even with no `mods\` folder** (recognized game / `oss_loader.cfg` also trigger it) — the built-in QoL is independent of any mods being present. And it **only loads `mods\*.dll` that export `OssModInit`** (non-API DLLs are skipped, not run).
-- **Reach gameplay + profile:** `autoload=1` (+ `autoload_slot`, default newest) drives the title/picker menus into a save (`sotes_autoload.c`, ports the trainer's menu-drive); `profile=1` logs per-frame loader overhead every 5 s (`prof.c`). Real-gameplay numbers: `0x437c70` fires **~1000×/sec**, the loader is ~1% of the engine thread steady-state (safepoint + ui_build ≈ 9 µs), the UI machinery is negligible.
+- **Reach gameplay + profile:** drop the **`autoload` mod** (`../sotes-mods/mods/autoload`) into `mods\` — it calls `mod.game.save.load` to drive the title/picker into a save (slot via its `[config]`, default newest).  (Was the `autoload=1` core flag — now a mod; the RE'd drive is `mod.game.save` in `sotes_bindings.c`.)  `profile=1` logs per-frame loader overhead every 5 s (`prof.c`). Real-gameplay numbers: `0x437c70` fires **~1000×/sec**, the loader is ~1% of the engine thread steady-state (safepoint + ui_build ≈ 9 µs), the UI machinery is negligible.
 - The stock dir's `mods\sotes_trainer.dll` **also hooks `0x437c70`** — but the loader now **auto-skips any DLL that doesn't export `OssModInit`** (probed via `DONT_RESOLVE_DLL_REFERENCES`, so its DllMain never runs), so a stray legacy trainer/voice DLL in `mods\` can't fight the executor. One MinHook per target VA. (Port them to the API to load them.)
 - WSL launch: `cmd /c start` blocks on the process-tree job → use `tools/dev-launch.sh` (PowerShell `Start-Process`).
 - **Bootstrap must POSITIVELY match the game window** (`profile.window_class`, SotES `CLASS_LIZSOFT_SOTES`), never "first non-launcher top-level window": the game spawns an early TRANSIENT top-level window (+ a DirectShow `ActiveMovie` + IME windows) that the old heuristic latched and subclassed — then it got destroyed, silently dropping the subclass + the posted `WM_OSS_BOOT`, so the executor never armed (intermittent; looked like a Tier-2 failure but wasn't). Enumerate a live instance to fingerprint the real window: `tools/win-fingerprint.ps1 -TargetPid <pid>` (class/title/style/owner/size).
