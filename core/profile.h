@@ -17,6 +17,9 @@ typedef struct {
     int         launch_ctrl_id;   // the launcher's "Launch" button control id (for skip_launcher)
     int         windowed_ctrl_id; // the launcher's "Windowed Mode" radio (0 = none)
     int         fullscreen_ctrl_id; // the launcher's "Fullscreen Mode" radio (0 = none)
+    uintptr_t   present_va;       // ImageBase-relative per-frame PRESENT fn (SotES zdd_present
+                                  // 0x5b8fc0; thiscall, ECX=screen ctx, arg1=HWND).  0 = none —
+                                  // the ddraw capture / in-game overlay backend hooks it.
 } oss_profile;
 
 // Select the active profile for this host (call once at init).  is_sotes comes from the

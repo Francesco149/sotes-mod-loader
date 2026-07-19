@@ -38,6 +38,10 @@ void ui_start(int key_toggle, int build_hz);
 // safepoint every frame; self-throttled to build_hz.  A no-op until ui_start ran (UI disabled).
 void ui_build(void);
 
+// Wake the UI thread to render one frame (the executor calls this from the present hook so the game
+// mirror tracks the game's present rate, not the throttled snapshot rate).  No-op if hidden/disabled.
+void ui_wake(void);
+
 // Ask the UI thread to tear down (best-effort, on clean unload).
 void ui_shutdown(void);
 

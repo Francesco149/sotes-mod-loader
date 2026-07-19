@@ -26,6 +26,7 @@
 #include "loader_internal.h"   // ml_log, OSS_ML_NAME / OSS_ML_VERSION
 #include "lua_host.h"          // lh_state (engine thread only)
 #include "executor.h"          // exec_armed / exec_main_tid / exec_ti_mgr
+#include "ddraw_present.h"     // ddp_draw_background — mirror the captured game frame behind the UI
 
 extern "C" {
 #include "lua.h"
@@ -472,6 +473,8 @@ static bool render_frame(void) {   // returns busy
     const float clr[4] = { 0.09f, 0.10f, 0.12f, 1.0f };
     g_devctx->OMSetRenderTargets(1, &g_rtv, NULL);
     g_devctx->ClearRenderTargetView(g_rtv, clr);
+    RECT rc; GetClientRect(g_hwnd, &rc);   // mirror the captured game frame (aspect-fit) behind the UI
+    ddp_draw_background(g_dev, g_devctx, (int)(rc.right - rc.left), (int)(rc.bottom - rc.top));
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
     g_swap->Present(1, 0);
     return busy;
@@ -528,8 +531,10 @@ static DWORD WINAPI ui_thread(void *unused) {
 
         bool fresh = snap_fetch();      // lock-free: point g_read_ix at the latest snapshot
         if (fresh) g_have_snap = true;
+        static uint32_t last_fseq = 0;  // a fresh CAPTURED game frame is also a reason to render (mirror)
+        uint32_t fseq = ddp_frame_seq(); bool new_frame = (fseq != last_fseq); last_fseq = fseq;
         if (!g_visible) { busy = false; continue; }
-        if (fresh || had_input || busy) busy = render_frame();   // render only when there's a reason
+        if (fresh || had_input || busy || new_frame) busy = render_frame();   // render only when there's a reason
     }
 
     ImGui_ImplDX11_Shutdown(); ImGui_ImplWin32_Shutdown(); ImGui::DestroyContext();
@@ -546,6 +551,10 @@ extern "C" void ui_start(int key_toggle, int build_hz) {
     HANDLE t = CreateThread(NULL, 0, ui_thread, NULL, 0, NULL);
     if (t) CloseHandle(t); else ml_log("[ui] CreateThread failed (%lu)", GetLastError());
 }
+
+// Present hook -> wake the UI thread so the game mirror renders at the game's present rate (not the
+// throttled snapshot rate).  Only when visible: hidden, we leave it asleep (INFINITE wait, zero cost).
+extern "C" void ui_wake(void) { if (g_visible && g_dirty) SetEvent(g_dirty); }
 
 extern "C" void ui_shutdown(void) {
     g_want_quit = true;

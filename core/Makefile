@@ -43,7 +43,7 @@ COBJ   := $(addprefix $(OBJ)/, $(CSRC:.c=.o)) $(addprefix $(OBJ)/, $(notdir $(MI
 IMGUI_SRC := $(IMGUI)/imgui.cpp $(IMGUI)/imgui_draw.cpp $(IMGUI)/imgui_tables.cpp \
              $(IMGUI)/imgui_widgets.cpp \
              $(IMGUI)/backends/imgui_impl_win32.cpp $(IMGUI)/backends/imgui_impl_dx11.cpp
-CXXSRC := ui.cpp
+CXXSRC := ui.cpp ddraw_present.cpp
 CXXOBJ := $(addprefix $(OBJ)/, $(CXXSRC:.cpp=.o)) $(addprefix $(OBJ)/, $(notdir $(IMGUI_SRC:.cpp=.o)))
 
 CFLAGS   := -O2 -Wall -Wextra -I$(LJ_INC) -Iminhook/include

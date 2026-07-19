@@ -213,6 +213,17 @@ misattribute one frame if a mod reorders its widgets (self-correcting).
 
 ## Gotchas (hard-won)
 
+- **RE addresses: the OpenSummoners `docs/decompiled/by-address/*.c` files are the BASE-GAME unpack
+  (`sotes.unpacked.exe`, md5 `278bad…`) — a DIFFERENT edition than our target, the EN Special Edition
+  (`sotes-ense-en.exe` == `sotes_en.exe` == `sotes-trainer-oss.exe`, md5 `3fe1bc9f…`).** The ddraw
+  code is SHIFTED between editions: the RE labels `zdd_present` `0x5b8fc0`, but in EN-SE that address
+  is mid-instruction (junk); the real present is **`0x5e1470`** (found by signature: the `+0x164`
+  mode jump-table + the windowed `GetDC`+`BitBlt(0xcc0020)` case).  The mod loader's OTHER addresses
+  (safepoint `0x437c70`, `render_root *0x92dd38`) happen to match because they were validated on EN-SE.
+  **Lesson: never take a NEW hook VA straight from the by-address RE files — verify it's a real entry
+  in EN-SE first** (`objdump -d -b pei-i386 --start-address=…`, or grep the `.text` disasm for the
+  function's signature).  Editions also differ in surface format: EN-SE's back-buffer is **24bpp RGB888**
+  (windowed, mode 2), not the base game's 16bpp.
 - App-dir `version.dll` side-load works only from **NTFS**, not `\\wsl$` (Windows blocks remote-dir DLL load).
 - **The game IDLES its input poll when its window is UNFOCUSED** — the safepoint (`0x437c70`) stops firing and the log freezes at `[exec] safepoint hook armed` (looks exactly like a hang/crash, but the game is fine at the title). **`keepactive` is now a DEFAULT-ON built-in** (re-posts `WM_ACTIVATEAPP(TRUE)` *only when the game isn't foreground*, so normal play is untouched; needed so the companion UI window doesn't freeze the game when clicked). Disable with `keepactive=0`. *This cost hours of misdiagnosis once — a known-good build "hung" the moment the window lost foreground.* If a run stops at "safepoint hook armed" with no `[mod]`/`[prof]` lines, suspect focus first, not the code.
 - **Built-in defaults changed** (2026-07-19): `keepactive` and `skip_launcher` are now **default-ON**; the loader also arms the executor + UI **even with no `mods\` folder** (recognized game / `oss_loader.cfg` also trigger it) — the built-in QoL is independent of any mods being present. And it **only loads `mods\*.dll` that export `OssModInit`** (non-API DLLs are skipped, not run).

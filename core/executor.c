@@ -8,6 +8,7 @@
 #include "native_bridge.h"
 #include "ui.h"
 #include "prof.h"
+#include "ddraw_present.h"
 #include "loader_internal.h"
 
 #include <windows.h>
@@ -47,6 +48,34 @@ __asm__(
     "  jmp *oss_sp_orig\n"         // continue into the original (stack intact) — never returns here
 );
 extern void oss_sp_detour(void) asm("oss_sp_detour");   // defined by the asm block above (no _ prefix)
+
+// ── the ddraw present observer thunk (zdd_present 0x5b8fc0; thiscall, ECX = the ZDD screen ctx) ──
+// Same shape as the safepoint thunk: capture ECX (+ arg1 HWND) then TAIL-JUMP to the trampoline so
+// the game's OWN present still runs (Phase A: capture only, no window takeover).  ddp_on_present
+// reads the finished back-buffer off the ctx and copies it into the lock-free capture buffer.
+void      present_c(void)          asm("oss_present_c");
+void     *g_present_orig           asm("oss_present_orig");   // MinHook trampoline (original present)
+volatile uint32_t g_present_ctx    asm("oss_present_ctx");    // captured screen ctx (ecx)
+volatile uint32_t g_present_hwnd   asm("oss_present_hwnd");   // captured HWND (arg1)
+
+__asm__(
+    ".text\n"
+    ".globl oss_present_detour\n"
+    "oss_present_detour:\n"
+    "  movl %ecx, oss_present_ctx\n"   // capture this (= the ZDD screen ctx) before ecx is clobbered
+    "  pushal\n"
+    "  movl 0x24(%esp), %eax\n"        // arg1 (HWND) at entry [esp+4]; after pushal it's at [esp+0x24]
+    "  movl %eax, oss_present_hwnd\n"
+    "  call oss_present_c\n"            // run the capture (cdecl, no args; reads the globals)
+    "  popal\n"
+    "  jmp *oss_present_orig\n"         // continue into the original present (stack intact)
+);
+extern void oss_present_detour(void) asm("oss_present_detour");
+
+void present_c(void) {
+    ddp_on_present((void *)(uintptr_t)g_present_ctx, (void *)(uintptr_t)g_present_hwnd);
+    ui_wake();   // render the game mirror at the present rate (companion window), not the snapshot rate
+}
 
 uint32_t exec_ti_mgr(void) { return g_ti_mgr; }
 uint32_t exec_sp_now(void) { return g_sp_now; }   // the safepoint poll's timestamp (for input injection)
@@ -230,6 +259,8 @@ void exec_keepactive(void) {
     if (t) { CloseHandle(t); ml_log("[exec] keepactive ON — re-posting WM_ACTIVATEAPP so the game ticks while unfocused"); }
 }
 
+static void install_present_hook(void);   // ddraw capture backend (defined below); armed after the safepoint
+
 static void install_safepoint_hook(void) {   // runs on the MAIN thread (in the WndProc)
     const oss_profile *p = profile_current();
     if (!p) return;
@@ -241,6 +272,21 @@ static void install_safepoint_hook(void) {   // runs on the MAIN thread (in the 
     if (MH_EnableHook(va) != MH_OK) { ml_log("[exec] MH_EnableHook failed"); return; }
     g_armed = 1;
     ml_log("[exec] safepoint hook armed @ %p (profile %s va 0x%p)", va, p->id, (void *)p->safepoint_va);
+    install_present_hook();   // ddraw capture / re-present backend (same engine thread, MH already up)
+}
+
+// Install the ddraw present hook (zdd_present) right after the safepoint, on the MAIN thread — the
+// capture/re-present backend (ddraw_present.cpp).  MH is already initialized by the safepoint install.
+// Opt-out with ddraw=0; non-fatal (a failure just leaves the game mirror/overlay off).
+static void install_present_hook(void) {
+    const oss_profile *p = profile_current();
+    if (!p || !p->present_va) return;
+    if (!config_get_int("ddraw", 1)) { ml_log("[exec] present hook off (ddraw=0)"); return; }
+    void *va = (void *)mem_reloc(p->present_va);
+    MH_STATUS s = MH_CreateHook(va, (LPVOID)&oss_present_detour, &g_present_orig);
+    if (s != MH_OK && s != MH_ERROR_ALREADY_CREATED) { ml_log("[exec] present MH_CreateHook failed (%d)", s); return; }
+    if (MH_EnableHook(va) != MH_OK) { ml_log("[exec] present MH_EnableHook failed"); return; }
+    ml_log("[exec] present hook armed @ %p (zdd_present va 0x%p) — ddraw capture on", va, (void *)p->present_va);
 }
 
 static LRESULT CALLBACK boot_wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
