@@ -98,23 +98,64 @@ static int actor_is_active(uintptr_t actor) {
     return mgr == tm;
 }
 
-// ── the throttled roster cache (g_ros[k] = actor for CODES[k]) ────────────────
+// ── the roster cache (g_ros[k] = actor for CODES[k]) ─────────────────────────
 static uintptr_t g_ros[3];
 
-// Refresh the roster: revalidate cached actors; if any slot is empty, do ONE throttled
-// full-heap walk to (re)fill it (preferring the box-tracking live actor over a ghost).
+// ── render-root band scan (a bounded, RE-informed alternative to the full heap walk) ──
+// render_root = *(0x92dd38) (0 at title/menu).  OpenSummoners RE (findings/door-gate.md:41,52-54)
+// confirms two SE render bands, each an ARRAY of entity pointers off render_root: EFFECT (+0x1160,
+// 32) and CHARACTER (+0x11e0, 128).  We scan those ~160 slots for a party code (entity+0x1d4) —
+// microseconds vs the full-heap word scan.  NOTE: the base-game map_obj+0x4030 party array (the
+// "canonical" roster) does NOT reach the SE party via any render_root+off single/double indirection
+// we could pin live, so this band scan is the pragmatic fast path; the heap walk stays as the
+// ultimate fallback for anything the bands miss.  See PORT-DEBT(sotes-roster-heapscan).
+#define VA_RENDER_ROOT 0x92dd38
+#define BAND_EFFECT    0x1160      // 32 entity-ptr slots
+#define BAND_CHARACTER 0x11e0      // 128 entity-ptr slots
+
+// Scan the two render bands for the party; fill g_ros for any found.  Returns 1 if any resolved.
+static int roster_bands(uint32_t root) {
+    static const struct { uint32_t off; int n; } BANDS[2] = { { BAND_EFFECT, 32 }, { BAND_CHARACTER, 128 } };
+    uintptr_t found[3] = { 0, 0, 0 };
+    for (int b = 0; b < 2; b++) {
+        for (int i = 0; i < BANDS[b].n; i++) {
+            uint32_t e = 0, code = 0;
+            if (!mem_rd32((void *)(root + BANDS[b].off + i * 4), &e) || e <= 0x10000) continue;
+            if (!mem_rd32((void *)(uintptr_t)(e + OFF_CODE), &code)) continue;
+            int k = code_index(code & 0xffff);
+            if (k >= 0 && !found[k] && actor_valid(e, CODES[k])) found[k] = e;
+        }
+    }
+    int any = 0;
+    for (int k = 0; k < 3; k++) if (found[k]) { g_ros[k] = found[k]; any = 1; }
+    return any;
+}
+
+// Refresh the roster.  Fast path: no scene -> empty (no scan); in-scene -> the direct party array.
+// The full-heap walk is now only a throttled FALLBACK for a scene the direct chain can't resolve.
 static void ensure_roster_impl(void) {
     int need_walk = 0;
     for (int k = 0; k < 3; k++) {
         if (g_ros[k] && !actor_valid(g_ros[k], CODES[k])) g_ros[k] = 0;
         if (!g_ros[k]) need_walk = 1;
     }
-    if (!need_walk) return;
 
+    // No scene loaded (title/menu) -> no party -> clear + do NOTHING (kills the ~65ms menu walk that
+    // used to churn hunting for actors that don't exist yet).
+    uint32_t root = 0;
+    if (!mem_rd32((void *)mem_reloc(VA_RENDER_ROOT), &root) || root == 0) { g_ros[0] = g_ros[1] = g_ros[2] = 0; return; }
+    if (!need_walk) return;                              // all present + valid
+
+    // Bounded band scan (~160 reads) — the common-case fast path in place of the heap walk.
+    if (roster_bands(root)) return;
+
+    // Fallback: the throttled full-heap walk, only if the bands didn't resolve the party — a safety
+    // net (and the bootstrap on scenes the bands miss).
     static DWORD last_walk;
     DWORD now = GetTickCount();
     if (last_walk && (now - last_walk) < 120) return;   // ~8x/sec cold-scan cap
     last_walk = now;
+    ml_log("[sotes] roster: direct chain miss — heap-scan fallback");
 
     uintptr_t best[3] = { 0, 0, 0 }, fallback[3] = { 0, 0, 0 };
     uint8_t *addr = 0;

@@ -1,0 +1,10 @@
+[mod]
+id          = "roster_probe"
+name        = "Roster Probe"
+version     = "1.0.0"
+description = "Logs the live party roster every ~2s — a validation harness for mod.game.roster."
+authors     = ["sotes-mod-loader"]
+target_games = ["sotes_en"]
+
+[loader]
+min_version = "0.1.0"
