@@ -214,6 +214,23 @@ static int l_scan(lua_State *L) {
     return 1;
 }
 
+// mod.mem.patch(va, bytes) -> ok.  Overwrite CODE (or any page) even when it's read-only/executable:
+// VirtualProtect to RWX, memcpy, restore the old protection, flush the icache.  The general
+// code-patching primitive for RE that isn't yet a semantic loader op (mod.game.*).  Returns false if
+// the range isn't readable or the protect fails.
+static int l_patch(lua_State *L) {
+    uintptr_t a = (uintptr_t)lua_tonumber(L, 1);
+    size_t n = 0; const char *s = luaL_checklstring(L, 2, &n);
+    if (n == 0 || !mem_readable((void *)a, n)) { lua_pushboolean(L, 0); return 1; }
+    DWORD old;
+    if (!VirtualProtect((void *)a, n, PAGE_EXECUTE_READWRITE, &old)) { lua_pushboolean(L, 0); return 1; }
+    memcpy((void *)a, s, n);
+    VirtualProtect((void *)a, n, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), (void *)a, n);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
 // ── build + share the `mem` table ────────────────────────────────────────────
 static int g_mem_ref = LUA_NOREF;
 
@@ -229,7 +246,7 @@ void mem_install_lua(lua_State *L) {
 #undef TYPED
 #define FN(name, fn) do { lua_pushcfunction(L, fn); lua_setfield(L, -2, name); } while (0)
     FN("read_bytes", l_read_bytes); FN("read_cstr", l_read_cstr); FN("write_bytes", l_write_bytes);
-    FN("readable", l_readable); FN("writable", l_writable);
+    FN("readable", l_readable); FN("writable", l_writable); FN("patch", l_patch);
     FN("scan", l_scan); FN("module", l_module); FN("reloc", l_reloc); FN("base", l_base);
 #undef FN
     g_mem_ref = luaL_ref(L, LUA_REGISTRYINDEX);   // pops the table, keeps it alive
