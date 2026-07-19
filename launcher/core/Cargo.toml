@@ -1,0 +1,13 @@
+[package]
+name = "sml-core"
+description = "SotES mod-loader launcher — engine (registry, integrity, mod config, loader cfg). GUI-free."
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+sha2.workspace = true
+hex.workspace = true
+anyhow.workspace = true

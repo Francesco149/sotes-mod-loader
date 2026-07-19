@@ -51,6 +51,21 @@
             gnumake
             pkg-config
 
+            # ── launcher toolchain (P8): Rust ─────────────────────────
+            # The package-manager launcher (launcher/) is Rust + egui — see
+            # launcher/DESIGN.md "Tech decision".  Host builds + tests of the
+            # plumbing crate (sml-core) run here; mkShell provides a host `cc`
+            # for linking.  NOTE the launcher is a normal 64-bit desktop app,
+            # NOT i686 — it's an external process manager (spawns the game,
+            # never injects), so it needn't match the game's 32-bit-ness.  The
+            # Windows cross-target (x86_64-pc-windows-gnu) for the eframe GUI
+            # is wired in a follow-up (rust-overlay + x86_64 mingw); the
+            # plumbing crate needs neither, so `cargo test` is green with these.
+            rustc
+            cargo
+            clippy
+            rustfmt
+
             # ── scripting / tooling ───────────────────────────────────
             pythonEnv
             git
@@ -85,8 +100,10 @@
             echo "  imgui:        $IMGUI_DIR"
             echo "  luajit src:   $LUAJIT_SRC"
             echo "  luajit host:  $LUAJIT_HOST_CC (32-bit, for buildvm)"
+            echo "  rust:         $(command -v cargo)"
             echo ""
             echo "Build:  nix develop --command make -C core        # -> build/version.dll"
+            echo "Launcher core:  cargo test --manifest-path launcher/Cargo.toml --workspace"
           '';
         };
       });

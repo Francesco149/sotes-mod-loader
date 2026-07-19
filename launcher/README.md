@@ -5,7 +5,8 @@ config, and launches the game with the loader present. **Built after the injecte
 out** (P0–P5 ✅) — this folder is design-only for now.
 
 - **Full scope + design → [`DESIGN.md`](DESIGN.md)** (feature scope, architecture, the tech
-  decision, build plan). Tech is an OPEN decision (Go / Rust / Zig / ImGui-C++ — decide via a spike).
+  decision, build plan). Tech **decided: Rust + egui**; the `sml-core` plumbing crate (registry /
+  verify / mod-config / cfg) is built + tested on Linux — the GUI + install/proxy/launch are next.
 - Contract → [`../docs/REGISTRY.md`](../docs/REGISTRY.md); mod format/config/versioning it consumes →
   [`../docs/MOD-FORMAT.md`](../docs/MOD-FORMAT.md).
 

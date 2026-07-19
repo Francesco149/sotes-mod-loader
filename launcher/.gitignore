@@ -1,0 +1,3 @@
+# Rust build output (the workspace target dir).  Cargo.lock IS committed — this
+# workspace produces a binary (the launcher), so a locked dep set is what we ship.
+/target

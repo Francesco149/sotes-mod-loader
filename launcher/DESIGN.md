@@ -6,7 +6,10 @@ Ships **`sotes-mods`** as the default source. This is the P8 scope for a cold st
 is [`../docs/REGISTRY.md`](../docs/REGISTRY.md); the *mod format / config / versioning* it consumes is
 [`../docs/MOD-FORMAT.md`](../docs/MOD-FORMAT.md).
 
-> **Status:** design only. Tech is an OPEN decision (see "Tech decision"). Nothing built yet.
+> **Status:** Tech **decided — Rust + egui** (see "Tech decision"). The plumbing crate
+> `launcher/core` (`sml-core`) is built + tested on Linux: registry parse/validate, sha256 verify,
+> `mod.toml [config]` schema, and byte-compatible `oss_mods.cfg` I/O (25 tests green). GUI +
+> install/proxy/launch next.
 
 ## What already exists to build on
 
@@ -67,10 +70,11 @@ pinned `sha256`; a mismatch aborts. So the file host (a GitHub release, any CDN)
 the registry is. `user_supplied` files (game assets we can't ship) are located by the user and
 sha256-checked if a hash is given.
 
-## Tech decision — OPEN (decide via a spike, not on paper)
+## Tech decision — Rust + egui (DECIDED)
 
-Single static binary, no runtime dep, cross-buildable to a Windows exe **from WSL** (the dev env). The
-package-manager plumbing (HTTPS, JSON, sha256, file I/O) dominates the effort; the GUI is second.
+Requirements: single static binary, no runtime dep, cross-buildable to a Windows exe **from WSL** (the
+dev env). The package-manager plumbing (HTTPS, JSON, sha256, file I/O) dominates the effort; the GUI is
+second.
 
 | | pkg-mgr plumbing | GUI options | X-compile → win from WSL | build speed | ecosystem | notes |
 |---|---|---|---|---|---|---|
@@ -79,17 +83,30 @@ package-manager plumbing (HTTPS, JSON, sha256, file I/O) dominates the effort; t
 | **Zig** | mostly hand-rolled or C libs (libcurl, …) | Dear ImGui / raylib via C | excellent (`zig cc`) | **fast** (user's draw) | young | most plumbing work; tightest control |
 | ImGui/C++ | painful (curl+a json lib+sha256 by hand) | Dear ImGui (shares the loader's renderer) | ok (mingw) | ok | — | consistency, but heaviest plumbing |
 
-**Lean:** Rust+egui (one language does plumbing + an ImGui-style GUI + verified deps) or Go (fastest
-plumbing; pair with Wails/web-UI or a TUI). Zig is viable if build speed + control outweigh the young
-ecosystem. **Spike to decide:** build the *core slice* — fetch `sotes-mods`' `registry.json`, sha256-
-verify one downloaded file, and render one installed mod's `[config]` as an editable table writing
-`oss_mods.cfg` — in the top **two** candidates; compare ergonomics + build time; then commit.
+**Decision: Rust + egui (eframe).** The plumbing dominates, and Rust's `reqwest`(rustls) + `serde_json`
++ `sha2` + `toml` is the most batteries-included, all-verified-deps stack in ONE language — and rustls
+means **no system-TLS/OpenSSL dep**, which is exactly what keeps a WSL→Windows cross-compile clean (the
+thing that bites C and Go-cgo). `egui`/`eframe` is immediate-mode, matching the loader's OWN in-game
+ImGui UI mental model, so one language covers plumbing + GUI (Go's weak spot; Zig would hand-wire Dear
+ImGui). Target **`x86_64-pc-windows-gnu`** — the launcher is a 64-bit *external process manager* (spawns
+the game, never injects), so it needn't match the game's i686-ness. Why not the others: Zig's superb
+cross-compile doesn't offset losing the *dominant* (plumbing) axis to a young HTTPS/TLS story; Go's superb
+stdlib doesn't offset a weak GUI that also breaks the trivial cross-compile via cgo.
+
+**Validated (the core slice, on Linux — `sml-core`):** parses + validates `sotes-mods`' real
+`registry.json`, sha256-verifies (NIST vectors), parses the real `config_demo` / `autoload`
+`mod.toml [config]`, and writes `oss_mods.cfg` **byte-identically** to the loader's C writer — value
+(de)serialization mirrors `core/lua_host.c` CONFIG_LUA (bool→`true`/`false`, int decimal, float shortest,
+clamp+floor). 25 tests green via `nix develop`. The eframe GUI + the Windows cross-`.exe` build land next.
 
 ## Build plan (phased)
 
-1. **Spike** (above) → pick the language.
+1. **Spike** ✅ → **Rust + egui** (above); the `sml-core` plumbing slice is built + tested on Linux.
 2. **MVP** in module order: gamedir+proxy → registry fetch/parse → install+verify → config editor →
    launch. Test against `../sotes-mods` (real source) + the scratch game copy.
+   *(Done so far: registry parse/validate/merge, sha256 verify, `mod.toml [config]` schema, byte-compatible
+   `oss_mods.cfg` I/O. Next: HTTPS fetch + download, the `version.dll`↔`realver.dll` proxy swap, the
+   installed manifest, launch, and the eframe GUI.)*
 3. **v0.2** — sources/search/updates/deps/compat-surfacing.
 
 ## Open decisions (resolve at the start of P8)
