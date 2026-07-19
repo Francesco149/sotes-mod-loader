@@ -23,6 +23,15 @@ enum View {
     Launch,
 }
 
+/// Headless-ish self-test (`--smoke`): on the first frame, load the given registry + manifest,
+/// exercise a config write, print a `[smoke]` report to stdout, then close. Lets the Windows
+/// build be verified end-to-end from WSL (run the debug/console build so stdout comes back).
+#[derive(Clone)]
+struct Smoke {
+    registry: String,
+    manifest: String,
+}
+
 struct SmlApp {
     view: View,
 
@@ -34,6 +43,10 @@ struct SmlApp {
     manifest_path: String,
     manifest: Option<Result<ModManifest, String>>,
     values: KvFile,
+
+    // `--smoke` self-test (None in normal interactive use).
+    smoke: Option<Smoke>,
+    smoke_done: bool,
 }
 
 impl Default for SmlApp {
@@ -47,12 +60,22 @@ impl Default for SmlApp {
             manifest_path: "../examples/config_demo/mod.toml".to_owned(),
             manifest: None,
             values: KvFile::new(),
+            smoke: None,
+            smoke_done: false,
         }
     }
 }
 
 impl eframe::App for SmlApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.smoke.is_some() {
+            if !self.smoke_done {
+                self.smoke_done = true;
+                self.run_smoke(); // load real data into the views + print the report
+            }
+            // Draw one real frame (proves egui renders on Windows), then close.
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
         egui::SidePanel::left("nav").exact_width(160.0).show(ctx, |ui| {
             ui.add_space(6.0);
             ui.heading("SotES Loader");
@@ -223,6 +246,74 @@ impl SmlApp {
                 .desired_width(f32::INFINITY),
         );
     }
+
+    /// `--smoke`: load the configured registry + manifest via sml-core, do one config write, and
+    /// report — proving the plumbing runs INSIDE the Windows process (not just in host tests).
+    fn run_smoke(&mut self) {
+        use std::io::Write;
+        let s = self.smoke.clone().expect("run_smoke only called in smoke mode");
+        self.registry_path = s.registry.clone();
+        self.manifest_path = s.manifest.clone();
+
+        let mut out = String::from("[smoke] sml-gui up on Windows — exercising sml-core in-process\n");
+
+        match Registry::from_path(&self.registry_path) {
+            Ok(reg) => {
+                let ids: Vec<&str> = reg.mods.iter().map(|m| m.id.as_str()).collect();
+                out += &format!(
+                    "[smoke] registry OK: \"{}\" (v{}), {} mods: {}\n",
+                    reg.source.name,
+                    reg.registry_version,
+                    reg.mods.len(),
+                    ids.join(", ")
+                );
+                self.registry = Some(Ok(reg));
+            }
+            Err(e) => {
+                out += &format!("[smoke] registry FAIL ({}): {e:#}\n", self.registry_path);
+                self.registry = Some(Err(format!("{e:#}")));
+            }
+        }
+
+        match ModManifest::from_path(&self.manifest_path) {
+            Ok(m) => {
+                out += &format!(
+                    "[smoke] manifest OK: {} v{} api={}, {} setting(s)\n",
+                    m.id,
+                    m.version,
+                    m.api,
+                    m.config.len()
+                );
+                // Edit the first numeric setting to a mid value — proves modconfig+cfg write path.
+                if let Some(f) = m
+                    .config
+                    .iter()
+                    .find(|f| matches!(f.kind, FieldKind::Int | FieldKind::Float))
+                {
+                    let mid = (f.min.unwrap_or(0.0) + f.max.unwrap_or(10.0)) / 2.0;
+                    let v = if f.kind == FieldKind::Int {
+                        ConfigValue::Int(mid as i64)
+                    } else {
+                        ConfigValue::Float(mid)
+                    };
+                    f.store(&mut self.values, &m.id, v);
+                    out += &format!("[smoke] set {}.{} -> oss_mods.cfg:\n", m.id, f.key);
+                    for line in self.values.to_oss_mods_string().lines() {
+                        out += &format!("[smoke]   {line}\n");
+                    }
+                }
+                self.manifest = Some(Ok(m));
+            }
+            Err(e) => {
+                out += &format!("[smoke] manifest FAIL ({}): {e:#}\n", self.manifest_path);
+                self.manifest = Some(Err(format!("{e:#}")));
+            }
+        }
+
+        out += "[smoke] window + GL + egui init OK (reached update); closing\n";
+        print!("{out}");
+        let _ = std::io::stdout().flush();
+    }
 }
 
 fn placeholder(ui: &mut egui::Ui, title: &str, note: &str) {
@@ -232,6 +323,17 @@ fn placeholder(ui: &mut egui::Ui, title: &str, note: &str) {
 }
 
 fn main() -> eframe::Result<()> {
+    // `--smoke [--registry PATH] [--manifest PATH]` runs the headless self-test (see `Smoke`).
+    let args: Vec<String> = std::env::args().collect();
+    let arg_after =
+        |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned();
+    let smoke = args.iter().any(|a| a == "--smoke").then(|| Smoke {
+        registry: arg_after("--registry")
+            .unwrap_or_else(|| "../sotes-mods/registry.json".to_owned()),
+        manifest: arg_after("--manifest")
+            .unwrap_or_else(|| "../examples/config_demo/mod.toml".to_owned()),
+    });
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([820.0, 560.0]),
         ..Default::default()
@@ -239,6 +341,10 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "SotES Mod Loader",
         options,
-        Box::new(|_cc| Ok(Box::new(SmlApp::default()))),
+        Box::new(move |_cc| {
+            let mut app = SmlApp::default();
+            app.smoke = smoke;
+            Ok(Box::new(app))
+        }),
     )
 }
