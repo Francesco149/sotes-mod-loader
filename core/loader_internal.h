@@ -13,6 +13,15 @@
 #define OSS_ML_NAME    "SotES Mod Loader"
 #define OSS_ML_VERSION "0.1.0"           // loader host version (mod.loader_version)
 
+// The mod API version — the loader<->mod contract, versioned MAJOR.MINOR independently of the host
+// version above.  MAJOR bumps on a BREAKING change (a mod built for a different major refuses to
+// load); MINOR bumps on an ADDITIVE change (older mods still load, newer mods needing the new minor
+// refuse on an older loader).  A mod declares what it needs in mod.toml `[loader] api = "MAJ.MIN"`
+// (absent = assume "1.0").  Native mods have their own OSS_ABI_VERSION (struct-growth) in oss_mod_api.h.
+#define OSS_API_VERSION "1.0"
+#define OSS_API_MAJOR   1
+#define OSS_API_MINOR   0
+
 #ifdef __cplusplus
 extern "C" {          // the UI host (ui.cpp) is C++; give the shared C decls C linkage
 #endif

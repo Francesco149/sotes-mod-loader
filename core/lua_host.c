@@ -34,9 +34,11 @@
 // (ui.cpp), so there is no cross-thread lua_State access and no lock (P5, decoupled model).
 static lua_State *g_L;
 
-// mod.config factory (an embedded Lua closure, built once at lh_init): make_mod_config(modid, toml) ->
-// a per-mod config table.  See CONFIG_LUA below.  LUA_NOREF until built.
+// mod.config factory + mod.toml [loader]-meta reader (embedded Lua closures, built once at lh_init):
+// make_mod_config(modid, toml) -> a per-mod config table; read_meta(toml) -> { api=, min_version= }
+// for the API-compat load gate.  See CONFIG_LUA below.  LUA_NOREF until built.
 static int g_mkconfig_ref = LUA_NOREF;
+static int g_meta_ref     = LUA_NOREF;
 
 // mod.log(...) — like print(): tostring() each arg, space-join, route to the loader
 // log with the mod's name (carried as an upvalue so every mod's log is attributed).
@@ -68,6 +70,7 @@ static void push_mod_table(lua_State *L, const char *name, const char *dir) {
     lua_pushstring(L, dir);                  lua_setfield(L, -2, "dir");
     lua_pushstring(L, OSS_ML_NAME);          lua_setfield(L, -2, "loader");
     lua_pushstring(L, OSS_ML_VERSION);       lua_setfield(L, -2, "loader_version");
+    lua_pushstring(L, OSS_API_VERSION);      lua_setfield(L, -2, "api_version");   // the mod API contract (MAJ.MIN)
 
     lua_pushstring(L, name);                 // upvalue for the log closure
     lua_pushcclosure(L, l_mod_log, 1);       lua_setfield(L, -2, "log");
@@ -110,11 +113,12 @@ static int l_cfg_raw_set(lua_State *L) { config_mod_set(luaL_checkstring(L, 1), 
 static const char *CONFIG_LUA =
     "local raw_get, raw_set = ...\n"
     "local function pval(v)\n"
+    "  local q=v:match('^\"(.-)\"'); if q then return q end\n"    // quoted: up to the first closing quote (drops a trailing #comment)
+    "  v=(v:gsub('%s*#.*$','')):gsub('%s+$','')\n"                 // unquoted: strip an inline comment + ws
     "  if v=='true' then return true elseif v=='false' then return false end\n"
-    "  local q=v:match('^\"(.*)\"$'); if q then return q end\n"
     "  local arr=v:match('^%[(.*)%]$')\n"
     "  if arr then local t={} for it in arr:gmatch('[^,]+') do it=it:gsub('^%s+',''):gsub('%s+$','')\n"
-    "    t[#t+1]=(it:match('^\"(.*)\"$')) or tonumber(it) or it end return t end\n"
+    "    t[#t+1]=(it:match('^\"(.-)\"')) or tonumber(it) or it end return t end\n"
     "  return tonumber(v) or v\n"
     "end\n"
     "local function parse(path)\n"
@@ -139,7 +143,17 @@ static const char *CONFIG_LUA =
     "  elseif t=='float' then return tonumber(raw) or 0 end\n"
     "  return raw\n"
     "end\n"
-    "return function(modid, toml_path)\n"
+    "local function read_meta(path)\n"                 // extract [loader] (api, min_version) for the load gate
+    "  local f=io.open(path,'r'); if not f then return {} end\n"
+    "  local m={}; local inl=false\n"
+    "  for line in f:lines() do\n"
+    "    line=line:gsub('^%s+',''):gsub('%s+$','')\n"
+    "    if line:sub(1,1)=='[' then inl=(line=='[loader]')\n"
+    "    elseif inl then local k,v=line:match('^([%w_]+)%s*=%s*(.+)$'); if k then m[k]=(v:match('^\"(.-)\"')) or (v:gsub('%s*#.*$','')) end end\n"
+    "  end\n"
+    "  f:close(); return m\n"
+    "end\n"
+    "local function make_config(modid, toml_path)\n"
     "  local schema,order=parse(toml_path)\n"
     "  local cfg={}\n"
     "  function cfg.schema() return schema, order end\n"
@@ -159,15 +173,50 @@ static const char *CONFIG_LUA =
     "    raw_set(modid..'.'..key, s); return cfg.get(key)\n"
     "  end\n"
     "  return cfg\n"
-    "end\n";
+    "end\n"
+    "return make_config, read_meta\n";
 
 static void config_lua_init(lua_State *L) {
     if (luaL_loadstring(L, CONFIG_LUA) != 0) { ml_log("[cfg] CONFIG_LUA load failed: %s", lua_tostring(L, -1)); lua_pop(L, 1); return; }
     lua_pushcfunction(L, l_cfg_raw_get);
     lua_pushcfunction(L, l_cfg_raw_set);
-    if (lua_pcall(L, 2, 1, 0) != 0) { ml_log("[cfg] mod-config factory init failed: %s", lua_tostring(L, -1)); lua_pop(L, 1); return; }
-    g_mkconfig_ref = luaL_ref(L, LUA_REGISTRYINDEX);   // the make_mod_config closure
-    ml_log("[cfg] mod.config ready (mod.toml [config] schema + oss_mods.cfg values)");
+    if (lua_pcall(L, 2, 2, 0) != 0) { ml_log("[cfg] mod-config factory init failed: %s", lua_tostring(L, -1)); lua_pop(L, 1); return; }
+    g_meta_ref     = luaL_ref(L, LUA_REGISTRYINDEX);   // read_meta   (top)
+    g_mkconfig_ref = luaL_ref(L, LUA_REGISTRYINDEX);   // make_config (below it)
+    ml_log("[cfg] mod.config ready (mod.toml [config] schema + oss_mods.cfg values); API %s", OSS_API_VERSION);
+}
+
+// ── mod API-version gate: refuse a mod whose declared mod.toml [loader] api is incompatible ──
+// Compatible iff same MAJOR (breaking axis) AND the mod's MINOR <= ours (we have the features it needs).
+// Absent/unparseable-but-present handled by the caller.  Fills `reason` on refusal.
+static int api_compatible(const char *want, char *reason, size_t rn) {
+    int wmaj = OSS_API_MAJOR, wmin = 0;
+    if (want && *want && sscanf(want, "%d.%d", &wmaj, &wmin) < 1) { _snprintf(reason, rn, "unparseable api \"%s\"", want); return 0; }
+    if (wmaj != OSS_API_MAJOR) { _snprintf(reason, rn, "built for API major %d, loader is %s (breaking)", wmaj, OSS_API_VERSION); return 0; }
+    if (wmin > OSS_API_MINOR)  { _snprintf(reason, rn, "needs API %d.%d, loader is %s", wmaj, wmin, OSS_API_VERSION); return 0; }
+    return 1;
+}
+// Read mod.toml [loader].api and check compatibility.  Returns 1 = load it, 0 = refuse (logs the reason).
+static int mod_api_ok(const char *name, const char *dir) {
+    if (g_meta_ref == LUA_NOREF) return 1;               // no parser (shouldn't happen) — don't block
+    char tp[MAX_PATH]; _snprintf(tp, MAX_PATH, "%s\\mod.toml", dir);
+    char apibuf[32] = ""; const char *want = NULL;
+    lua_rawgeti(g_L, LUA_REGISTRYINDEX, g_meta_ref);
+    lua_pushstring(g_L, tp);
+    if (lua_pcall(g_L, 1, 1, 0) == 0) {
+        if (lua_istable(g_L, -1)) {
+            lua_getfield(g_L, -1, "api");
+            if (lua_isstring(g_L, -1)) { _snprintf(apibuf, sizeof apibuf, "%s", lua_tostring(g_L, -1)); want = apibuf; }
+            lua_pop(g_L, 1);
+        }
+    } else { ml_log("[lua] %s: mod.toml meta read error: %s", name, lua_tostring(g_L, -1)); }
+    lua_pop(g_L, 1);
+    char reason[128];
+    if (!api_compatible(want, reason, sizeof reason)) {
+        ml_log("[lua] REFUSED mod '%s' — %s. Set mod.toml [loader] api to a compatible version.", name, reason);
+        return 0;
+    }
+    return 1;
 }
 
 int lh_init(void) {
@@ -192,6 +241,8 @@ int lh_init(void) {
 
 void lh_run_mod(const char *name, const char *dir, const char *init_lua_path) {
     if (!g_L) { ml_log("[lua] no state — skip mod %s", name); return; }
+
+    if (!mod_api_ok(name, dir)) return;   // API-version gate: refuse an incompatible mod before running it
 
     // Load the chunk; a syntax error is caught here (not propagated).
     if (luaL_loadfile(g_L, init_lua_path) != 0) {

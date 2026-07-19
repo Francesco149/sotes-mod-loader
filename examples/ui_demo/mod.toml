@@ -7,4 +7,5 @@ authors     = ["sotes-mod-loader"]
 target_games = ["sotes_en"]
 
 [loader]
+api         = "1.0"       # mod API this mod targets (MAJOR.MINOR); the loader refuses an incompatible major
 min_version = "0.1.0"
