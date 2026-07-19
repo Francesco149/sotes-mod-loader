@@ -17,10 +17,11 @@ Proxy `version.dll` + LuaJIT host (P0) · guarded `mod.mem` + togglable `mod.gam
 bindings (P1) · main-thread executor (WndProc bootstrap → safepoint hook → `mod.main`/
 `on_frame`, P2) · the chained hook registry — **Tier-1 observers + Tier-2 typed** hooks
 (P3) · the **native-mod C ABI** `OssModInit(const OssApi*)` (P4) · the **ImGui UI host** —
-a loader window + an in-game overlay mirror, `mod.ui` panels/windows (P5). Validated
-**in-game** on the real unpacked EN-SE (executor + Tier-2 hook rode the live `kb_poll`) and
-host-side (`make -C core tests`, plus a UI render smoke); the in-game overlay is pending a
-live visual check. **Next: P6 voice mod.**
+a loader-owned companion window with `mod.ui` panels/windows, fed by a **lock-free snapshot
+pipeline** so it never stalls the game (P5). Validated **in-game** on the real unpacked EN-SE
+(executor + Tier-2 hook rode the live `kb_poll`; the companion window came up on the armed
+safepoint) and host-side (`make -C core tests`, plus a UI smoke). The in-game overlay is
+deferred to a later internal renderer-hook backend on the same snapshot. **Next: P6 voice mod.**
 
 Roadmap (P6 voice mod → P7 trainer → P8 launcher): [`docs/DESIGN.md`](docs/DESIGN.md).
 **A fresh session orients from [`docs/HANDOFF.md`](docs/HANDOFF.md).**

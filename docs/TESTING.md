@@ -18,7 +18,7 @@ The DLL and DLL-loading tests still run from **NTFS** (Windows blocks app-dir si
 | `core/test/exec_test.c` | executor: deferred init on the safepoint, `on_frame` cadence, `mod.main`, `ti_mgr` capture |
 | `core/test/hook_typed_test.c` | **Tier-2 typed hooks:** an FFI-closure detour modifies args / blocks / modifies the return across **cdecl/stdcall/thiscall** (callee-cleanup + ecx capture), the off-thread gate skips the chain, and cross-tier exclusion holds — all on local targets, `>> TYPED_HOOK_OK` |
 | `core/test/native_mod_test.c` | the native ABI: `OssModInit` on the safepoint, `mem_*`/`scan`, `hook_entry`, `on_frame`, `main_enqueue`, `hook_remove`, `>> NATIVE_ABI_OK` |
-| `core/test/ui_smoke.c` | **P5 UI:** stands up the real main window + DX11 device + ImGui context and renders a `mod.ui` panel + window for a few seconds under the Lua Big Lock, then tears down — `>> UI_SMOKE_OK`. Not in the auto-run `tests` (it opens a window); build + run it explicitly: `make -C core ../build/ui_smoke.exe && (cd build && ./ui_smoke.exe 3)`. Proves device creation (HW/WARP), ImGui init, and the two-thread Lua draw path; the overlay's transparency still needs an in-game visual check. |
+| `core/test/ui_smoke.c` | **P5 UI:** drives the full decoupled pipeline — the smoke's main thread plays the engine, calling `ui_build()` (runs the `mod.ui` callbacks, publishes a snapshot) while the UI thread fetches + replays it. Stands up the real companion window + DX11 device, renders for a few seconds, tears down — `>> UI_SMOKE_OK`. Not in the auto-run `tests` (it opens a window); run explicitly: `make -C core ../build/ui_smoke.exe && (cd build && ./ui_smoke.exe 3)`. Proves device creation (HW/WARP), the lock-free triple buffer, and the replay path. |
 
 `host_stub.exe <ms>` takes an optional lifetime so the executor's ~5 s window-search
 fallback can complete (pass e.g. `7000`).
@@ -58,20 +58,19 @@ the executor.
 process tree exits (WSLInterop waits on `start`'s job — stdio redirection does not help).
 Use `tools/dev-launch.sh` (PowerShell `Start-Process`), which detaches and returns in ~0.3 s.
 
-## In-game UI test (P5) — PENDING a live run
+## In-game UI test (P5) — VALIDATED ✅
 
-Host-verified (`ui_smoke.exe`); the two windows still need a visual check on the real game.
 Stage `examples/ui_demo/` into `stock\mods\ui_demo\` alongside the loader (same steps as the
-probe above), launch, load a save, then:
+probe above; a hands-free boot needs `oss_loader.cfg` with `skip_launcher=1` + `windowed=1`),
+launch, and:
 
-1. **Loader window** — a "SotES Mod Loader" window should appear (the trainer's proven model).
-   The built-in panel shows `executor armed`, the engine tid, and the mod panel/window counts; the
-   "UI Demo" section shows a live frame counter, working button/checkbox/slider, and the live party
-   roster once a save is loaded. Toggle it with **F8**.
-2. **In-game overlay** — press **INSERT**. A transparent overlay should appear **over the game**
-   with the same panels floating on top (the game visible behind them). If it's an opaque black
-   rectangle, DWM isn't compositing the alpha on this machine — see the overlay gotcha in
-   `HANDOFF.md` for the `WS_EX_LAYERED` colour-key fallback. Press **INSERT** again to hide it.
-3. Confirm the game keeps running smoothly with the UI up (the UI thread is independent; the Lua
-   Big Lock is only briefly contended at the safepoint). Check `oss_modloader.log` for
-   `[ui] main window up` / `[ui] overlay ready` and no `[ui] draw callback ... error`.
+1. **Companion window** — a "SotES Mod Loader" window appears. The built-in header shows
+   `executor armed` + the panel/window counts; the "UI Demo" section shows a live frame counter and
+   a working button / checkbox / slider; the party roster fills in once a save is loaded. **F8**
+   toggles the window.
+2. Confirm the game stays smooth with the UI up — the UI thread is fully decoupled (a lock-free
+   snapshot; no lock between it and the game). Check `oss_modloader.log` for `[ui] companion window
+   up`, the armed safepoint (so `ui_build` runs every frame), and no `[ui] '<name>' draw error`.
+
+Confirmed on the real EN-SE (2026-07-19): `[ui] companion window up` on the armed `0x437c70`, the
+demo registered its panel + window, no crash. (The in-game overlay is deferred — see `HANDOFF.md`.)

@@ -88,20 +88,24 @@ Two loader-**managed** ImGui instances (a mod never creates its own context):
 - **UI thread = read-only + enqueue:** draw callbacks may READ game memory (guarded); any
   write/engine-call goes through `mod.main`.
 
-**As built (P5, `core/ui.cpp`).** One dedicated UI thread owns **two ImGui contexts**, each with
-its **own DX11 device + swapchain** (the trainer's stock-example helper, HW→WARP fallback): the
-main window (`WS_OVERLAPPEDWINDOW`, opaque, **F8**) and the overlay (borderless top-most, **INSERT**).
-The overlay is transparent via **DWM** — `DwmExtendFrameIntoClientArea(-1)` + a null blur region so
-DWM composites the per-pixel alpha of a render target cleared to `(0,0,0,0)`; opaque ImGui panels
-float over the game. It **tracks the game's client rect** each frame (no renderer hook, no
-`WS_EX_LAYERED` — it stays interactive when shown). Each registered `mod.ui.panel` / `mod.ui.window`
-is a Lua closure ref drawn into **both** contexts, so the overlay literally mirrors the window.
-- **The Lua Big Lock (LBL) is the keystone.** LuaJIT is single-threaded, and the UI thread now runs
-  Lua (the draw callbacks + their `mod.mem`/`mod.game` reads). A **recursive lock** (`lua_host.c`,
-  `lh_lock`/`lh_unlock`) serializes it against the engine thread: the UI thread holds it around each
-  frame's callbacks, and **every** engine-thread Lua entry point holds it too — the safepoint drain
-  (`executor.c`) and **both** hook dispatchers (Tier-1 in C, Tier-2 in the embedded chain in
-  `hooks.c`). So the shared `lua_State` is still touched by only one thread at a time.
+**As built (P5, `core/ui.cpp`) — a lock-free, decoupled pipeline.** A first version ran the mod.ui
+callbacks on the UI thread under a shared "Lua Big Lock"; in-game that coupled the game's main thread
+to the UI thread (and locked the hook hot-path) and caused visible lag. The shipped design keeps
+LuaJIT **single-threaded on the engine thread** (no lock) and moves plain data across the thread
+boundary:
+- **Engine thread — `ui_build()`** (from the executor safepoint, self-throttled ~30 Hz): runs the
+  mod.ui callbacks, which **record a plain-data snapshot** (per-surface widget-command lists), and
+  publishes it through a **lock-free triple buffer** (latest-wins — an unconsumed frame is dropped,
+  never queued). Wakes the UI (`SetEvent`) only when the snapshot changed.
+- **UI thread** (its own window + DX11 device) — **event-driven** (`MsgWaitForMultipleObjects` on
+  input / the dirty event / a slow heartbeat → ~zero idle cost): fetches the latest snapshot
+  lock-free and **replays** it into ImGui; it **never touches `lua_State`**. Interactions return
+  through **per-widget atomic slots** (value latest-wins, clicks sticky until the engine drains).
+- So **nothing locks between the two threads**, stale data is dropped rather than accumulated, and a
+  slow UI never stalls the game (nor vice-versa). The `mod.ui` API stays immediate-mode; a UI-thread
+  live-value cache keeps sliders smooth between the throttled builds. Input lag is ~1 build cycle.
+- The snapshot is also the **backend seam**: the deferred in-game overlay will consume the same
+  snapshot through an internal renderer-hook backend, so mods won't change when it lands.
 
 ### Launcher (package manager) — same repo, `launcher/`
 
@@ -172,7 +176,7 @@ what the trainer already computes (party roster, player coordinates), now shared
 | **P2** | Main-thread executor: WndProc bootstrap → safepoint hook → `mod.main`/`on_frame`; profile | **done** (drain/on_frame/`ti_mgr` verified via `exec_test`; MinHook install + bootstrap in-game) |
 | **P3** | Hook registry: Tier-1 chain (per-VA codegen thunk + dispatcher, multi-mod) **+ Tier-2 typed** (FFI-closure detour behind a main-thread gate; modify args/block/return) | **done** (Tier-1 in-game; Tier-2 host-verified across cdecl/stdcall/thiscall — modify/block/gate/exclusion — via `hook_typed_test`) |
 | **P4** | Native bridge: stable `OssApi` C ABI, `OssModInit` deferred to the safepoint; native mods share the hook + executor registries with Lua | **done** (host-verified: mem/scan, hook_entry, on_frame, main_enqueue, remove via `native_mod_test`; `examples/native_hello`) |
-| P5 | UI host: DX11 main window + in-game mirror, `ui.panel`/`ui.window` | **done** (main window + transparent overlay on one UI thread, two ImGui contexts; mod.ui panels/windows drawn into both under the Lua Big Lock; host-smoke `ui_smoke.exe`; in-game validation pending) |
+| P5 | UI host: DX11 companion window, `ui.panel`/`ui.window` | **done** (companion window fed by a lock-free snapshot pipeline — engine records, UI replays, no lock; validated host + in-game. In-game overlay deferred to a later internal renderer-hook backend on the same snapshot) |
 | P6 | Voice mod: port + exhaustive install/launch test → swap the release | |
 | P7 | Trainer mod: port + map-graph window; coexistence verified | |
 | P8 | Launcher: git-repo sources, install/update, Launch | |

@@ -109,18 +109,16 @@ first-to-block wins. Cbs run on the engine thread inside a `pcall` (a faulting o
 - **Off-thread safety:** a tiny C gate runs the closure only on the engine thread; a call to the
   target from another thread runs the original untouched (never reenters Lua).
 
-**`mod.ui`** — the loader hosts **two managed ImGui surfaces**: a **loader window** (a normal
-top-level window with its own DX11 device — the default) and an **in-game overlay** (a transparent
-window drawn over the game, toggled by a hotkey). The loader window toggles with **F8**, the
-overlay with **INSERT**. A mod registers **panels** and **windows**; the loader draws each into
-BOTH surfaces from the same callback, so the overlay is a live **mirror** of the loader window.
+**`mod.ui`** — the loader hosts a **companion window** (its own ImGui/DX11 window, toggled with
+**F8**). A mod registers **panels** (collapsing sections in the loader's host window) and **windows**
+(standalone floating windows); the loader renders them.
 
 ```
 local h = mod.ui.panel(name, draw)    -- a collapsing section in the loader's host window
 local h = mod.ui.window(name, draw)   -- a standalone floating ImGui window
 ```
 
-`draw` is a function the loader calls every frame (on the UI thread) to emit widgets:
+`draw` is a function the loader runs to emit widgets:
 
 ```
 mod.ui.text(s)   .text_disabled(s)   .text_wrapped(s)   .text_colored(r,g,b,a, s)   .bullet(s)
@@ -129,26 +127,27 @@ mod.ui.button(label [,w,h]) -> pressed          mod.ui.small_button(label) -> pr
 mod.ui.checkbox(label, value)           -> new_value, changed
 mod.ui.slider_int(label, v, min, max)   -> new_v, changed
 mod.ui.slider_float(label, v, min, max) -> new_v, changed
-mod.ui.header(label) -> open            mod.ui.progress(frac [,text])
-mod.ui.overlay_toggle()                 mod.ui.overlay_visible() -> bool
+mod.ui.progress(frac [,text])
 ```
 
 Widgets return their *new* state (plus a `changed` flag where useful) — the immediate-mode idiom:
 keep the value in a Lua variable and reassign it each frame, e.g. `open = mod.ui.checkbox("Open", open)`.
 
-- **Threading (important):** draw callbacks run on the loader's **UI thread**, serialized against
-  the engine thread by the loader's lock — so a callback may **READ** game memory (through the
-  guarded `mod.mem` / `mod.game`) freely, but must **NOT** call the engine directly. Push any
-  engine call / write through `mod.main` (it runs at the next safepoint on the engine thread).
-  Don't block inside a draw callback (it stalls the UI *and*, briefly, the game).
-- **The same callback draws in both surfaces**, so it runs up to twice per frame (once per visible
-  surface). Keep it side-effect-light (standard immediate-mode discipline); a `button` returns
-  `true` only in the surface actually clicked, so click handling stays correct.
-- **Isolation:** each callback runs inside a `pcall`; a fault disables just that panel/window (+
-  logs it), never the game or other mods. Widget calls made *outside* a draw callback (e.g. from
-  init) are inert no-ops, so they can't crash.
-- **Config:** the UI is on by default once the executor arms; `ui=0` in `oss_loader.cfg` disables
-  it, and `ui_key` / `overlay_key` (VK codes) override the F8 / INSERT toggles.
+- **Threading model (how it stays fast):** the loader runs `draw` on the **engine thread**, throttled
+  (~30 Hz), and *records* its widgets into a plain-data snapshot; a separate UI thread renders the
+  latest snapshot. The two are connected by a **lock-free** pipeline (a triple buffer one way, atomic
+  input slots the other) that drops stale data — so the UI never stalls the game and the game never
+  stalls the UI. In practice: a `draw` callback runs where `on_frame` does, so it may **READ** game
+  state directly (`mod.mem` / `mod.game`), but heavy work there costs the game frame — push it through
+  `mod.main`. Interactions (a click, a new slider value) reach your callback on the **next** build
+  (~1 cycle later); a UI-thread cache keeps sliders smooth in the meantime.
+- **Isolation:** each callback runs inside a `pcall`; a fault disables just that panel/window (+ logs
+  it), never the game or other mods. Widget calls made *outside* a build (e.g. from init) are inert
+  no-ops, so they can't crash.
+- **Config:** the UI is on by default once the executor arms; `ui=0` in `oss_loader.cfg` disables it,
+  `ui_key` (a VK code) overrides the F8 toggle, and `ui_hz` sets the build rate (default 30).
+- **In-game overlay:** deferred — a later internal (renderer-hook) backend will draw the same panels
+  over the game from the same snapshot, so your mod won't change when it lands.
 
 ### `mod.*` API — roadmap (later phases, see DESIGN.md)
 
