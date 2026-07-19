@@ -79,6 +79,9 @@ not `\\wsl$`). In-game: see `TESTING.md` (stage into the game dir, launch with
   hooks and hands it to each native mod (`oss_api()`).
 - `profile.c` — the C game profile (safepoint VA, **window class**, launcher class + control ids).
 - `config.c` — `oss_loader.cfg` (key=value) reader. `minhook/` — vendored trampoline backend.
+- `prof.c` — opt-in per-frame profiler (`profile=1`): times the safepoint / ui_build / roster on the
+  engine thread, logs avg/max µs every 5 s.  `sotes_autoload.c` — dev save auto-load (menu-drive) +
+  keepactive lives in `executor.c` (`exec_keepactive`, `exec_defer_fn`, `exec_sp_now`).
 
 ## P3 Tier-2 — typed hooks (LANDED)
 
@@ -192,9 +195,15 @@ misattribute one frame if a mod reorders its widgets (self-correcting).
 
 ## Open debts / follow-ups
 
-- **#7 — retire the roster heap-scan** (`PORT-DEBT(sotes-roster-heapscan)`): replace the
-  throttled full-heap actor scan in `sotes_bindings.c` with a direct pointer — candidate:
-  `render_root+0x11e0` CHARACTER band (128 actor slots), `render_root=*(0x92dd38)`; validate live.
+- **#7 — roster heap-scan** (`PORT-DEBT(sotes-roster-heapscan)`): **mostly retired** (commit
+  `perf: roster …`).  `sotes_bindings.c` now (a) does NOTHING at the title/menu (`render_root
+  *(0x92dd38)==0` → no party → no scan: killed the ~65 ms menu walk → ~3 µs) and (b) in-scene scans
+  the two **SE-verified render bands** (EFFECT `render_root+0x1160`×32, CHARACTER `render_root+0x11e0`
+  ×128; ~160 reads) for the party codes; the full-heap walk stays only as an ultimate fallback (never
+  hit in testing).  Validated in-game: identical roster (Arche/Sana/Stella), scene-transition cost
+  200-600 ms → ~2.4 ms.  **Remaining (deferred):** the base-game "canonical" party array
+  `map_obj+0x4030` doesn't reach the SE party via any `render_root+off` single/double indirection I
+  could pin live (needs deeper SE memory tracing) — the bands suffice for now.
 - **#12 — Tier-2 follow-ups:** (a) run the in-game smoke test (`examples/hook_typed`); (b)
   quiescent teardown — `remove` leaves the MinHook + FFI closure installed (dead-marked in the
   chain); reclaim on empty. (c) unify tiers on one VA (a typed hook that also runs Tier-1
@@ -205,6 +214,8 @@ misattribute one frame if a mod reorders its widgets (self-correcting).
 ## Gotchas (hard-won)
 
 - App-dir `version.dll` side-load works only from **NTFS**, not `\\wsl$` (Windows blocks remote-dir DLL load).
+- **The game IDLES its input poll when its window is UNFOCUSED** — the safepoint (`0x437c70`) stops firing and the log freezes at `[exec] safepoint hook armed` (looks exactly like a hang/crash, but the game is fine at the title). For any detached/headless launch set **`keepactive=1`** (re-posts `WM_ACTIVATEAPP`; auto-on when `autoload=1`). *This cost hours of misdiagnosis once — a known-good build "hung" the moment the window lost foreground.* If a run stops at "safepoint hook armed" with no `[mod]`/`[prof]` lines, suspect focus first, not the code.
+- **Reach gameplay + profile:** `autoload=1` (+ `autoload_slot`, default newest) drives the title/picker menus into a save (`sotes_autoload.c`, ports the trainer's menu-drive); `profile=1` logs per-frame loader overhead every 5 s (`prof.c`). Real-gameplay numbers: `0x437c70` fires **~1000×/sec**, the loader is ~1% of the engine thread steady-state (safepoint + ui_build ≈ 9 µs), the UI machinery is negligible.
 - The stock dir's `mods\sotes_trainer.dll` **also hooks `0x437c70`** — move it aside before testing our loader (else it fights the executor). One MinHook per target VA.
 - WSL launch: `cmd /c start` blocks on the process-tree job → use `tools/dev-launch.sh` (PowerShell `Start-Process`).
 - **Bootstrap must POSITIVELY match the game window** (`profile.window_class`, SotES `CLASS_LIZSOFT_SOTES`), never "first non-launcher top-level window": the game spawns an early TRANSIENT top-level window (+ a DirectShow `ActiveMovie` + IME windows) that the old heuristic latched and subclassed — then it got destroyed, silently dropping the subclass + the posted `WM_OSS_BOOT`, so the executor never armed (intermittent; looked like a Tier-2 failure but wasn't). Enumerate a live instance to fingerprint the real window: `tools/win-fingerprint.ps1 -TargetPid <pid>` (class/title/style/owner/size).
