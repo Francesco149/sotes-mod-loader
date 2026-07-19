@@ -9,6 +9,7 @@
 
 #include "ddraw_present.h"
 #include "loader_internal.h"   // ml_log (extern "C")
+#include "ui.h"                // ui_overlay_present — draw mod.ui over the game frame (takeover)
 
 #define DIRECTDRAW_VERSION 0x0700
 #include <windows.h>
@@ -355,6 +356,7 @@ static void ddp_engine_present(HWND hwnd, const Frame *f) {
     g_e_ctx->PSSetShaderResources(0, 1, &g_e_srv); g_e_ctx->PSSetSamplers(0, 1, &g_e_smp);
     g_e_ctx->PSSetConstantBuffers(0, 1, &g_e_cb);
     g_e_ctx->Draw(3, 0);
+    ui_overlay_present(g_e_dev, g_e_ctx, hwnd);   // the in-game overlay: mod.ui on top of the game frame
     g_e_swap->Present(1, 0);   // vsync — smooths + paces the game loop
 }
 

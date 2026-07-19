@@ -153,7 +153,7 @@ static DWORD WINAPI loader_thread(void *unused) {
         ml_log("[loader] executor armed — %d Lua mod(s) will init on the main thread", nl);
         // Stand up the ImGui UI host (loader-owned companion window) on its own thread.  It's fed
         // by a lock-free snapshot the executor builds each frame (ui_build), so it never stalls the
-        // game.  Opt-out with ui=0; ui_key is the VK toggle (0 = F8); ui_hz the refresh (0 = 30).
+        // game.  Opt-out with ui=0; ui_key is the VK toggle (0 = F10); ui_hz the refresh (0 = 30).
         if (config_get_int("ui", 1)) {
             ui_start(config_get_int("ui_key", 0), config_get_int("ui_hz", 0));
             ml_log("[loader] UI host starting — companion window (lock-free snapshot pipeline)");

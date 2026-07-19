@@ -12,13 +12,15 @@ skip_launcher=1
 # applies when skip_launcher=1; otherwise the user picks in the launcher.)
 windowed=1
 
-# The ImGui UI host (P5): a loader-owned companion window fed by a lock-free snapshot the game's
-# engine thread builds each frame (so it never stalls the game).  On by default once the executor
-# arms.  1 = enable (default), 0 = disable entirely.
+# The ImGui UI host: your mod.ui panels, fed by a lock-free snapshot the game's engine thread builds
+# each frame (so it never stalls the game).  In borderless takeover (ddraw_takeover=1) it draws as an
+# IN-GAME OVERLAY on top of the game frame; otherwise as a separate companion window.  On by default
+# once the executor arms.  1 = enable (default), 0 = disable entirely.
 ui=1
 
-# The window show/hide toggle, as a Windows virtual-key code (0 = default F8).  Common codes:
-# F1..F12 = 112..123, INSERT = 45, HOME = 36, END = 35.
+# The overlay/companion show/hide toggle, as a Windows virtual-key code (0 = default F10).  F10 is the
+# default because F8 collides with SotES' in-game menu key.  Common codes: F1..F12 = 112..123,
+# INSERT = 45, HOME = 36, END = 35.  (The overlay is mouse-only — the keyboard stays with the game.)
 ui_key=0
 
 # Engine-side snapshot refresh rate in Hz (0 = default 30).  Higher = snappier live data but more
@@ -33,8 +35,9 @@ ddraw=1
 # Borderless-fullscreen TAKEOVER: instead of only mirroring, OWN the game window — skip the game's own
 # (unsynced, ~130fps, tearing) present and drive the window ourselves: borderless-fullscreen, vsync'd,
 # sharp-bilinear upscale, aspect-correct pillarbox.  This is what makes windowed play look/feel like a
-# smooth exclusive-fullscreen.  0 = off (default — the game window as the game drew it), 1 = on.
-# (Requires ddraw=1.)
+# smooth exclusive-fullscreen.  The mod.ui host also draws as an in-game overlay on top of the frame
+# here (ui_key toggles it), replacing the companion window.  0 = off (default — the game window as the
+# game drew it), 1 = on.  (Requires ddraw=1.)
 ddraw_takeover=0
 
 # Dev profiler: time the loader's per-frame overhead on the engine thread (the safepoint drain, the

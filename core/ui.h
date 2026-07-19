@@ -17,6 +17,8 @@
 #ifndef OSS_UI_H
 #define OSS_UI_H
 
+#include <stdint.h>   // uintptr_t / intptr_t in the overlay input entry point
+
 struct lua_State;
 
 #ifdef __cplusplus
@@ -31,7 +33,7 @@ void ui_init(struct lua_State *L);
 void ui_push_table(struct lua_State *L);
 
 // Spawn the UI thread (the loader-owned companion window).  Idempotent.  key_toggle is the VK code
-// to show/hide the window (0 = default F8).  build_hz is the engine-side snapshot rate (0 = 30).
+// to show/hide the window (0 = default F10).  build_hz is the engine-side snapshot rate (0 = 30).
 void ui_start(int key_toggle, int build_hz);
 
 // ENGINE THREAD: run the mod.ui callbacks + publish a fresh snapshot.  Called from the executor
@@ -41,6 +43,22 @@ void ui_build(void);
 // Wake the UI thread to render one frame (the executor calls this from the present hook so the game
 // mirror tracks the game's present rate, not the throttled snapshot rate).  No-op if hidden/disabled.
 void ui_wake(void);
+
+// ── in-game overlay (Phase C): draw mod.ui ON TOP of the game frame, in the game window ──────────
+// In borderless takeover the game window IS the display, so we replay the SAME snapshot into an
+// ImGui context owned by the ENGINE thread and render it over the game frame (the companion window
+// is not started in takeover — see ui_start — so ImGui's global current-context is never raced).
+//
+// ENGINE THREAD (from ddraw_present's ddp_engine_present, each present): lazily brings ImGui up on
+// the takeover device, handles the F10 toggle, and — when visible — draws the overlay into the
+// currently-bound render target (the game-window back buffer, with the game frame already drawn).
+// dev/ctx/hwnd are ID3D11Device*/ID3D11DeviceContext*/HWND (void* to keep d3d11.h off C callers).
+void ui_overlay_present(void *dev, void *ctx, void *hwnd);
+
+// ENGINE THREAD (from the executor's game-window subclass, boot_wndproc): feed a window message to
+// the overlay's ImGui.  Returns 1 if ImGui consumed it (so the game doesn't ALSO act on it); 0 (and
+// no ImGui touch) until the overlay is up / while it's hidden, so the game sees input as before.
+int  ui_overlay_wndproc(void *hwnd, unsigned msg, uintptr_t wparam, intptr_t lparam);
 
 // Ask the UI thread to tear down (best-effort, on clean unload).
 void ui_shutdown(void);

@@ -298,6 +298,10 @@ static void install_present_hook(void) {
 
 static LRESULT CALLBACK boot_wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
     if (m == WM_OSS_BOOT) { install_safepoint_hook(); return 0; }
+    // In-game overlay (takeover): let the overlay's ImGui consume input (mouse/keyboard) so clicks on
+    // the overlay don't fall through to the game.  No-op until the overlay is up / while hidden.  The
+    // game window's WndProc runs on the engine thread — the same thread that owns the overlay's ImGui.
+    if (ui_overlay_wndproc(h, m, w, l)) return 0;
     return CallWindowProcA(g_orig_wndproc, h, m, w, l);
 }
 // Find the game's MAIN window.  Robustly: a top-level (no owner), visible window of OUR

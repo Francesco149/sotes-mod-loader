@@ -320,7 +320,7 @@ static ID3D11DeviceContext    *g_devctx;
 static IDXGISwapChain         *g_swap;
 static ID3D11RenderTargetView *g_rtv;
 static bool                    g_visible = true;
-static int                     g_key_toggle = VK_F8;
+static int                     g_key_toggle = VK_F10;   // F8 collides with SotES' in-game menu key; ui_key overrides
 
 // UI-thread live-value cache — lets sliders/checkboxes stay smooth between the (throttled) engine
 // builds: ImGui owns the value while the user drags; we only re-seed from the snapshot when the mod
@@ -461,6 +461,75 @@ static bool draw_from_snapshot(const Snapshot &snap) {
     return ImGui::IsAnyItemActive();
 }
 
+// ════════════════════════ engine-thread in-game overlay (Phase C) ════════════════════════
+// In borderless takeover the game window IS the display, so we draw mod.ui ON TOP of the game frame
+// in the game window's swapchain — retiring the companion window.  ONE ImGui context, owned by the
+// ENGINE thread (the companion UI thread is NOT started in takeover — see ui_start), so ImGui's
+// global current-context is never raced.  We replay the SAME snapshot the companion would (mod.ui is
+// unchanged): here the engine thread is BOTH producer (ui_build) and consumer, so the lock-free
+// triple buffer just degenerates to same-thread latest-wins — no contention, no new machinery.
+static bool g_ov_started = false;      // engine-thread ImGui context + backends are up
+static bool g_ov_failed  = false;      // init failed once — don't retry every present
+static bool g_ov_visible = true;       // F10 show/hide (toggled from ui_overlay_wndproc)
+static bool g_ov_have    = false;      // a snapshot has been fetched at least once
+
+static bool overlay_init(void *dev_, void *ctx_, void *hwnd_) {
+    ID3D11Device *dev = (ID3D11Device *)dev_;
+    ID3D11DeviceContext *ctx = (ID3D11DeviceContext *)ctx_;
+    HWND hwnd = (HWND)hwnd_;
+    if (!dev || !ctx || !hwnd) return false;
+    IMGUI_CHECKVERSION(); ImGui::CreateContext();
+    // MOUSE-ONLY on purpose: no keyboard nav, so gameplay keys belong entirely to the game (you can
+    // move the character with the overlay up).  The game ignores the mouse, so the mouse is ours.
+    ImGuiIO &io = ImGui::GetIO(); io.IniFilename = NULL;
+    io.MouseDrawCursor = true;   // borderless-fullscreen: draw ImGui's own cursor (don't trust the OS one)
+    { const char *f = "C:\\Windows\\Fonts\\segoeui.ttf";
+      if (GetFileAttributesA(f) != INVALID_FILE_ATTRIBUTES) io.Fonts->AddFontFromFileTTF(f, 18.0f); else io.Fonts->AddFontDefault(); }
+    apply_theme();
+    if (!ImGui_ImplWin32_Init(hwnd)) { ml_log("[ui] overlay ImGui_ImplWin32_Init failed"); ImGui::DestroyContext(); return false; }
+    if (!ImGui_ImplDX11_Init(dev, ctx)) { ml_log("[ui] overlay ImGui_ImplDX11_Init failed"); ImGui_ImplWin32_Shutdown(); ImGui::DestroyContext(); return false; }
+    ml_log("[ui] in-game overlay up (engine-thread ImGui on the takeover device; F10 toggles)");
+    return true;
+}
+
+// ENGINE THREAD (ddp_engine_present): draw the overlay over the just-drawn game frame, into the
+// currently-bound render target, right before the swapchain Present.  Lazy one-time bring-up.
+extern "C" void ui_overlay_present(void *dev, void *ctx, void *hwnd) {
+    if (!g_started || g_ov_failed) return;                 // ui=0 (no snapshot) or a prior init failure
+    if (!g_ov_started) {
+        if (!overlay_init(dev, ctx, hwnd)) { g_ov_failed = true; return; }
+        g_ov_started = true;
+    }
+    if (!g_ov_visible) return;   // hidden (toggled in ui_overlay_wndproc) — game frame only, no overlay
+
+    if (snap_fetch()) g_ov_have = true;    // adopt the freshest snapshot (same-thread producer/consumer)
+
+    ImGui_ImplDX11_NewFrame();
+    ImGui_ImplWin32_NewFrame();
+    ImGui::NewFrame();
+    if (g_ov_have) draw_from_snapshot(g_buf[g_read_ix]);
+    else { ImGui::Begin(OSS_ML_NAME "##host"); ImGui::TextDisabled("waiting for the game..."); ImGui::End(); }
+    ImGui::Render();
+    ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());   // draws into the bound RTV (the game back buffer)
+}
+
+// ENGINE THREAD (executor boot_wndproc): route a game-window message to the overlay's ImGui.
+extern "C" int ui_overlay_wndproc(void *hwnd, unsigned msg, uintptr_t wparam, intptr_t lparam) {
+    if (!g_ov_started) return 0;                           // overlay not up yet — game owns all input
+    // The toggle key (F10 default) — handle it HERE, not by polling: consume it (return 1) so it
+    // reaches neither the game nor DefWindowProc (F10 is a system key that would enter menu mode).
+    // F10 arrives as WM_SYSKEY*; guard bit 30 (previous-key-state) so auto-repeat doesn't re-toggle.
+    if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) && (int)wparam == g_key_toggle) {
+        if (!(lparam & (1 << 30))) g_ov_visible = !g_ov_visible;
+        return 1;
+    }
+    if ((msg == WM_KEYUP || msg == WM_SYSKEYUP) && (int)wparam == g_key_toggle) return 1;
+    if (!g_ov_visible) return 0;                           // hidden: MOUSE + keyboard both go to the game
+    // Visible: feed ImGui.  It records mouse/keyboard into io but only CONSUMES WM_SETCURSOR (returns
+    // 1), so gameplay keys still fall through to the game — mouse drives the overlay, keyboard the game.
+    return ImGui_ImplWin32_WndProcHandler((HWND)hwnd, msg, (WPARAM)wparam, (LPARAM)lparam) ? 1 : 0;
+}
+
 static bool g_have_snap = false;
 static bool render_frame(void) {   // returns busy
     if (!g_rtv) return false;
@@ -509,7 +578,7 @@ static DWORD WINAPI ui_thread(void *unused) {
     int hide = config_get_int("ddraw_takeover", 0);
     ShowWindow(g_hwnd, hide ? SW_HIDE : SW_SHOWNORMAL); UpdateWindow(g_hwnd);
     g_visible = !hide;
-    ml_log("[ui] companion window %s (hwnd %p)", hide ? "hidden — takeover owns the screen; F8 to show" : "up", (void *)g_hwnd);
+    ml_log("[ui] companion window %s (hwnd %p)", hide ? "hidden — takeover owns the screen; F10 to show" : "up", (void *)g_hwnd);
 
     bool running = true, busy = false;
     int prev_key = 0;
@@ -552,6 +621,14 @@ extern "C" void ui_start(int key_toggle, int build_hz) {
     if (key_toggle) g_key_toggle = key_toggle;
     if (build_hz > 0) g_build_interval = (DWORD)(1000 / build_hz);
     g_dirty = CreateEvent(NULL, FALSE, FALSE, NULL);   // auto-reset: a changed publish wakes the UI
+    // In borderless takeover the in-game overlay (engine thread, ui_overlay_present) IS the UI — one
+    // ImGui context drawn on top of the game frame.  The companion window would be a SECOND ImGui
+    // context on a SECOND thread (racing ImGui's global current-context), so we DON'T start it here;
+    // ui_build still runs from the safepoint to produce the snapshot the overlay replays.
+    if (config_get_int("ddraw", 1) && config_get_int("ddraw_takeover", 0)) {
+        ml_log("[ui] in-game overlay mode (takeover) — companion window disabled; mod.ui draws in the game window");
+        return;
+    }
     HANDLE t = CreateThread(NULL, 0, ui_thread, NULL, 0, NULL);
     if (t) CloseHandle(t); else ml_log("[ui] CreateThread failed (%lu)", GetLastError());
 }
