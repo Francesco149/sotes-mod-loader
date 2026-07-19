@@ -1,8 +1,13 @@
 # launcher/ — the package-manager launcher (later phase, P8)
 
-An ImGui desktop app (styled like the trainer) that manages mods package-manager style
-and launches the game with the loader present. **Built after the injected core proves
-out** (P0–P5), so this folder is a placeholder for now.
+A **single-binary desktop app** that manages mods package-manager style, edits mod + loader
+config, and launches the game with the loader present. **Built after the injected core proves
+out** (P0–P5 ✅) — this folder is design-only for now.
+
+- **Full scope + design → [`DESIGN.md`](DESIGN.md)** (feature scope, architecture, the tech
+  decision, build plan). Tech is an OPEN decision (Go / Rust / Zig / ImGui-C++ — decide via a spike).
+- Contract → [`../docs/REGISTRY.md`](../docs/REGISTRY.md); mod format/config/versioning it consumes →
+  [`../docs/MOD-FORMAT.md`](../docs/MOD-FORMAT.md).
 
 What it will do (contract: [`../docs/REGISTRY.md`](../docs/REGISTRY.md)):
 
@@ -12,6 +17,8 @@ What it will do (contract: [`../docs/REGISTRY.md`](../docs/REGISTRY.md)):
    versioned with release notes.
 3. **Install / update** — download the version's files, verify each against its pinned
    `sha256`, place into the game's `mods\`; show release notes before an update.
-4. **Launch** — write/refresh `version.dll` + `realver.dll`, then start the game.
+4. **Config** — a generic settings editor per installed mod, rendered from its `mod.toml [config]`
+   schema, written to `oss_mods.cfg` (+ the loader's own `oss_loader.cfg`).
+5. **Launch** — write/refresh `version.dll` + `realver.dll`, then start the game.
 
 Ships with **one default source**: `../../sotes-mods` (the author's mods).
