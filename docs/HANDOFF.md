@@ -9,7 +9,12 @@ Rolling "where we are / what's next" for a fresh session. Orient: this → `DESI
 > THERE** (`SE_CODE_MAP.md` / `engine-quirks.md`), not only in this repo — loader docs cover the
 > loader, game facts belong to the port so both projects benefit. (README "Related".)
 
-## State: P0–P5 DONE (incl. **Tier-2 typed hooks**, the **native-mod C ABI**, and the **ImGui UI**). Next = **P6** (voice mod).
+## State: P0–P5 DONE + **DDraw present backend / borderless-fullscreen** + **`mod.game.mouse`** (2026-07-19). Next = **Phase C: the in-game overlay** (then P6 voice).
+
+The loader now also OWNS THE DISPLAY: it hooks the DirectDraw present, and either mirrors the game in
+the companion window (`ddraw=1`, default) or takes the game window borderless-fullscreen with a vsync'd,
+sharp-bilinear D3D11 swapchain (`ddraw_takeover=1`, opt-in — user-confirmed smooth in-game).  See the
+"DDraw present backend" section below.  **The immediate next task is Phase C — see "Next: Phase C".**
 
 The loader is a usable modding API — in Lua AND native C: a mod reads guarded memory
 (`mod.mem` / `api->mem_*`), reads live RE'd game state (`mod.game.*`), runs per-frame/one-shot
@@ -50,10 +55,36 @@ Also **`mod.game.mouse.get()`** → `{screen_x, screen_y, over, world_x, world_y
 game's 640×480 space (the ddraw layer undoes the pillarbox / client scale) + world centi-px via the
 camera (`render_root+0x104c` → view obj; origin `+0x60/+0x5c`, span `+0x64/+0x68`).  *Validated to the px.*
 
-**Next (overlay/fullscreen arc):** **in-game overlay** — draw the `mod.ui` ImGui INTO the game window
-(engine-thread, over the game frame in `ddp_engine_present`), retiring the separate companion window;
-then flip `ddraw_takeover` default-on after edge-testing (multi-monitor, alt-tab, WS_POPUP restore on
-unload).  The `mod.ui` snapshot pipeline already exists — it's a second consumer of the same data.
+## Next: Phase C — the in-game overlay (draw `mod.ui` in the game window)
+
+**Goal:** render the `mod.ui` ImGui panels ON TOP of the game frame, inside the game window, so the mod
+UI is usable in borderless-fullscreen — retiring the separate companion window (today it's hidden in
+takeover, F8 to show).  This is the P5-anticipated "renderer-hook backend consuming the SAME snapshot".
+
+**Where:** `ddp_engine_present()` (engine thread, `ddraw_present.cpp`) already draws the game-frame quad
+into the game window's swapchain each present.  Add an ImGui pass AFTER the quad, BEFORE `Present(1,0)`.
+
+**The pieces** (all engine-thread; reuse the existing engine D3D11 device `g_e_dev`/`g_e_ctx`):
+1. **ImGui bring-up on the engine thread** — once (lazily in/after `e_create`): an ImGui context +
+   `ImGui_ImplDX11_Init(g_e_dev, g_e_ctx)` + `ImGui_ImplWin32_Init(game_hwnd)`.  ⚠ ImGui's current
+   context is global and the companion window (UI thread, `ui.cpp`) has its OWN — either `ImGui::
+   SetCurrentContext` to switch per thread, OR (simpler) in takeover DON'T run the companion's ImGui at
+   all and use ONE engine-thread context here (the companion window is already hidden in takeover).
+2. **Input** — route the game window's messages to `ImGui_ImplWin32_WndProcHandler` inside the
+   executor's `boot_wndproc` (`executor.c`) when the overlay is visible; add the F8 show/hide toggle.
+   (The game ignores the mouse, so no input contention with gameplay.)
+3. **Replay the snapshot** — `ui_build()` (engine thread, from the safepoint) already runs the `mod.ui`
+   callbacks + records the lock-free snapshot; replay the LATEST snapshot into the engine-thread ImGui.
+   Factor `draw_from_snapshot`/`replay_cmds` out of `ui.cpp` into something callable from the engine
+   thread (or a shared TU).  **No mod-facing change** — `mod.ui` is unchanged.
+
+**Anchors:** `ddraw_present.cpp` (`g_e_*` device, `ddp_engine_present`, `e_create`); `ui.cpp`
+(`draw_from_snapshot`/`replay_cmds` to reuse, the snapshot triple buffer as the data); `executor.c`
+(`boot_wndproc` — where to route input, already subclasses the game window).
+
+**Then** flip `ddraw_takeover` default-on after edge-testing: multi-monitor (`MonitorFromWindow` picks
+the game's monitor — verify placement), alt-tab in/out of the borderless window, and restoring the
+`WS_POPUP` style on clean unload (`DllMain` `DLL_PROCESS_DETACH`, reserved==NULL).
 
 **In-game validation** (unpacked EN-SE `sotes-trainer-oss.exe`, 2026-07-19): executor armed
 on the real `0x437c70` (game ran 24 min, no crash); `mod.game.roster` read all 3 live party
