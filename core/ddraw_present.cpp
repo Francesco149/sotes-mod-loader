@@ -77,13 +77,18 @@ static void convert_to_rgba(void *dstv, int dstPitch, const Frame *f) {
     }
 }
 
-// ── Phase B: own the game window — present into it + skip the game's own present ──
-static int  g_takeover;      // config ddraw_takeover: present into the game window (borderless), not just mirror
+// ── Phase B/C: own the game window — present into it + skip the game's own present ──
+// g_tk_mode (config ddraw_takeover): 0 = off (mirror only), 1 = borderless-fullscreen, 2 = windowed
+// (a normal resizable window).  Both takeover modes drive the window with our vsync'd sharp-bilinear
+// present + the in-game overlay; they differ only in the window's style/size and resize handling.
+static int  g_tk_mode;       // 0 off / 1 borderless / 2 windowed
 static int  g_e_ready;       // the engine-thread device/swapchain on the game window is up
-static HWND g_game_hwnd;     // the game window (captured from the present hook) — for cursor mapping
+static HWND g_game_hwnd;     // the game window (captured from the present hook) — for cursor mapping + resize
+static Frame g_e_lastframe;  // shallow copy of the last presented frame (buf points into g_fr[], stable at
+static int  g_e_haveframe;   // 640x480 so it never reallocs) — re-presented on a windowed resize (drag stays live)
 static void ddp_engine_present(HWND hwnd, const Frame *f);   // defined below
-extern "C" void ddp_set_takeover(int on)  { g_takeover = on ? 1 : 0; }
-extern "C" int  ddp_takeover_active(void) { return (g_takeover && g_e_ready) ? 1 : 0; }   // skip the game present only if we ARE presenting
+extern "C" void ddp_set_takeover(int mode) { g_tk_mode = mode; }
+extern "C" int  ddp_takeover_active(void)  { return (g_tk_mode && g_e_ready) ? 1 : 0; }   // skip the game present only if we ARE presenting
 
 // ════════════════════════════ ENGINE THREAD: capture ════════════════════════════
 extern "C" void ddp_on_present(void *screen_ctx, void *hwnd) {
@@ -145,7 +150,7 @@ extern "C" void ddp_on_present(void *screen_ctx, void *hwnd) {
             f.bmask = dd.ddpfPixelFormat.dwBBitMask;
             // Phase B takeover: present THIS just-captured buffer straight into the game window on the
             // engine thread (the write buffer is ours until we publish, so no reader can race it).
-            if (g_takeover && hwnd) ddp_engine_present((HWND)hwnd, &f);
+            if (g_tk_mode && hwnd) ddp_engine_present((HWND)hwnd, &f);
             LONG prev = InterlockedExchange(&g_latest, g_write_ix | 0x100);   // publish (fresh, for the companion)
             g_write_ix = prev & 0xff;                                         // take the reader's old buffer
             g_pubseq++;
@@ -224,7 +229,7 @@ extern "C" void ddp_draw_background(void *dev_, void *ctx_, int dstW, int dstH) 
     ID3D11Device *dev = (ID3D11Device *)dev_;
     ID3D11DeviceContext *ctx = (ID3D11DeviceContext *)ctx_;
     if (!dev || !ctx || dstW <= 0 || dstH <= 0) return;
-    if (g_takeover && g_e_ready) return;   // the game window owns the display in takeover — no redundant mirror
+    if (g_tk_mode && g_e_ready) return;   // the game window owns the display in takeover — no redundant mirror
     Frame *f = fetch_latest();
     if (!f || !f->buf || f->w <= 0 || f->h <= 0) return;
     if (!ensure_pipeline(dev) || !ensure_texture(dev, f->w, f->h)) return;
@@ -276,12 +281,28 @@ static const char *PS_SHARP =
 static bool e_create(HWND hwnd) {
     HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
     MONITORINFO mi; mi.cbSize = sizeof mi; if (!GetMonitorInfoA(mon, &mi)) return false;
-    int mw = mi.rcMonitor.right - mi.rcMonitor.left, mh = mi.rcMonitor.bottom - mi.rcMonitor.top;
-    // borderless-fullscreen the game window (WS_POPUP over the monitor).  The game keeps rendering to its
-    // fixed 640x480 back-buffer surface (unaffected by window size) — we just present it scaled.
+    // The game keeps rendering to its fixed 640x480 back-buffer surface (unaffected by window size) — we
+    // just present it scaled.  Two takeover shapes: borderless-fullscreen (WS_POPUP over the monitor) or
+    // a normal RESIZABLE window (2x game res, centered on the work area).  mw/mh = the swapchain (client)
+    // size either way.
+    int mw, mh;
     LONG st = GetWindowLongA(hwnd, GWL_STYLE);
-    SetWindowLongA(hwnd, GWL_STYLE, (st & ~(WS_CAPTION|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_SYSMENU|WS_DLGFRAME|WS_BORDER)) | WS_POPUP);
-    SetWindowPos(hwnd, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top, mw, mh, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+    if (g_tk_mode == 2) {
+        LONG wst = (st & ~WS_POPUP) | WS_OVERLAPPEDWINDOW;
+        SetWindowLongA(hwnd, GWL_STYLE, wst);
+        RECT wa = mi.rcWork; int aw = wa.right - wa.left, ah = wa.bottom - wa.top;
+        RECT r = { 0, 0, 1280, 960 }; AdjustWindowRect(&r, wst, FALSE);   // 2x 640x480 client -> window rect
+        int winw = r.right - r.left, winh = r.bottom - r.top;
+        if (winw > aw) winw = aw;
+        if (winh > ah) winh = ah;
+        SetWindowPos(hwnd, HWND_TOP, wa.left + (aw - winw) / 2, wa.top + (ah - winh) / 2, winw, winh, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+        RECT cr; GetClientRect(hwnd, &cr); mw = cr.right - cr.left; mh = cr.bottom - cr.top;
+        if (mw <= 0 || mh <= 0) { mw = 1280; mh = 960; }
+    } else {
+        SetWindowLongA(hwnd, GWL_STYLE, (st & ~(WS_CAPTION|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_SYSMENU|WS_DLGFRAME|WS_BORDER)) | WS_POPUP);
+        mw = mi.rcMonitor.right - mi.rcMonitor.left; mh = mi.rcMonitor.bottom - mi.rcMonitor.top;
+        SetWindowPos(hwnd, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top, mw, mh, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+    }
 
     DXGI_SWAP_CHAIN_DESC sd; ZeroMemory(&sd, sizeof sd);
     sd.BufferCount = 2; sd.BufferDesc.Width = mw; sd.BufferDesc.Height = mh;
@@ -293,6 +314,10 @@ static bool e_create(HWND hwnd) {
     if (FAILED(hr)) hr = D3D11CreateDeviceAndSwapChain(NULL, D3D_DRIVER_TYPE_WARP, NULL, 0, lv, 2, D3D11_SDK_VERSION, &sd, &g_e_swap, &g_e_dev, &got, &g_e_ctx);
     if (FAILED(hr)) { ml_log("[ddraw] takeover device create FAILED hr=0x%08lx", (unsigned long)hr); return false; }
     g_e_bbw = mw; g_e_bbh = mh;
+    // We own the window (esp. in windowed mode): stop DXGI from hijacking Alt+Enter into its own
+    // exclusive-fullscreen toggle, which would fight our borderless/windowed presentation.
+    { IDXGIFactory *fac = NULL;
+      if (SUCCEEDED(g_e_swap->GetParent(IID_PPV_ARGS(&fac))) && fac) { fac->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER); fac->Release(); } }
     ID3D11Texture2D *bb = NULL;
     if (SUCCEEDED(g_e_swap->GetBuffer(0, IID_PPV_ARGS(&bb))) && bb) { g_e_dev->CreateRenderTargetView(bb, NULL, &g_e_rtv); bb->Release(); }
     ID3DBlob *vsb = NULL, *psb = NULL, *err = NULL;
@@ -313,7 +338,8 @@ static bool e_create(HWND hwnd) {
     bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER; bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
     g_e_dev->CreateBuffer(&bd, NULL, &g_e_cb);
     if (!g_e_rtv || !g_e_vs || !g_e_ps || !g_e_smp || !g_e_cb) { ml_log("[ddraw] takeover resource create failed"); return false; }
-    ml_log("[ddraw] TAKEOVER: game window %p -> borderless %dx%d, presenting via vsync'd D3D11 (sharp-bilinear)", (void *)hwnd, mw, mh);
+    ml_log("[ddraw] TAKEOVER (%s): game window %p -> %dx%d, presenting via vsync'd D3D11 (sharp-bilinear)",
+           g_tk_mode == 2 ? "windowed" : "borderless", (void *)hwnd, mw, mh);
     return true;
 }
 
@@ -328,17 +354,17 @@ static bool e_tex(int w, int h) {
     g_e_tw = w; g_e_th = h; return true;
 }
 
-static void ddp_engine_present(HWND hwnd, const Frame *f) {
-    if (!f || !f->buf || f->w <= 0 || f->h <= 0) return;
-    if (!g_e_ready) { if (!e_create(hwnd)) return; g_e_ready = 1; }   // create fail -> stays 0 -> game presents (fallback)
-    if (!e_tex(f->w, f->h)) return;
-
+// Draw one captured frame into the swapchain: the game frame scaled (sharp-bilinear, aspect-fit
+// pillarbox within the client), then the in-game overlay, then Present (vsync — smooths + paces the
+// loop).  Shared by the per-frame present and the windowed-resize re-present.
+static void e_present_frame(HWND hwnd, const Frame *f) {
+    if (!g_e_rtv || !e_tex(f->w, f->h)) return;
     D3D11_MAPPED_SUBRESOURCE m;
     if (FAILED(g_e_ctx->Map(g_e_tex, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return;
     convert_to_rgba(m.pData, (int)m.RowPitch, f);
     g_e_ctx->Unmap(g_e_tex, 0);
 
-    // aspect-correct fit within the monitor (pillarbox); the on-screen image size feeds sharp-bilinear.
+    // aspect-correct fit within the client (pillarbox); the on-screen image size feeds sharp-bilinear.
     float srcA = (float)f->w / (float)f->h, dstA = (float)g_e_bbw / (float)g_e_bbh, vw, vh;
     if (dstA > srcA) { vh = (float)g_e_bbh; vw = vh * srcA; } else { vw = (float)g_e_bbw; vh = vw / srcA; }
     D3D11_MAPPED_SUBRESOURCE cm;
@@ -357,7 +383,30 @@ static void ddp_engine_present(HWND hwnd, const Frame *f) {
     g_e_ctx->PSSetConstantBuffers(0, 1, &g_e_cb);
     g_e_ctx->Draw(3, 0);
     ui_overlay_present(g_e_dev, g_e_ctx, hwnd);   // the in-game overlay: mod.ui on top of the game frame
-    g_e_swap->Present(1, 0);   // vsync — smooths + paces the game loop
+    g_e_swap->Present(1, 0);
+}
+
+static void ddp_engine_present(HWND hwnd, const Frame *f) {
+    if (!f || !f->buf || f->w <= 0 || f->h <= 0) return;
+    if (!g_e_ready) { if (!e_create(hwnd)) return; g_e_ready = 1; }   // create fail -> stays 0 -> game presents (fallback)
+    g_e_lastframe = *f; g_e_haveframe = 1;   // remember for a windowed-resize re-present (buf stable at 640x480)
+    e_present_frame(hwnd, f);
+}
+
+// Windowed takeover only: the user resized the game window — resize the swapchain to the new client and
+// re-present the last frame so the drag stays live (during a resize the game loop is parked in the modal
+// size loop, so no capture arrives).  Called from the executor's window subclass (WM_SIZE), engine thread.
+extern "C" void ddp_on_resize(int w, int h) {
+    if (g_tk_mode != 2 || !g_e_ready || w <= 0 || h <= 0) return;
+    if (w == g_e_bbw && h == g_e_bbh) return;                          // no real change
+    if (g_e_rtv) { g_e_rtv->Release(); g_e_rtv = NULL; }
+    HRESULT hr = g_e_swap->ResizeBuffers(0, (UINT)w, (UINT)h, DXGI_FORMAT_UNKNOWN, 0);
+    if (FAILED(hr)) { ml_log("[ddraw] ResizeBuffers %dx%d failed hr=0x%08lx", w, h, (unsigned long)hr); return; }
+    ID3D11Texture2D *bb = NULL;
+    if (SUCCEEDED(g_e_swap->GetBuffer(0, IID_PPV_ARGS(&bb))) && bb) { g_e_dev->CreateRenderTargetView(bb, NULL, &g_e_rtv); bb->Release(); }
+    g_e_bbw = w; g_e_bbh = h;
+    ui_mark_resized();                                                 // nudge overlay windows back on-screen
+    if (g_e_haveframe) e_present_frame(g_game_hwnd, &g_e_lastframe);   // repaint live during the drag
 }
 
 // ── cursor -> game-screen (640x480) mapping ──────────────────────────────────────────────────────────
@@ -376,7 +425,7 @@ extern "C" int ddp_cursor_game(float *gx, float *gy) {
     float cw = (float)(rc.right - rc.left), ch = (float)(rc.bottom - rc.top);
     if (cw <= 0 || ch <= 0) return 0;
     float ox = 0, oy = 0, sx, sy;
-    if (g_takeover && g_e_ready) {          // borderless: aspect-fit pillarbox within the client (== monitor)
+    if (g_tk_mode && g_e_ready) {           // takeover: aspect-fit pillarbox within the client (monitor OR window)
         float srcA = 640.0f / 480.0f, dstA = cw / ch, vw, vh;
         if (dstA > srcA) { vh = ch; vw = vh * srcA; } else { vw = cw; vh = vw / srcA; }
         ox = (cw - vw) * 0.5f; oy = (ch - vh) * 0.5f; sx = vw / 640.0f; sy = vh / 480.0f;

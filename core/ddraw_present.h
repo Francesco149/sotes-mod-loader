@@ -45,12 +45,17 @@ uint32_t ddp_frame_seq(void);
 // loop (so windowed slowness is only the present); much larger / jittery => the loop itself lags.
 uint32_t ddp_present_interval_us(void);
 
-// Phase B — own the game window: present the captured frame into the game window (borderless-fullscreen,
-// vsync'd, sharp-bilinear) instead of just mirroring it in the companion.  ddp_set_takeover enables it
-// (config ddraw_takeover); ddp_takeover_active is 1 only once we're actually presenting into the window,
-// so the executor knows to SKIP the game's own present (else it falls back to the game presenting).
-void ddp_set_takeover(int on);
+// Phase B/C — own the game window: present the captured frame into the game window instead of just
+// mirroring it in the companion.  ddp_set_takeover picks the mode (config ddraw_takeover): 0 = off,
+// 1 = borderless-fullscreen, 2 = windowed (a normal resizable window).  Both drive the window with our
+// vsync'd, sharp-bilinear present + the in-game overlay.  ddp_takeover_active is 1 only once we're
+// actually presenting into the window, so the executor knows to SKIP the game's own present.
+void ddp_set_takeover(int mode);
 int  ddp_takeover_active(void);
+
+// Windowed takeover (mode 2): the game window was resized — resize our swapchain to the new client and
+// re-present.  Call from the game window's WndProc (WM_SIZE), on the engine thread.  No-op otherwise.
+void ddp_on_resize(int w, int h);
 
 // Map the desktop cursor into the game's 640x480 screen space (undoing the borderless pillarbox / the
 // windowed client scale).  Fills gx/gy with the game-screen position; returns 1 if the cursor is over

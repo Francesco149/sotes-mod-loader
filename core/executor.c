@@ -302,6 +302,16 @@ static LRESULT CALLBACK boot_wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
     // the overlay don't fall through to the game.  No-op until the overlay is up / while hidden.  The
     // game window's WndProc runs on the engine thread — the same thread that owns the overlay's ImGui.
     if (ui_overlay_wndproc(h, m, w, l)) return 0;
+    if (ddp_takeover_active()) {
+        // We own the window's pixels (our D3D11 swapchain), so DON'T let the game GDI-paint it: during a
+        // resize Windows floods WM_PAINT and the game's handler blits its 640x480 back-buffer 1:1 at the
+        // top-left, on top of our scaled frame.  Validate + swallow (our next Present refills the window);
+        // eat WM_ERASEBKGND too (no background flash).  Gated on takeover, so mirror/plain modes untouched.
+        if (m == WM_ERASEBKGND) return 1;
+        if (m == WM_PAINT) { ValidateRect(h, NULL); return 0; }
+    }
+    // Windowed takeover: track resizes so our swapchain follows the window (no-op in other modes).
+    if (m == WM_SIZE && w != SIZE_MINIMIZED) ddp_on_resize((int)LOWORD(l), (int)HIWORD(l));
     return CallWindowProcA(g_orig_wndproc, h, m, w, l);
 }
 // Find the game's MAIN window.  Robustly: a top-level (no owner), visible window of OUR
