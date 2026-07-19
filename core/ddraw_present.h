@@ -45,6 +45,13 @@ uint32_t ddp_frame_seq(void);
 // loop (so windowed slowness is only the present); much larger / jittery => the loop itself lags.
 uint32_t ddp_present_interval_us(void);
 
+// Phase B — own the game window: present the captured frame into the game window (borderless-fullscreen,
+// vsync'd, sharp-bilinear) instead of just mirroring it in the companion.  ddp_set_takeover enables it
+// (config ddraw_takeover); ddp_takeover_active is 1 only once we're actually presenting into the window,
+// so the executor knows to SKIP the game's own present (else it falls back to the game presenting).
+void ddp_set_takeover(int on);
+int  ddp_takeover_active(void);
+
 #ifdef __cplusplus
 }
 #endif

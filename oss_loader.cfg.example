@@ -25,6 +25,18 @@ ui_key=0
 # per-frame work on the game thread; the UI itself only redraws when the snapshot changes.
 ui_hz=0
 
+# The DirectDraw present backend: hook the game's per-frame present, capture the finished frame, and
+# re-present it through our own vsync'd D3D11 swapchain.  Powers the companion-window game mirror and
+# the borderless-fullscreen takeover below.  1 = on (default), 0 = off.
+ddraw=1
+
+# Borderless-fullscreen TAKEOVER: instead of only mirroring, OWN the game window — skip the game's own
+# (unsynced, ~130fps, tearing) present and drive the window ourselves: borderless-fullscreen, vsync'd,
+# sharp-bilinear upscale, aspect-correct pillarbox.  This is what makes windowed play look/feel like a
+# smooth exclusive-fullscreen.  0 = off (default — the game window as the game drew it), 1 = on.
+# (Requires ddraw=1.)
+ddraw_takeover=0
+
 # Dev profiler: time the loader's per-frame overhead on the engine thread (the safepoint drain, the
 # UI snapshot build, and the roster heap-scan) and log avg/max microseconds every 5s to
 # oss_modloader.log.  0 = off (default, zero cost), 1 = on.

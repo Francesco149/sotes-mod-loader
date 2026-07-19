@@ -57,6 +57,7 @@ void      present_c(void)          asm("oss_present_c");
 void     *g_present_orig           asm("oss_present_orig");   // MinHook trampoline (original present)
 volatile uint32_t g_present_ctx    asm("oss_present_ctx");    // captured screen ctx (ecx)
 volatile uint32_t g_present_hwnd   asm("oss_present_hwnd");   // captured HWND (arg1)
+volatile uint32_t g_present_skip   asm("oss_present_skip");   // 1 = SKIP the game's own present (takeover)
 
 __asm__(
     ".text\n"
@@ -66,15 +67,20 @@ __asm__(
     "  pushal\n"
     "  movl 0x24(%esp), %eax\n"        // arg1 (HWND) at entry [esp+4]; after pushal it's at [esp+0x24]
     "  movl %eax, oss_present_hwnd\n"
-    "  call oss_present_c\n"            // run the capture (cdecl, no args; reads the globals)
-    "  popal\n"
-    "  jmp *oss_present_orig\n"         // continue into the original present (stack intact)
+    "  call oss_present_c\n"            // capture (+ takeover-present); sets oss_present_skip
+    "  popal\n"                          // restores all GP regs (incl. the original ecx) for the tail
+    "  cmpl $0, oss_present_skip\n"
+    "  jne 1f\n"
+    "  jmp *oss_present_orig\n"         // NOT takeover: run the game's own present (stack intact)
+    "1:\n"
+    "  ret $4\n"                         // TAKEOVER: skip it — zdd_present is thiscall(HWND), so ret 4
 );
 extern void oss_present_detour(void) asm("oss_present_detour");
 
 void present_c(void) {
     ddp_on_present((void *)(uintptr_t)g_present_ctx, (void *)(uintptr_t)g_present_hwnd);
-    ui_wake();   // render the game mirror at the present rate (companion window), not the snapshot rate
+    g_present_skip = (uint32_t)ddp_takeover_active();   // 1 -> the thunk ret 4's, skipping the game's BitBlt
+    ui_wake();   // render the companion mirror at the present rate (harmless while takeover owns the window)
 }
 
 uint32_t exec_ti_mgr(void) { return g_ti_mgr; }
@@ -282,6 +288,7 @@ static void install_present_hook(void) {
     const oss_profile *p = profile_current();
     if (!p || !p->present_va) return;
     if (!config_get_int("ddraw", 1)) { ml_log("[exec] present hook off (ddraw=0)"); return; }
+    ddp_set_takeover(config_get_int("ddraw_takeover", 0));   // own the game window (borderless) vs mirror-only
     void *va = (void *)mem_reloc(p->present_va);
     MH_STATUS s = MH_CreateHook(va, (LPVOID)&oss_present_detour, &g_present_orig);
     if (s != MH_OK && s != MH_ERROR_ALREADY_CREATED) { ml_log("[exec] present MH_CreateHook failed (%d)", s); return; }
