@@ -11,18 +11,17 @@ package-manager style from git-repo sources.
 > **North star: a bad mod can't crash the game, and two mods can't clobber each other.**
 > Everything is subordinate to that. See [`docs/DESIGN.md`](docs/DESIGN.md).
 
-## Status — P0 (scaffold)
+## Status — P0–P4 done (rolling checkpoint: [`docs/HANDOFF.md`](docs/HANDOFF.md))
 
-- ✅ Proxy `version.dll` — forwards the real `version.dll` → `realver.dll`; loads both
-  native (`mods\<name>.dll`) and Lua (`mods\<name>\init.lua`) mods.
-- ✅ LuaJIT runtime — **JIT compiled out** (interpreter + FFI only, the stable mode for an
-  injected DLL), cross-built to the i686 Windows target and **proven to run on-target**
-  (`build/lj_smoke.exe`: JIT off, FFI call into kernel32 works).
-- ✅ `mod` table with `mod.log` + mod identity; per-mod env + `pcall` isolation.
-- ⏳ Injection test on the real game (Windows-side, next).
+Proxy `version.dll` + LuaJIT host (P0) · guarded `mod.mem` + togglable `mod.game.*`
+bindings (P1) · main-thread executor (WndProc bootstrap → safepoint hook → `mod.main`/
+`on_frame`, P2) · the chained hook registry — **Tier-1 observers + Tier-2 typed** hooks
+(P3) · the **native-mod C ABI** `OssModInit(const OssApi*)` (P4). Validated **in-game** on
+the real unpacked EN-SE (executor + Tier-2 hook rode the live `kb_poll`) and host-side
+(`make -C core tests`). **Next: P5 UI** (loader-owned ImGui window + in-game mirror).
 
-Roadmap (P1 memory → P2 main-thread executor → P3 hooks → P4 native bridge → P5 UI →
-P6 voice mod → P7 trainer → P8 launcher): [`docs/DESIGN.md`](docs/DESIGN.md).
+Roadmap (P5 UI → P6 voice mod → P7 trainer → P8 launcher): [`docs/DESIGN.md`](docs/DESIGN.md).
+**A fresh session orients from [`docs/HANDOFF.md`](docs/HANDOFF.md).**
 
 ## Layout
 
@@ -35,8 +34,8 @@ core/        the loader host — proxy version.dll + LuaJIT runtime + (P1+) mem/
   test/          on-target smoke tests (lj_smoke.c)
 launcher/    the package-manager launcher (ImGui) — later phase (P8)
 profiles/    per-game facts, auto-selected by exe (profiles/sotes_en.lua)
-examples/    reference mods (examples/hello — the minimal Lua mod)
-docs/        DESIGN.md · MOD-FORMAT.md · REGISTRY.md
+examples/    reference mods (hello, hook_typed — Lua; native_hello — native C)
+docs/        HANDOFF.md · DESIGN.md · MOD-FORMAT.md · REGISTRY.md · TESTING.md
 ```
 
 ## Build
@@ -78,5 +77,17 @@ mod.log("hello from", mod.name)
 
 - **`../sotes-mods`** — the author's mods (EN-SE trainer + JP voice patch) + the default
   registry the launcher ships with.
-- **`../OpenSummoners`** — the parity port this loader grew out of; the current shipping
-  voice patch lives there (`tools/ennse_voice`) until the mod-loader-based one is proven.
+- **`../OpenSummoners`** — the parity port this loader grew out of, and the **canonical RE
+  home for `sotes.exe`** (the loader targets the SAME unpacked EN-SE binary). Its Ghidra
+  decompile (`docs/decompiled/`), findings (`docs/findings/`, `docs/findings/engine-quirks.md`),
+  Frida parity harness, and the trainer's `tools/sotes_trainer/SE_CODE_MAP.md` are the go-to
+  reference for engine VAs/structs.
+  - **Cross-reference it before reversing** anything about the game — a VA/struct/offset is
+    often already reversed there (e.g. safepoint `0x437c70`, `kb_poll 0x5e2a10`, base-stat
+    table `FUN_00426fd0`).
+  - **Record NEW game RE findings THERE**, not only here: the port is the consolidated home for
+    game knowledge (`SE_CODE_MAP.md` for offsets/behaviour, `engine-quirks.md` for retail
+    ground-truth quirks). Loader-side docs cover the *loader*; genuinely-new *engine* facts go
+    to OpenSummoners so both projects benefit. Its `CLAUDE.md` points back here.
+  - The current shipping voice patch also lives there (`tools/ennse_voice`) until the
+    mod-loader-based one is proven.

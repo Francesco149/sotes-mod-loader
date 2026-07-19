@@ -3,6 +3,12 @@
 Rolling "where we are / what's next" for a fresh session. Orient: this → `DESIGN.md`
 (architecture + phase table) → `MOD-FORMAT.md` (the `mod.*` API) → `TESTING.md`.
 
+> **Cross-reference `../OpenSummoners`** — the parity port + the **canonical RE home** for the
+> SAME `sotes.exe`. Look there before reversing (decompile `docs/decompiled/`, findings, Frida
+> harness, trainer `tools/sotes_trainer/SE_CODE_MAP.md`); and **record any NEW engine RE finding
+> THERE** (`SE_CODE_MAP.md` / `engine-quirks.md`), not only in this repo — loader docs cover the
+> loader, game facts belong to the port so both projects benefit. (README "Related".)
+
 ## State: P0–P4 DONE (incl. **Tier-2 typed hooks** + the **native-mod C ABI**). Next = **P5** (UI).
 
 The loader is a usable modding API — in Lua AND native C: a mod reads guarded memory
