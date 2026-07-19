@@ -3,9 +3,9 @@
 # (later) writes this; it's hand-editable too.  Missing file / keys = the defaults below.
 
 # Auto-dismiss the game's pre-launch launcher dialog (SotES #32770) so the game boots
-# hands-free.  OFF by default — end users click "Launch" themselves; a launcher/dev turns
-# it on.  1 = dismiss, 0 = leave it (default).
-skip_launcher=0
+# hands-free.  ON by default (built-in) — the loader clicks "Launch" for you in the mode below.
+# 1 = dismiss (default), 0 = leave the launcher up so you pick the mode yourself.
+skip_launcher=1
 
 # When skip_launcher dismisses the launcher, which display mode to select.  Default 1
 # (windowed) — the sane default for a hands-free/dev launch.  0 = fullscreen.  (Only
@@ -31,9 +31,10 @@ ui_hz=0
 profile=0
 
 # Keep the game running while its window is UNFOCUSED (it otherwise idles its input poll, so the
-# loader's safepoint stops firing when you alt-tab away).  Needed for headless testing.  Re-posts
-# WM_ACTIVATEAPP to the game window.  0 = off (default), 1 = on.  (Auto-enabled when autoload=1.)
-keepactive=0
+# loader's safepoint stops firing when the window loses foreground).  ON by default (built-in): the
+# companion UI window steals foreground when you click it, which would otherwise freeze the game +
+# the overlay.  Re-posts WM_ACTIVATEAPP only (no focus steal).  1 = on (default), 0 = off.
+keepactive=1
 
 # Dev auto-load (SotES only): drive the title + save-picker menus at boot to load a save, so
 # testing/profiling reaches actual gameplay instead of the title.  0 = off (default), 1 = on.

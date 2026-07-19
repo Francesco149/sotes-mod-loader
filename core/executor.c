@@ -209,12 +209,18 @@ void *exec_game_hwnd(void) { return (void *)g_hwnd; }   // reserved: the future 
 // so its per-frame input poll (our safepoint 0x437c70) stops firing.  For headless testing + the
 // save auto-load drive we must keep it ticking regardless of desktop focus.  Re-post
 // WM_ACTIVATEAPP(TRUE) to the game window periodically (the shipped trainer's proven trick), from a
-// dedicated thread since the safepoint itself is what stalls when unfocused.  Opt-in (dev).
+// dedicated thread since the safepoint itself is what stalls when unfocused.  DEFAULT-ON: the
+// companion UI window steals foreground when clicked, which would otherwise idle the game loop.
 static DWORD WINAPI keepactive_thread(void *unused) {
     (void)unused;
     for (;;) {
         HWND h = g_hwnd;
-        if (h) { PostMessageA(h, WM_ACTIVATEAPP, TRUE, 0); PostMessageA(h, WM_ACTIVATE, WA_ACTIVE, 0); }
+        // Only when the game ISN'T the foreground window: re-post WM_ACTIVATEAPP(TRUE) so its loop
+        // keeps ticking (the engine idles the loop on foreground loss).  When the game IS foreground
+        // we post nothing — normal play is completely untouched (no 5 Hz activation churn/hitch).
+        // WM_ACTIVATEAPP(TRUE) ONLY — never WM_ACTIVATE / SetForegroundWindow: stealing focus back
+        // would fight the companion window for the keyboard/mouse (the trainer's no-focus-steal trick).
+        if (h && GetForegroundWindow() != h) PostMessageA(h, WM_ACTIVATEAPP, TRUE, 0);
         Sleep(200);
     }
     return 0;
@@ -285,7 +291,7 @@ static int dismiss_launcher(void) { int done = 0; EnumWindows(find_launcher, (LP
 int exec_bootstrap(void) {
     if (!profile_current()) { ml_log("[exec] no game profile — executor disabled (fallback)"); return 0; }
     const oss_profile *p = profile_current();
-    int skip = config_get_int("skip_launcher", 0) && p->launcher_class;
+    int skip = config_get_int("skip_launcher", 1) && p->launcher_class;   // built-in default-on (hands-free boot)
     // Wait INDEFINITELY for the game window: it will appear as the game boots, and a bounded
     // timeout risks failing to arm on a slow boot (window-scanning is cheap; if the game
     // truly hangs the user kills it).  Optionally auto-dismiss the launcher while we wait.

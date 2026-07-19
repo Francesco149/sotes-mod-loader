@@ -53,20 +53,34 @@ void ml_log(const char *fmt, ...) {
     fputc('\n', f); fclose(f);
 }
 
-// Load one native mod DLL from mods\.  LOAD_WITH_ALTERED_SEARCH_PATH so a mod may
-// ship co-located deps in its own folder without polluting the game dir.  If it exports
-// OssModInit it's an ABI mod: defer its init to the engine thread (like a Lua mod's init).
-// If not, it's a legacy standalone native DLL — its DllMain ran; nothing more to do.
+// Load one native mod DLL from mods\.  It must be a mod written against our C ABI — i.e.
+// export OssModInit.  A plain DLL that isn't (the old trainer, the voice patch) does all its
+// work in its own DllMain and would install conflicting hooks the instant we LoadLibrary it, so
+// we PROBE the export first WITHOUT running any of its code (DONT_RESOLVE_DLL_REFERENCES maps the
+// image + lets GetProcAddress read exports, but does NOT call DllMain) and skip the DLL entirely
+// if the export is absent.  Real load uses LOAD_WITH_ALTERED_SEARCH_PATH so a mod may ship
+// co-located deps in its own folder without polluting the game dir.
 static int load_native(const char *filename) {
     char full[MAX_PATH];
     _snprintf(full, MAX_PATH, "%smods\\%s", g_gamedir, filename);
+
+    // Probe: is this a mod-API DLL?  Map it without running a byte of its code, check the export, free.
+    HMODULE probe = LoadLibraryExA(full, NULL, DONT_RESOLVE_DLL_REFERENCES);
+    if (!probe) { ml_log("[loader] native FAILED mods\\%s (err %lu)", filename, GetLastError()); return 0; }
+    int is_api = GetProcAddress(probe, OSS_MOD_INIT_NAME) != NULL;
+    FreeLibrary(probe);
+    if (!is_api) {
+        ml_log("[loader] SKIP mods\\%s — no %s export (not a mod-API DLL; move it aside or port it to the API)", filename, OSS_MOD_INIT_NAME);
+        return 0;
+    }
+
+    // Real load: runs DllMain, then defer OssModInit to the engine thread (like a Lua mod's init).
     HMODULE m = LoadLibraryExA(full, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
     if (!m) { ml_log("[loader] native FAILED mods\\%s (err %lu)", filename, GetLastError()); return 0; }
     FARPROC pf = GetProcAddress(m, OSS_MOD_INIT_NAME);
     OssModInitFn init = NULL;
     if (pf) memcpy(&init, &pf, sizeof init);   // FARPROC -> typed fn ptr, no -Wcast-function-type
     if (init) { exec_defer_native(filename, init); ml_log("[loader] native mods\\%s -> %p (OssModInit deferred to safepoint)", filename, (void *)m); }
-    else        ml_log("[loader] native mods\\%s -> %p (no OssModInit — standalone DLL)", filename, (void *)m);
     return 1;
 }
 
@@ -96,9 +110,10 @@ static DWORD WINAPI loader_thread(void *unused) {
     if (g_is_sotes) { sotes_bindings_register(); ml_log("[loader] SotES profile — game bindings registered"); }
     profile_select(g_is_sotes);   // pick the game profile (safepoint VA etc.) for the executor
 
-    // Keep the game ticking while its window is unfocused (needed for headless testing + the
-    // auto-load drive, since the game idles its input poll when backgrounded).  Auto-on for autoload.
-    if (config_get_int("keepactive", 0) || config_get_int("autoload", 0)) exec_keepactive();
+    // Keep the game ticking while its window is unfocused (the game idles its input poll when it
+    // loses foreground).  DEFAULT-ON built-in: the companion UI window steals foreground when you
+    // click it, which would otherwise freeze the game loop + the UI snapshot.  keepactive=0 opts out.
+    if (config_get_int("keepactive", 1) || config_get_int("autoload", 0)) exec_keepactive();
 
     // Dev harness: drive the menus into a save at boot so testing/profiling reaches gameplay.
     if (g_is_sotes && config_get_int("autoload", 0)) {
@@ -112,20 +127,24 @@ static DWORD WINAPI loader_thread(void *unused) {
     _snprintf(pat, MAX_PATH, "%smods\\*", g_gamedir);
     WIN32_FIND_DATAA fd;
     HANDLE h = FindFirstFileA(pat, &fd);
-    if (h == INVALID_HANDLE_VALUE) { ml_log("[loader] no mods (empty %smods\\)", g_gamedir); return 0; }
-
     int nn = 0, nl = 0;
-    do {
-        const char *nm = fd.cFileName;
-        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-            if (strcmp(nm, ".") == 0 || strcmp(nm, "..") == 0) continue;
-            nl += load_lua_dir(nm);
-        } else {
-            size_t len = strlen(nm);
-            if (len > 4 && _stricmp(nm + len - 4, ".dll") == 0) nn += load_native(nm);
-        }
-    } while (FindNextFileA(h, &fd));
-    FindClose(h);
+    if (h == INVALID_HANDLE_VALUE) {
+        // No mods\ folder at all (renamed/missing) — still arm the executor + UI below.  The
+        // built-in QoL (focus-keep, launcher dismiss, the overlay/UI) is independent of any mods.
+        ml_log("[loader] no mods\\ folder — built-ins only (executor + UI still start)");
+    } else {
+        do {
+            const char *nm = fd.cFileName;
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                if (strcmp(nm, ".") == 0 || strcmp(nm, "..") == 0) continue;
+                nl += load_lua_dir(nm);
+            } else {
+                size_t len = strlen(nm);
+                if (len > 4 && _stricmp(nm + len - 4, ".dll") == 0) nn += load_native(nm);
+            }
+        } while (FindNextFileA(h, &fd));
+        FindClose(h);
+    }
 
     // Arm the main-thread executor: Lua mods init on the ENGINE thread at the first
     // safepoint.  If there's no game window / no profile, fall back to running them here
@@ -162,15 +181,20 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID reserved) {
         g_is_sotes = istr(hbase, "sotes") != NULL;   // profile select (stub — generalizes later)
         ml_log("[loader] %s %s — attach host=%s dir=%s sotes=%d", OSS_ML_NAME, OSS_ML_VERSION, host, g_gamedir, g_is_sotes);
 
-        // Load only if a mods\ folder sits beside us (game-agnostic: no exe-name gate,
-        // but don't act as a random version.dll shim in some unrelated app's folder).
-        char modsdir[MAX_PATH];
+        // Come up if there's anything for us to do beside the exe: a mods\ folder, a recognized
+        // game profile (built-in QoL — focus-keep, launcher dismiss, the overlay/UI — runs even
+        // with zero mods), or an oss_loader.cfg.  A bare version.dll dropped next to some unrelated
+        // app that also imports version.dll matches none of these and stays inert.
+        char modsdir[MAX_PATH], cfgpath[MAX_PATH];
         _snprintf(modsdir, MAX_PATH, "%smods", g_gamedir);
-        DWORD a = GetFileAttributesA(modsdir);
-        if (a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY)) {
+        _snprintf(cfgpath, MAX_PATH, "%soss_loader.cfg", g_gamedir);
+        DWORD ma = GetFileAttributesA(modsdir);
+        int have_mods = (ma != INVALID_FILE_ATTRIBUTES) && (ma & FILE_ATTRIBUTE_DIRECTORY);
+        int have_cfg  = GetFileAttributesA(cfgpath) != INVALID_FILE_ATTRIBUTES;
+        if (have_mods || g_is_sotes || have_cfg) {
             CreateThread(NULL, 0, loader_thread, NULL, 0, NULL);
         } else {
-            ml_log("[loader] no mods\\ beside the exe — nothing to load");
+            ml_log("[loader] not a known game, no mods\\, no cfg — nothing to do");
         }
     } else if (reason == DLL_PROCESS_DETACH) {
         // reserved != NULL => process is terminating (skip cleanup — loader-lock unsafe);
