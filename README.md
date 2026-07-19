@@ -11,16 +11,18 @@ package-manager style from git-repo sources.
 > **North star: a bad mod can't crash the game, and two mods can't clobber each other.**
 > Everything is subordinate to that. See [`docs/DESIGN.md`](docs/DESIGN.md).
 
-## Status — P0–P4 done (rolling checkpoint: [`docs/HANDOFF.md`](docs/HANDOFF.md))
+## Status — P0–P5 done (rolling checkpoint: [`docs/HANDOFF.md`](docs/HANDOFF.md))
 
 Proxy `version.dll` + LuaJIT host (P0) · guarded `mod.mem` + togglable `mod.game.*`
 bindings (P1) · main-thread executor (WndProc bootstrap → safepoint hook → `mod.main`/
 `on_frame`, P2) · the chained hook registry — **Tier-1 observers + Tier-2 typed** hooks
-(P3) · the **native-mod C ABI** `OssModInit(const OssApi*)` (P4). Validated **in-game** on
-the real unpacked EN-SE (executor + Tier-2 hook rode the live `kb_poll`) and host-side
-(`make -C core tests`). **Next: P5 UI** (loader-owned ImGui window + in-game mirror).
+(P3) · the **native-mod C ABI** `OssModInit(const OssApi*)` (P4) · the **ImGui UI host** —
+a loader window + an in-game overlay mirror, `mod.ui` panels/windows (P5). Validated
+**in-game** on the real unpacked EN-SE (executor + Tier-2 hook rode the live `kb_poll`) and
+host-side (`make -C core tests`, plus a UI render smoke); the in-game overlay is pending a
+live visual check. **Next: P6 voice mod.**
 
-Roadmap (P5 UI → P6 voice mod → P7 trainer → P8 launcher): [`docs/DESIGN.md`](docs/DESIGN.md).
+Roadmap (P6 voice mod → P7 trainer → P8 launcher): [`docs/DESIGN.md`](docs/DESIGN.md).
 **A fresh session orients from [`docs/HANDOFF.md`](docs/HANDOFF.md).**
 
 ## Layout

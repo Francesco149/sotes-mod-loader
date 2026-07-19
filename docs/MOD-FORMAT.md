@@ -26,7 +26,7 @@ game nor the other mods are affected.
 > engine work through `mod.main`. (Without a game window the executor stays disarmed and
 > mods run on the loader thread instead — degraded, no `on_frame`.)
 
-### `mod.*` API — available now (P0–P1)
+### `mod.*` API — available now (P0–P5)
 
 | field | type | meaning |
 |---|---|---|
@@ -39,6 +39,7 @@ game nor the other mods are affected.
 | `mod.on_frame(fn)` | fn | run `fn()` every frame on the engine thread |
 | `mod.main(fn)` | fn | run `fn()` once at the next safepoint on the engine thread (fire-and-forget) |
 | `mod.hook.*` | table | chained multi-mod hook registry (below) — observe any function |
+| `mod.ui.*` | table | **ImGui UI** (below) — add panels/windows to the loader window + in-game overlay |
 
 **`mod.mem`** (all reads/writes VirtualQuery-guarded — a bad address returns `nil`/`false`, never a crash):
 
@@ -108,12 +109,52 @@ first-to-block wins. Cbs run on the engine thread inside a `pcall` (a faulting o
 - **Off-thread safety:** a tiny C gate runs the closure only on the engine thread; a call to the
   target from another thread runs the original untouched (never reenters Lua).
 
+**`mod.ui`** — the loader hosts **two managed ImGui surfaces**: a **loader window** (a normal
+top-level window with its own DX11 device — the default) and an **in-game overlay** (a transparent
+window drawn over the game, toggled by a hotkey). The loader window toggles with **F8**, the
+overlay with **INSERT**. A mod registers **panels** and **windows**; the loader draws each into
+BOTH surfaces from the same callback, so the overlay is a live **mirror** of the loader window.
+
+```
+local h = mod.ui.panel(name, draw)    -- a collapsing section in the loader's host window
+local h = mod.ui.window(name, draw)   -- a standalone floating ImGui window
+```
+
+`draw` is a function the loader calls every frame (on the UI thread) to emit widgets:
+
+```
+mod.ui.text(s)   .text_disabled(s)   .text_wrapped(s)   .text_colored(r,g,b,a, s)   .bullet(s)
+mod.ui.separator()    .spacing()    .same_line()
+mod.ui.button(label [,w,h]) -> pressed          mod.ui.small_button(label) -> pressed
+mod.ui.checkbox(label, value)           -> new_value, changed
+mod.ui.slider_int(label, v, min, max)   -> new_v, changed
+mod.ui.slider_float(label, v, min, max) -> new_v, changed
+mod.ui.header(label) -> open            mod.ui.progress(frac [,text])
+mod.ui.overlay_toggle()                 mod.ui.overlay_visible() -> bool
+```
+
+Widgets return their *new* state (plus a `changed` flag where useful) — the immediate-mode idiom:
+keep the value in a Lua variable and reassign it each frame, e.g. `open = mod.ui.checkbox("Open", open)`.
+
+- **Threading (important):** draw callbacks run on the loader's **UI thread**, serialized against
+  the engine thread by the loader's lock — so a callback may **READ** game memory (through the
+  guarded `mod.mem` / `mod.game`) freely, but must **NOT** call the engine directly. Push any
+  engine call / write through `mod.main` (it runs at the next safepoint on the engine thread).
+  Don't block inside a draw callback (it stalls the UI *and*, briefly, the game).
+- **The same callback draws in both surfaces**, so it runs up to twice per frame (once per visible
+  surface). Keep it side-effect-light (standard immediate-mode discipline); a `button` returns
+  `true` only in the surface actually clicked, so click handling stays correct.
+- **Isolation:** each callback runs inside a `pcall`; a fault disables just that panel/window (+
+  logs it), never the game or other mods. Widget calls made *outside* a draw callback (e.g. from
+  init) are inert no-ops, so they can't crash.
+- **Config:** the UI is on by default once the executor arms; `ui=0` in `oss_loader.cfg` disables
+  it, and `ui_key` / `overlay_key` (VK codes) override the F8 / INSERT toggles.
+
 ### `mod.*` API — roadmap (later phases, see DESIGN.md)
 
 ```
 mod.call(va, sig, ...)                                        -- FFI call (via mod.main)
-mod.ui.panel(name, draw)  mod.ui.window(name, draw, opts)     -- P5 UI (main window + in-game mirror)
-mod.overlay.panel(...) / mod.overlay.draw(fn)                 -- later DDraw7 overlay
+mod.overlay.panel(...) / mod.overlay.draw(fn)                 -- richer opt-in DDraw7 overlay layers
 mod.on.{scene_change, settle, unload, ...}                   -- lifecycle events
 ```
 
