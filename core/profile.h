@@ -11,6 +11,8 @@
 typedef struct {
     const char *id;
     uintptr_t   safepoint_va;    // ImageBase-relative per-frame fn (the executor's drain point)
+    const char *window_class;    // the game's MAIN window registered class — the robust bootstrap
+                                 // target (positively matched, never the launcher/transient); NULL = heuristic
     const char *launcher_class;   // pre-game launcher window class to skip/dismiss (NULL = none)
     int         launch_ctrl_id;   // the launcher's "Launch" button control id (for skip_launcher)
     int         windowed_ctrl_id; // the launcher's "Windowed Mode" radio (0 = none)

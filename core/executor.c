@@ -162,13 +162,24 @@ static LRESULT CALLBACK boot_wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
     if (m == WM_OSS_BOOT) { install_safepoint_hook(); return 0; }
     return CallWindowProcA(g_orig_wndproc, h, m, w, l);
 }
+// Find the game's MAIN window.  Robustly: a top-level (no owner), visible window of OUR
+// process whose class == the profile's window_class (the engine's own unique class, e.g.
+// "CLASS_LIZSOFT_SOTES").  A positive class match never latches the launcher, a DirectShow
+// "ActiveMovie" window, an IME window, or an early TRANSIENT window that later gets destroyed
+// (which silently drops our subclass + the posted bootstrap — the bug this fixes).  If the
+// profile has no window_class we fall back to the old heuristic (first non-launcher top-level).
 static BOOL CALLBACK find_wnd(HWND h, LPARAM l) {
     (void)l;
     DWORD pid = 0; GetWindowThreadProcessId(h, &pid);
     if (pid != GetCurrentProcessId()) return TRUE;
-    if (!IsWindowVisible(h) || GetWindow(h, GW_OWNER) != NULL) return TRUE;   // top-level, visible only
+    if (!IsWindowVisible(h) || GetWindow(h, GW_OWNER) != NULL) return TRUE;   // top-level + visible only
     char cls[64] = ""; GetClassNameA(h, cls, (int)sizeof cls);
-    if (strcmp(cls, "#32770") == 0) return TRUE;                             // skip the launcher dialog
+    const oss_profile *p = profile_current();
+    if (p && p->window_class) {
+        if (strcmp(cls, p->window_class) != 0) return TRUE;                   // POSITIVE match the game's own class
+    } else if (p && p->launcher_class && strcmp(cls, p->launcher_class) == 0) {
+        return TRUE;                                                          // fallback: at least skip the launcher
+    }
     g_hwnd = h; return FALSE;
 }
 // Auto-dismiss the game's pre-launch launcher (opt-in: skip_launcher=1).  In-process
@@ -200,6 +211,11 @@ int exec_bootstrap(void) {
     // timeout risks failing to arm on a slow boot (window-scanning is cheap; if the game
     // truly hangs the user kills it).  Optionally auto-dismiss the launcher while we wait.
     ml_log("[exec] waiting for the game window%s ...", skip ? " (skip_launcher: will dismiss the launcher)" : "");
+    // Poll until the game's MAIN window exists: find_wnd positively matches the profile's
+    // window_class, so it never latches the launcher or a transient window — it simply returns
+    // nothing until the real game window is created (whether we auto-dismiss the launcher or the
+    // user clicks Launch).  skip_launcher auto-clicks Launch (best-effort — BM_CLICK; the user
+    // can always click manually, and the positive match still catches the window robustly).
     int launched = 0;
     while (!g_hwnd) {
         if (skip && !launched) launched = dismiss_launcher();

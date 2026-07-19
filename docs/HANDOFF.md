@@ -28,12 +28,13 @@ members (correct coords/HP + `active` detect); the hook registry's codegen thunk
 on `kb_poll`, register capture correct (`ctx.ecx == the real this`), 2 cbs on 1 VA both
 fired, `remove` worked. Evidence: `TESTING.md`.
 
-**Tier-2 validation** (host, `make -C core tests` → `>> TYPED_HOOK_OK`): a mod's
-`mod.hook.typed` installs an FFI-closure detour that **modifies args, blocks, and modifies
-the return** across **cdecl / __stdcall / __thiscall** (the callee-stack-cleanup + ecx-capture
-paths — the crashy bits — all clean); the **off-thread gate** skips the Lua chain; cross-tier
-exclusion holds both ways. In-game smoke: `examples/hook_typed/init.lua` (typed-hooks the real
-`kb_poll` thiscall, observe-only) — **ready to run, not yet exercised in-game.**
+**Tier-2 validation** — host (`make -C core tests` → `>> TYPED_HOOK_OK`): an FFI-closure
+detour **modifies args, blocks, and modifies the return** across **cdecl / __stdcall /
+__thiscall** (callee-stack-cleanup + ecx-capture — the crashy bits — all clean); the
+**off-thread gate** skips the Lua chain; cross-tier exclusion holds both ways. **AND in-game**
+(2026-07-19, `examples/hook_typed`): the typed hook installed on the live `kb_poll` thiscall,
+the FFI closure marshaled the real `ecx` (keyboard device) as `ctx.args[1]` **every frame**
+(`this match=true`, hits 119→599), and `mod.hook.remove` froze it cleanly (game stayed up).
 
 ## Build / run
 
@@ -53,8 +54,9 @@ not `\\wsl$`). In-game: see `TESTING.md` (stage into the game dir, launch with
 - `mem.c` — guarded r/w (VirtualQuery), scan, module/reloc. `mem.h` guards used by bindings.
 - `game_bindings.c` — the togglable `mod.game.*` registry (dynamic-resolve metatable + enable/disable).
 - `sotes_bindings.c` — SotES roster+coordinates, profile-gated. **PORT-DEBT: heap-scan (task #7).**
-- `executor.c` — WndProc bootstrap, safepoint hook (register-capture asm thunk), job queue +
-  on_frame, launcher dismiss (`skip_launcher`/`windowed`), `exec_main_tid`/`exec_ti_mgr`.
+- `executor.c` — WndProc bootstrap (positive `profile.window_class` match — see gotchas),
+  safepoint hook (register-capture asm thunk), job queue + on_frame, launcher dismiss
+  (`skip_launcher`/`windowed`), `exec_main_tid`/`exec_main_tid_ptr`/`exec_ti_mgr`.
 - `hooks.c` — the chained hook registry (both tiers): Tier-1 per-VA codegen thunk →
   `hook_dispatch` → observer chain; Tier-2 per-VA main-thread gate → FFI-closure dispatcher
   (the embedded `TIER2_LUA`) → typed chain. `g_hk[]` carries a `tier` (VA is T1 xor T2).
@@ -106,6 +108,7 @@ in-game — `examples/hook_typed/init.lua` is the smoke test (typed `kb_poll`, o
 - App-dir `version.dll` side-load works only from **NTFS**, not `\\wsl$` (Windows blocks remote-dir DLL load).
 - The stock dir's `mods\sotes_trainer.dll` **also hooks `0x437c70`** — move it aside before testing our loader (else it fights the executor). One MinHook per target VA.
 - WSL launch: `cmd /c start` blocks on the process-tree job → use `tools/dev-launch.sh` (PowerShell `Start-Process`).
+- **Bootstrap must POSITIVELY match the game window** (`profile.window_class`, SotES `CLASS_LIZSOFT_SOTES`), never "first non-launcher top-level window": the game spawns an early TRANSIENT top-level window (+ a DirectShow `ActiveMovie` + IME windows) that the old heuristic latched and subclassed — then it got destroyed, silently dropping the subclass + the posted `WM_OSS_BOOT`, so the executor never armed (intermittent; looked like a Tier-2 failure but wasn't). Enumerate a live instance to fingerprint the real window (`scratchpad/enumwin.ps1` pattern: class/title/style/owner).
 - Kills: exact pid via `tasklist.exe`/`taskkill.exe`, never `pkill` (siblings share the frida-server). After a kill, the exe file lock releases async — retry the `version.dll` restore.
 - i686 mingw prefixes C symbols with `_`; the asm observer thunk uses `asm("name")` labels to match (see `executor.c`/`hooks.c`).
 - LuaJIT is Lua **5.1** (`setfenv`, no `goto`/integer division semantics of 5.3).
