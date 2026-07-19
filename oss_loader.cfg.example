@@ -11,3 +11,12 @@ skip_launcher=0
 # (windowed) — the sane default for a hands-free/dev launch.  0 = fullscreen.  (Only
 # applies when skip_launcher=1; otherwise the user picks in the launcher.)
 windowed=1
+
+# The ImGui UI host (P5): a loader window + an in-game overlay mirror.  On by default once the
+# executor arms.  1 = enable (default), 0 = disable entirely.
+ui=1
+
+# Toggle keys as Windows virtual-key codes (0 = the defaults: F8 for the loader window, INSERT
+# for the overlay).  Common codes: F1..F12 = 112..123, INSERT = 45, HOME = 36, END = 35.
+ui_key=0
+overlay_key=0

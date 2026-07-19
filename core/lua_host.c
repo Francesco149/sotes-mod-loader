@@ -17,6 +17,7 @@
 #include "game_bindings.h"
 #include "executor.h"
 #include "hooks.h"
+#include "ui.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -27,6 +28,27 @@
 #include "luajit.h"
 
 static lua_State *g_L;   // shared state; P0 touches it only from the loader thread
+
+// ── the "Lua Big Lock" (LBL) — serialize lua_State access across threads (P5) ──
+// One RECURSIVE critical section owned here.  The UI thread (ui.cpp) holds it around
+// each frame's draw callbacks; every engine-thread Lua entry point (executor safepoint
+// + both hook dispatchers) holds it around its Lua work.  So the shared lua_State is
+// only ever touched by one thread at a time even though two threads now run Lua.
+// Lazily initialized behind a one-shot flag so it is valid even if a caller reaches it
+// before lh_init (e.g. a host test that drives the executor/hooks without lh_init).
+static CRITICAL_SECTION g_lua_cs;
+static volatile LONG     g_lua_cs_state;   // 0 = uninit, 1 = ready, 2 = initializing
+static void lh_lock_ensure(void) {
+    if (g_lua_cs_state == 1) return;
+    if (InterlockedCompareExchange(&g_lua_cs_state, 2, 0) == 0) {
+        InitializeCriticalSection(&g_lua_cs);   // recursive by default on Win32
+        InterlockedExchange(&g_lua_cs_state, 1);
+    } else {
+        while (g_lua_cs_state != 1) Sleep(0);    // another thread is initializing — spin briefly
+    }
+}
+void lh_lock(void)   { lh_lock_ensure(); EnterCriticalSection(&g_lua_cs); }
+void lh_unlock(void) { LeaveCriticalSection(&g_lua_cs); }
 
 // mod.log(...) — like print(): tostring() each arg, space-join, route to the loader
 // log with the mod's name (carried as an upvalue so every mod's log is attributed).
@@ -67,9 +89,11 @@ static void push_mod_table(lua_State *L, const char *name, const char *dir) {
     exec_push_main(L);                       lua_setfield(L, -2, "main");     // run on the main thread (P2)
     exec_push_on_frame(L);                   lua_setfield(L, -2, "on_frame"); // per-frame callback (P2)
     hooks_push_table(L);                     lua_setfield(L, -2, "hook");     // chained hook registry (P3)
+    ui_push_table(L);                        lua_setfield(L, -2, "ui");       // shared ImGui UI host (P5)
 }
 
 int lh_init(void) {
+    lh_lock_ensure();           // stand up the LBL before any thread can touch the state
     g_L = luaL_newstate();
     if (!g_L) { ml_log("[lua] luaL_newstate FAILED"); return 1; }
     luaL_openlibs(g_L);
@@ -82,6 +106,7 @@ int lh_init(void) {
     gb_finalize_lua(g_L);       // the shared mod.game table (bindings registered before this)
     exec_init(g_L);             // the main-thread executor (mod.main / mod.on_frame)
     hooks_init(g_L);            // the chained hook registry (mod.hook.entry / remove)
+    ui_init(g_L);               // the ImGui UI host — builds the shared mod.ui table (P5)
 
     ml_log("[lua] LuaJIT up (%s, JIT off, FFI on)", LUAJIT_VERSION);
     return 0;
@@ -121,5 +146,6 @@ void lh_run_mod(const char *name, const char *dir, const char *init_lua_path) {
 lua_State *lh_state(void) { return g_L; }
 
 void lh_shutdown(void) {
+    ui_shutdown();   // signal the UI thread to stop touching the state before we close it (best-effort)
     if (g_L) { lua_close(g_L); g_L = NULL; ml_log("[lua] state closed"); }
 }

@@ -13,10 +13,18 @@
 #define OSS_ML_NAME    "SotES Mod Loader"
 #define OSS_ML_VERSION "0.1.0"           // loader host version (mod.loader_version)
 
+#ifdef __cplusplus
+extern "C" {          // the UI host (ui.cpp) is C++; give the shared C decls C linkage
+#endif
+
 // crash-resilient flush-to-file log (append + close each line), shared by every TU.
 void ml_log(const char *fmt, ...);
 
 // the game dir (= our own dir; we sit beside the exe as version.dll), trailing '\'.
 extern char g_gamedir[MAX_PATH];
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

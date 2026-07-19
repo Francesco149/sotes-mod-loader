@@ -130,9 +130,11 @@ void exec_on_safepoint(void *ti_mgr) {
     if (InterlockedExchange(&in_sp, 1)) return;   // reentrancy guard
     if (!g_main_tid) g_main_tid = GetCurrentThreadId();   // this IS the engine thread
     g_ti_mgr = (uint32_t)(uintptr_t)ti_mgr;
+    lh_lock();                                     // LBL: exclude the UI thread while we run Lua (P5)
     if (!g_inited) { g_inited = 1; run_deferred(); }   // mods init here — on the main thread
     drain_jobs();
     run_onframe();
+    lh_unlock();
     InterlockedExchange(&in_sp, 0);
 }
 void safepoint_c(void) { exec_on_safepoint((void *)(uintptr_t)g_ti_mgr); }
@@ -180,6 +182,8 @@ void exec_push_on_frame(lua_State *L) { lua_pushcfunction(L, l_on_frame); }
 #define WM_OSS_BOOT (WM_APP + 0x5b01)
 static WNDPROC g_orig_wndproc;
 static HWND    g_hwnd;
+
+void *exec_game_hwnd(void) { return (void *)g_hwnd; }   // the UI host positions its overlay over this
 
 static void install_safepoint_hook(void) {   // runs on the MAIN thread (in the WndProc)
     const oss_profile *p = profile_current();

@@ -1,0 +1,10 @@
+[mod]
+id          = "ui_demo"
+name        = "UI Demo"
+version     = "1.0.0"
+description = "Demonstrates mod.ui: a loader panel + a floating window, mirrored into the in-game overlay."
+authors     = ["sotes-mod-loader"]
+target_games = ["sotes_en"]
+
+[loader]
+min_version = "0.1.0"

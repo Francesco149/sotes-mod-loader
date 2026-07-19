@@ -5,18 +5,24 @@
 #      cross-build libluajit.a for the i686 Windows target.  A 32-bit *target* needs
 #      a 32-bit *host* toolchain for LuaJIT's buildvm/minilua ($(LUAJIT_HOST_CC), the
 #      flake's pkgsi686Linux gcc).  JIT compiled OUT (LUAJIT_DISABLE_JIT); FFI stays on.
-#   2. The host C (loader.c + lua_host.c) -> version.dll, linking libluajit.a and the
-#      forwards in version.def.  Single-language C for P0 (the ImGui/DX11 UI arrives in
-#      P5 and will pull in g++/libstdc++ then).
+#   2. The host C (loader.c + lua_host.c + ...) AND the C++ UI host (ui.cpp + Dear ImGui,
+#      DX11 backend) -> version.dll, linking libluajit.a and the forwards in version.def.
+#      P5 adds the ImGui/DX11 UI, so the final link is done with g++ (libstdc++).
 #
 #   nix develop --command make -C core        # -> ../build/version.dll
 #
-# -static -static-libgcc: the game's DLL search path has no libgcc_s, so a default
-# mingw build (which imports it) would fail to LoadLibrary — link it in.
+# -static -static-libgcc -static-libstdc++: the game's DLL search path has no libgcc_s /
+# libstdc++-6, so a default mingw build (which imports them) would fail to LoadLibrary — link
+# them in statically.
 
 CC   := i686-w64-mingw32-gcc
+CXX  := i686-w64-mingw32-g++
 OUT  ?= ../build/version.dll
 OBJ  := obj
+
+# Dear ImGui — source-vendored via $(IMGUI_DIR) and compiled straight into the PE (the
+# osr_view pattern): core + the Win32 and DX11 backends.
+IMGUI ?= $(IMGUI_DIR)
 
 # ── LuaJIT (cross-built static lib) ──────────────────────────────────────────
 LJ_SRC ?= $(LUAJIT_SRC)
@@ -33,22 +39,45 @@ MINHOOK := minhook/src/hook.c minhook/src/buffer.c minhook/src/trampoline.c \
            minhook/src/hde/hde32.c minhook/src/hde/hde64.c
 COBJ   := $(addprefix $(OBJ)/, $(CSRC:.c=.o)) $(addprefix $(OBJ)/, $(notdir $(MINHOOK:.c=.o)))
 
-CFLAGS  := -O2 -Wall -Wextra -I$(LJ_INC) -Iminhook/include
-LDFLAGS := -shared -static -static-libgcc -s
-LIBS    := $(LJ_LIB) -lkernel32 -luser32
+# ── C++ UI host (P5): our ui.cpp + the ImGui TUs (flattened into obj/) ────────
+IMGUI_SRC := $(IMGUI)/imgui.cpp $(IMGUI)/imgui_draw.cpp $(IMGUI)/imgui_tables.cpp \
+             $(IMGUI)/imgui_widgets.cpp \
+             $(IMGUI)/backends/imgui_impl_win32.cpp $(IMGUI)/backends/imgui_impl_dx11.cpp
+CXXSRC := ui.cpp
+CXXOBJ := $(addprefix $(OBJ)/, $(CXXSRC:.cpp=.o)) $(addprefix $(OBJ)/, $(notdir $(IMGUI_SRC:.cpp=.o)))
+
+CFLAGS   := -O2 -Wall -Wextra -I$(LJ_INC) -Iminhook/include
+CXXFLAGS := -std=c++17 -O2 -Wall -Wextra -I. -I$(LJ_INC) -I$(IMGUI) -I$(IMGUI)/backends \
+            -DUNICODE -D_UNICODE -D_WIN32_WINNT=0x0601
+# Link with g++ so libstdc++ (the ImGui TUs) resolves; -static* so the game's DLL search path
+# (no libgcc_s / libstdc++-6) can still LoadLibrary us.  DX/DWM/GDI/IMM libs back the UI.
+LDFLAGS  := -shared -static -static-libgcc -static-libstdc++ -s
+LIBS     := $(LJ_LIB) -lkernel32 -luser32 -lgdi32 -ld3d11 -ldxgi -ld3dcompiler -ldwmapi -limm32
 
 .PHONY: all clean clean-luajit
 all: $(OUT)
 
-$(OUT): $(COBJ) version.def
+$(OUT): $(COBJ) $(CXXOBJ) version.def
 	@mkdir -p $(dir $@)
-	$(CC) $(LDFLAGS) -o $@ $(COBJ) version.def $(LIBS)
+	$(CXX) $(LDFLAGS) -o $@ $(COBJ) $(CXXOBJ) version.def $(LIBS)
 	@echo "  built $@"
 
-# our objects need the LuaJIT headers -> gate compilation on the lib being built.
+# our C objects need the LuaJIT headers -> gate compilation on the lib being built.
 $(OBJ)/%.o: %.c loader_internal.h $(LJ_LIB)
 	@mkdir -p $(OBJ)
 	$(CC) $(CFLAGS) -c $< -o $@
+
+# our C++ (ui.cpp) — LuaJIT + ImGui headers.
+$(OBJ)/%.o: %.cpp ui.h loader_internal.h $(LJ_LIB)
+	@mkdir -p $(OBJ)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+# ImGui TUs (flattened into obj/); slow to compile, so cached across builds.
+$(OBJ)/%.o: $(IMGUI)/%.cpp
+	@mkdir -p $(OBJ)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+$(OBJ)/%.o: $(IMGUI)/backends/%.cpp
+	@mkdir -p $(OBJ)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 # MinHook (flattened into obj/)
 $(OBJ)/%.o: minhook/src/%.c
@@ -78,13 +107,16 @@ $(LJ_LIB):
 # Link every core obj EXCEPT loader.o (DllMain + the real ml_log); each harness supplies
 # its own ml_log.  Built -O0 so MinHook always has a relocatable prologue on the targets.
 TESTDIR   := test
-TESTOBJ   := $(filter-out $(OBJ)/loader.o, $(COBJ))
-TESTLINK  := -static -static-libgcc
+TESTOBJ   := $(filter-out $(OBJ)/loader.o, $(COBJ) $(CXXOBJ))
+TESTLINK  := -static -static-libgcc -static-libstdc++
 TESTS     := ../build/exec_test.exe ../build/hook_typed_test.exe ../build/native_mod_test.exe
 
+# The harnesses are C: compile each with gcc (as C), then LINK with g++ so libstdc++ (pulled in by
+# the UI TUs in TESTOBJ) resolves.  The tests never call ui_start, so no window/device is created.
 ../build/%.exe: $(TESTDIR)/%.c $(TESTOBJ)
 	@mkdir -p ../build
-	$(CC) -O0 -Wall -I. -I$(LJ_INC) -Iminhook/include $(TESTLINK) -o $@ $< $(TESTOBJ) $(LIBS)
+	$(CC) -O0 -Wall -I. -I$(LJ_INC) -Iminhook/include -c $< -o $(OBJ)/harness_$*.o
+	$(CXX) -O0 $(TESTLINK) -o $@ $(OBJ)/harness_$*.o $(TESTOBJ) $(LIBS)
 
 .PHONY: tests
 tests: $(TESTS)

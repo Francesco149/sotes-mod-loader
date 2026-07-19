@@ -21,6 +21,10 @@
 #include "oss_mod_api.h"   // OssJobFn, OssModInitFn (native-mod C callbacks)
 struct lua_State;
 
+#ifdef __cplusplus
+extern "C" {          // ui.cpp asks the executor for the game window + armed state
+#endif
+
 void exec_init(struct lua_State *L);          // bind the Lua state + init the queue (call in lh_init)
 void exec_push_main(struct lua_State *L);      // push the mod.main closure     (for push_mod_table)
 void exec_push_on_frame(struct lua_State *L);  // push the mod.on_frame closure
@@ -35,10 +39,15 @@ void exec_on_frame_c(OssJobFn fn, void *user);  // run fn(user) every frame (reg
 
 int  exec_bootstrap(void);   // find + subclass the game window, post bootstrap; 1 = armed, 0 = fallback
 int  exec_armed(void);       // 1 once the safepoint hook is installed
+void *exec_game_hwnd(void);  // the subclassed game window (HWND; void* to keep windows.h out of the header); NULL until bootstrap
 uint32_t exec_ti_mgr(void);  // the captured input manager (safepoint `this`); 0 until the first frame
 uint32_t exec_main_tid(void);// the engine/main thread id (captured at the first safepoint); 0 until then
 uint32_t *exec_main_tid_ptr(void); // &g_main_tid — the typed-hook gate thunk cmp's against it (hooks.c)
 
 void exec_on_safepoint(void *ti_mgr);   // MAIN THREAD drain — the hook (or a test) calls this each frame
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

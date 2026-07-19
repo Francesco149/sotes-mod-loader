@@ -23,6 +23,7 @@
 #include "executor.h"
 #include "profile.h"
 #include "config.h"
+#include "ui.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -116,9 +117,15 @@ static DWORD WINAPI loader_thread(void *unused) {
     // Arm the main-thread executor: Lua mods init on the ENGINE thread at the first
     // safepoint.  If there's no game window / no profile, fall back to running them here
     // on the loader thread (degraded, but non-game hosts + the test stub still work).
-    if (exec_bootstrap())
+    if (exec_bootstrap()) {
         ml_log("[loader] executor armed — %d Lua mod(s) will init on the main thread", nl);
-    else {
+        // Stand up the ImGui UI host (loader window + in-game overlay) on its own thread, now that
+        // we have the game window to track.  Opt-out with ui=0; keys are VK codes (0 = F8 / INSERT).
+        if (config_get_int("ui", 1)) {
+            ui_start(exec_game_hwnd(), config_get_int("ui_key", 0), config_get_int("overlay_key", 0));
+            ml_log("[loader] UI host starting — main window + in-game overlay mirror");
+        } else ml_log("[loader] UI disabled (ui=0)");
+    } else {
         ml_log("[loader] executor not armed — running %d Lua mod(s) on the loader thread (fallback)", nl);
         exec_run_deferred_inline();
     }
