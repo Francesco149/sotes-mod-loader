@@ -39,11 +39,11 @@ __asm__(
     ".globl oss_sp_detour\n"
     "oss_sp_detour:\n"
     "  movl %ecx, oss_sp_mgr\n"   // capture this (= input manager) before anything clobbers ecx
-    "  movl 4(%esp), %eax\n"      // capture arg1 = the poll's `now` timestamp (thiscall: args on the stack)
-    "  movl %eax, oss_sp_now\n"   // (eax is caller-scratch at the callee's entry — safe to clobber)
     "  pushal\n"                   // preserve all GP regs across the observer
+    "  movl 0x24(%esp), %eax\n"   // capture arg1 = the poll's `now` timestamp — AFTER pushal (the
+    "  movl %eax, oss_sp_now\n"   // original eax is saved; popal restores it).  arg1 = entry [esp+4]
     "  call oss_sp_c\n"            // run the drain (cdecl, no args; reads oss_sp_mgr)
-    "  popal\n"
+    "  popal\n"                    // restores the original eax (+ all regs) for the trampoline
     "  jmp *oss_sp_orig\n"         // continue into the original (stack intact) — never returns here
 );
 extern void oss_sp_detour(void) asm("oss_sp_detour");   // defined by the asm block above (no _ prefix)
@@ -74,6 +74,16 @@ void exec_defer_native(const char *name, OssModInitFn init) {
     g_ndef[g_nndef].init = init;
     g_nndef++;
 }
+// One-shot C callbacks run on the ENGINE thread at the first safepoint (like a native mod init but
+// no ABI) — for game-specific setup that must install hooks / register on_frame on the engine
+// thread without racing the loader thread (e.g. the SotES save auto-load harness).
+#define MAX_DEFERFN 8
+static void (*g_deferfn[MAX_DEFERFN])(void);
+static int g_ndeferfn;
+void exec_defer_fn(void (*fn)(void)) {
+    if (fn && g_ndeferfn < MAX_DEFERFN) g_deferfn[g_ndeferfn++] = fn;
+    else if (fn) ml_log("[exec] defer-fn list full");
+}
 static void run_deferred(void) {
     // Native mods first (typically infrastructure), then Lua mods — both on the engine thread.
     for (int i = 0; i < g_nndef; i++) {
@@ -81,6 +91,7 @@ static void run_deferred(void) {
         ml_log("[exec] native mod init: %s -> %d", g_ndef[i].name, rc);
     }
     for (int i = 0; i < g_ndefer; i++) lh_run_mod(g_defer[i].name, g_defer[i].dir, g_defer[i].path);
+    for (int i = 0; i < g_ndeferfn; i++) g_deferfn[i]();
 }
 void exec_run_deferred_inline(void) { run_deferred(); }   // fallback (loader thread)
 
@@ -192,6 +203,26 @@ static WNDPROC g_orig_wndproc;
 static HWND    g_hwnd;
 
 void *exec_game_hwnd(void) { return (void *)g_hwnd; }   // reserved: the future in-game overlay backend hooks/tracks this
+
+// ── keepactive: keep the game running while its window is UNFOCUSED ────────────
+// SotES (like many games) pauses/idles its main loop when the window isn't the foreground app —
+// so its per-frame input poll (our safepoint 0x437c70) stops firing.  For headless testing + the
+// save auto-load drive we must keep it ticking regardless of desktop focus.  Re-post
+// WM_ACTIVATEAPP(TRUE) to the game window periodically (the shipped trainer's proven trick), from a
+// dedicated thread since the safepoint itself is what stalls when unfocused.  Opt-in (dev).
+static DWORD WINAPI keepactive_thread(void *unused) {
+    (void)unused;
+    for (;;) {
+        HWND h = g_hwnd;
+        if (h) { PostMessageA(h, WM_ACTIVATEAPP, TRUE, 0); PostMessageA(h, WM_ACTIVATE, WA_ACTIVE, 0); }
+        Sleep(200);
+    }
+    return 0;
+}
+void exec_keepactive(void) {
+    HANDLE t = CreateThread(NULL, 0, keepactive_thread, NULL, 0, NULL);
+    if (t) { CloseHandle(t); ml_log("[exec] keepactive ON — re-posting WM_ACTIVATEAPP so the game ticks while unfocused"); }
+}
 
 static void install_safepoint_hook(void) {   // runs on the MAIN thread (in the WndProc)
     const oss_profile *p = profile_current();

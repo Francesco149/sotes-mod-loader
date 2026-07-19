@@ -29,3 +29,14 @@ ui_hz=0
 # UI snapshot build, and the roster heap-scan) and log avg/max microseconds every 5s to
 # oss_modloader.log.  0 = off (default, zero cost), 1 = on.
 profile=0
+
+# Keep the game running while its window is UNFOCUSED (it otherwise idles its input poll, so the
+# loader's safepoint stops firing when you alt-tab away).  Needed for headless testing.  Re-posts
+# WM_ACTIVATEAPP to the game window.  0 = off (default), 1 = on.  (Auto-enabled when autoload=1.)
+keepactive=0
+
+# Dev auto-load (SotES only): drive the title + save-picker menus at boot to load a save, so
+# testing/profiling reaches actual gameplay instead of the title.  0 = off (default), 1 = on.
+# autoload_slot selects the savedataNN file index; -1 (default) loads the picker's newest/default save.
+autoload=0
+autoload_slot=-1

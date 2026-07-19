@@ -31,6 +31,7 @@ void exec_push_on_frame(struct lua_State *L);  // push the mod.on_frame closure
 
 void exec_defer_mod(const char *name, const char *dir, const char *init_path);  // Lua mod init at first safepoint
 void exec_defer_native(const char *name, OssModInitFn init);    // native mod OssModInit at first safepoint
+void exec_defer_fn(void (*fn)(void));          // run a bare C fn on the engine thread at the first safepoint
 void exec_run_deferred_inline(void);           // fallback: run deferred mods now, on the caller thread
 
 // Native-mod executor callbacks (the C-side of mod.main / mod.on_frame; used by the ABI bridge).
@@ -39,6 +40,7 @@ void exec_on_frame_c(OssJobFn fn, void *user);  // run fn(user) every frame (reg
 
 int  exec_bootstrap(void);   // find + subclass the game window, post bootstrap; 1 = armed, 0 = fallback
 int  exec_armed(void);       // 1 once the safepoint hook is installed
+void exec_keepactive(void);  // keep the game ticking while its window is unfocused (dev; WM_ACTIVATEAPP re-post)
 void *exec_game_hwnd(void);  // the subclassed game window (HWND; void* to keep windows.h out of the header); NULL until bootstrap
 uint32_t exec_ti_mgr(void);  // the captured input manager (safepoint `this`); 0 until the first frame
 uint32_t exec_sp_now(void);  // the safepoint poll's timestamp (arg1); for input-record injection

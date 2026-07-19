@@ -20,6 +20,7 @@
 #include "loader_internal.h"
 #include "lua_host.h"
 #include "sotes_bindings.h"
+#include "sotes_autoload.h"
 #include "executor.h"
 #include "profile.h"
 #include "config.h"
@@ -94,6 +95,16 @@ static DWORD WINAPI loader_thread(void *unused) {
     // so mod.game.<id> resolves them (game-agnostic core; SotES knowledge stays in its TU).
     if (g_is_sotes) { sotes_bindings_register(); ml_log("[loader] SotES profile — game bindings registered"); }
     profile_select(g_is_sotes);   // pick the game profile (safepoint VA etc.) for the executor
+
+    // Keep the game ticking while its window is unfocused (needed for headless testing + the
+    // auto-load drive, since the game idles its input poll when backgrounded).  Auto-on for autoload.
+    if (config_get_int("keepactive", 0) || config_get_int("autoload", 0)) exec_keepactive();
+
+    // Dev harness: drive the menus into a save at boot so testing/profiling reaches gameplay.
+    if (g_is_sotes && config_get_int("autoload", 0)) {
+        sotes_autoload_enable(config_get_int("autoload_slot", -1));
+        ml_log("[loader] autoload enabled — will drive the title/picker into a save");
+    }
 
     if (lh_init() != 0) ml_log("[loader] Lua host down — Lua mods skipped, native still load");
 
