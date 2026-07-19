@@ -223,6 +223,7 @@ extern "C" void ddp_draw_background(void *dev_, void *ctx_, int dstW, int dstH) 
     ID3D11Device *dev = (ID3D11Device *)dev_;
     ID3D11DeviceContext *ctx = (ID3D11DeviceContext *)ctx_;
     if (!dev || !ctx || dstW <= 0 || dstH <= 0) return;
+    if (g_takeover && g_e_ready) return;   // the game window owns the display in takeover — no redundant mirror
     Frame *f = fetch_latest();
     if (!f || !f->buf || f->w <= 0 || f->h <= 0) return;
     if (!ensure_pipeline(dev) || !ensure_texture(dev, f->w, f->h)) return;

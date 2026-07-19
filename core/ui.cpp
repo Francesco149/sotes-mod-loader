@@ -47,6 +47,7 @@ extern "C" {
 #include "backends/imgui_impl_dx11.h"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
+extern "C" int config_get_int(const char *key, int def);   // oss_loader.cfg reader (config.c)
 
 // ════════════════════════════ the snapshot data model ════════════════════════════
 enum CmdType {
@@ -503,9 +504,12 @@ static DWORD WINAPI ui_thread(void *unused) {
     apply_theme();
     ImGui_ImplWin32_Init(g_hwnd);
     ImGui_ImplDX11_Init(g_dev, g_devctx);
-    ShowWindow(g_hwnd, SW_SHOWNORMAL); UpdateWindow(g_hwnd);
-    g_visible = true;
-    ml_log("[ui] companion window up (hwnd %p)", (void *)g_hwnd);
+    // In borderless takeover the game window IS the display, so the companion (a separate window that
+    // would only duplicate it) starts HIDDEN — F8 shows it as a fallback UI until the in-game overlay lands.
+    int hide = config_get_int("ddraw_takeover", 0);
+    ShowWindow(g_hwnd, hide ? SW_HIDE : SW_SHOWNORMAL); UpdateWindow(g_hwnd);
+    g_visible = !hide;
+    ml_log("[ui] companion window %s (hwnd %p)", hide ? "hidden — takeover owns the screen; F8 to show" : "up", (void *)g_hwnd);
 
     bool running = true, busy = false;
     int prev_key = 0;
