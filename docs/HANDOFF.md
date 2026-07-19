@@ -26,9 +26,34 @@ companion window (`mod.ui`).
 | P3 | chained hook registry — **Tier-1 observers** (`mod.hook.entry`) **+ Tier-2 typed** (`mod.hook.typed`) | ✅ |
 | P4 | native-mod C ABI: `OssModInit(const OssApi*)`, shared hook + executor registries | ✅ |
 | P5 | ImGui UI: loader-owned companion window — `mod.ui` + a lock-free snapshot pipeline | ✅ (host + in-game) |
-| P6 | voice patch → a Lua mod; exhaustive install/launch test → swap the release | ⬜ **next** |
+| P6 | voice patch → a Lua mod; exhaustive install/launch test → swap the release | ⬜ |
 | P7 | trainer → a mod; coexistence verified | ⬜ |
 | P8 | launcher (package manager: git-repo sources, install/update, Launch) | ⬜ |
+
+## DDraw present backend + borderless-fullscreen (NEW — `core/ddraw_present.{h,cpp}`, 2026-07-19)
+
+SotES renders through a DirectDraw7 software blitter and PRESENTS once per frame in **zdd_present
+(EN-SE `0x5e1470`, `profile.present_va`)** — thiscall, ECX = the ZDD screen ctx (mode field `+0x164`),
+finished back-buffer surface at `*(*(ECX+0x16c)+0x2c)` (640×480, **24bpp** in EN-SE windowed).  The
+executor hooks it (asm thunk like the safepoint), and `ddraw_present.cpp` re-presents the frame through
+our own **vsync'd D3D11 swapchain**.  Two modes (config):
+
+- **`ddraw=1`** (default): capture the back-buffer into a lock-free triple buffer; the UI thread draws
+  it as a game mirror behind the companion UI.  *Proven.*
+- **`ddraw_takeover=1`** (opt-in): OWN the game window — the present thunk **`ret 4`'s to SKIP the
+  game's own (unsynced ~130fps GDI BitBlt) present** and we drive the window: **borderless-fullscreen**
+  (`WS_POPUP` over the monitor), **sharp-bilinear** upscale, aspect-correct pillarbox, `Present(1,0)`
+  (smooths + paces).  Makes windowed play look/feel like a smooth exclusive-fullscreen.  Companion
+  window auto-hides (F8 to show).  *User-confirmed in-game "feels good".*
+
+Also **`mod.game.mouse.get()`** → `{screen_x, screen_y, over, world_x, world_y}`: the cursor in the
+game's 640×480 space (the ddraw layer undoes the pillarbox / client scale) + world centi-px via the
+camera (`render_root+0x104c` → view obj; origin `+0x60/+0x5c`, span `+0x64/+0x68`).  *Validated to the px.*
+
+**Next (overlay/fullscreen arc):** **in-game overlay** — draw the `mod.ui` ImGui INTO the game window
+(engine-thread, over the game frame in `ddp_engine_present`), retiring the separate companion window;
+then flip `ddraw_takeover` default-on after edge-testing (multi-monitor, alt-tab, WS_POPUP restore on
+unload).  The `mod.ui` snapshot pipeline already exists — it's a second consumer of the same data.
 
 **In-game validation** (unpacked EN-SE `sotes-trainer-oss.exe`, 2026-07-19): executor armed
 on the real `0x437c70` (game ran 24 min, no crash); `mod.game.roster` read all 3 live party
