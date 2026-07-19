@@ -60,6 +60,11 @@ void ui_overlay_present(void *dev, void *ctx, void *hwnd);
 // no ImGui touch) until the overlay is up / while it's hidden, so the game sees input as before.
 int  ui_overlay_wndproc(void *hwnd, unsigned msg, uintptr_t wparam, intptr_t lparam);
 
+// Signal that the UI's host surface (the companion window, or the windowed-takeover game window)
+// changed size, so the next drawn frame nudges every ImGui window back on-screen (a window near the
+// old right/bottom edge won't be stranded off the smaller client).  Called from the resize paths.
+void ui_mark_resized(void);
+
 // Ask the UI thread to tear down (best-effort, on clean unload).
 void ui_shutdown(void);
 

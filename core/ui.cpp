@@ -361,7 +361,7 @@ static LRESULT WINAPI wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
     if (ImGui_ImplWin32_WndProcHandler(h, m, w, l)) return true;
     switch (m) {
     case WM_SIZE:
-        if (g_dev && w != SIZE_MINIMIZED) { cleanup_rtv(); g_swap->ResizeBuffers(0, (UINT)LOWORD(l), (UINT)HIWORD(l), DXGI_FORMAT_UNKNOWN, 0); create_rtv(); }
+        if (g_dev && w != SIZE_MINIMIZED) { cleanup_rtv(); g_swap->ResizeBuffers(0, (UINT)LOWORD(l), (UINT)HIWORD(l), DXGI_FORMAT_UNKNOWN, 0); create_rtv(); ui_mark_resized(); }
         return 0;
     case WM_CLOSE:  g_visible = false; ShowWindow(h, SW_HIDE); return 0;   // hide, not destroy (toggle re-shows)
     case WM_DESTROY: PostQuitMessage(0); return 0;
@@ -430,12 +430,37 @@ static void replay_cmds(int surf, const std::vector<Cmd> &cmds) {
     }
 }
 
+// A window/monitor resize happened — nudge every ImGui window back on-screen for ONE frame, so a
+// window near the old right/bottom edge doesn't end up stranded off the smaller client.  Set from the
+// resize paths (companion WM_SIZE + the windowed-takeover resize, via ui_mark_resized), cleared after
+// the next draw.  Same-thread within each mode (companion: UI thread; overlay: engine thread).
+static bool g_reclamp = false;
+extern "C" void ui_mark_resized(void) { g_reclamp = true; }
+
+// Clamp the CURRENT ImGui window's top-left so its body stays inside the display (called between Begin
+// and End; only acts when g_reclamp is set).  Keeps at least the whole window on-screen when it fits.
+static void reclamp_current_window(void) {
+    if (!g_reclamp) return;
+    ImVec2 ds = ImGui::GetIO().DisplaySize, pos = ImGui::GetWindowPos(), sz = ImGui::GetWindowSize();
+    float maxx = ds.x - sz.x, maxy = ds.y - sz.y;
+    if (maxx < 0) maxx = 0;
+    if (maxy < 0) maxy = 0;
+    ImVec2 cl = pos;
+    if (cl.x > maxx) cl.x = maxx;
+    if (cl.x < 0)    cl.x = 0;
+    if (cl.y > maxy) cl.y = maxy;
+    if (cl.y < 0)    cl.y = 0;
+    if (cl.x != pos.x || cl.y != pos.y) ImGui::SetWindowPos(cl);
+}
+
 // Draw the whole UI from the latest snapshot (UI thread; no Lua).  Returns true if ImGui is busy
 // (an item active) so the loop keeps rendering for smooth interaction.
 static bool draw_from_snapshot(const Snapshot &snap) {
     const ImGuiViewport *vp = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + 16, vp->WorkPos.y + 16), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(460, 620), ImGuiCond_FirstUseEver);
+    const float MARGIN = 16.0f, HOST_W = 460.0f, HOST_H = 620.0f;
+    // The loader's host window spawns on the RIGHT edge (mods' own windows tile from the left, below).
+    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x - HOST_W - MARGIN, vp->WorkPos.y + MARGIN), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(HOST_W, HOST_H), ImGuiCond_FirstUseEver);
     if (ImGui::Begin(OSS_ML_NAME "##host")) {
         ImGui::TextUnformatted(OSS_ML_NAME "  " OSS_ML_VERSION);
         ImGui::TextDisabled("%s   |   panels %d   windows %d",
@@ -448,16 +473,27 @@ static bool draw_from_snapshot(const Snapshot &snap) {
             if (ImGui::CollapsingHeader(label, ImGuiTreeNodeFlags_DefaultOpen)) replay_cmds((int)i, s.cmds);
         }
     }
+    reclamp_current_window();
     ImGui::End();
 
+    // Mods' floating windows: TILE them so they don't stack on boot — a column down the left, wrapping
+    // to the next column when it runs past the bottom.  FirstUseEver, so the user can rearrange freely.
+    const float WIN_W = 360.0f, WIN_H = 300.0f, top = vp->WorkPos.y + MARGIN;
+    const float bottom = vp->WorkPos.y + vp->WorkSize.y - MARGIN;
+    float tx = vp->WorkPos.x + MARGIN, ty = top;
     for (size_t i = 0; i < snap.surfaces.size(); i++) {
         const Surface &s = snap.surfaces[i];
         if (!s.is_window) continue;
+        if (ty > top && ty + WIN_H > bottom) { ty = top; tx += WIN_W + MARGIN; }   // wrap to next column
         char label[160]; snprintf(label, sizeof label, "%s##oss_win_%zu", s.name.c_str(), i);
-        ImGui::SetNextWindowSize(ImVec2(360, 300), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowPos(ImVec2(tx, ty), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(WIN_W, WIN_H), ImGuiCond_FirstUseEver);
         if (ImGui::Begin(label)) replay_cmds((int)i, s.cmds);
+        reclamp_current_window();
         ImGui::End();
+        ty += WIN_H + MARGIN;
     }
+    g_reclamp = false;   // one-shot: every window was nudged this frame
     return ImGui::IsAnyItemActive();
 }
 
