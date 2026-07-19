@@ -4,18 +4,40 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    # Rust toolchain WITH extra targets — stock nixpkgs rustc can't add the
+    # x86_64-pc-windows-gnu target the launcher's Windows .exe cross-build needs.
+    rust-overlay.url = "github:oxalica/rust-overlay";
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
+  outputs = { self, nixpkgs, flake-utils, rust-overlay }:
     flake-utils.lib.eachDefaultSystem (system:
       let
-        pkgs = import nixpkgs { inherit system; };
+        pkgs = import nixpkgs {
+          inherit system;
+          overlays = [ rust-overlay.overlays.default ];
+        };
 
         # 32-bit mingw cross-compiler — the game is a 32-bit Win32 PE, so the
-        # proxy `version.dll`, every native mod, and the launcher all target i686
-        # to match the host process bitness.  (Same toolchain as the OpenSummoners
-        # sibling; this repo is intentionally self-contained so it clones alone.)
+        # proxy `version.dll` and every native mod target i686 to match the host
+        # process bitness.  (Same toolchain as the OpenSummoners sibling; this repo
+        # is intentionally self-contained so it clones alone.)  NOTE the launcher is
+        # NOT here — it's a 64-bit external app (see rustToolchain below).
         mingw32 = pkgs.pkgsCross.mingw32.buildPackages;
+
+        # Launcher (P8): Rust + egui, cross-built to a single 64-bit Windows .exe
+        # from this Linux/WSL env.  rust-overlay supplies a toolchain carrying the
+        # x86_64-pc-windows-gnu target std (stock nixpkgs rustc can't add targets);
+        # mingwW64 gcc is that target's PE linker driver.  (Distinct from the i686
+        # mingw above, which builds the injected 32-bit DLL.)
+        rustToolchain = pkgs.rust-bin.stable.latest.default.override {
+          targets = [ "x86_64-pc-windows-gnu" ];
+        };
+        mingwW64 = pkgs.pkgsCross.mingwW64.buildPackages;
+
+        # rust's x86_64-pc-windows-gnu std links `-l:libpthread.a` (winpthreads), which in
+        # nixpkgs lives in a SEPARATE mingw-w64 output not on the gcc default search path.
+        # We add its lib dir to the target's rustflags in shellHook so the .exe links.
+        mingwPthreads = pkgs.pkgsCross.mingwW64.windows.pthreads;
 
         # Dear ImGui sources.  We compile the .cpp directly into the mingw32 PE
         # (DX11 backend) — ImGui is source-vendored via IMGUI_DIR, not a lib.
@@ -51,20 +73,15 @@
             gnumake
             pkg-config
 
-            # ── launcher toolchain (P8): Rust ─────────────────────────
+            # ── launcher toolchain (P8): Rust + egui ──────────────────
             # The package-manager launcher (launcher/) is Rust + egui — see
-            # launcher/DESIGN.md "Tech decision".  Host builds + tests of the
-            # plumbing crate (sml-core) run here; mkShell provides a host `cc`
-            # for linking.  NOTE the launcher is a normal 64-bit desktop app,
-            # NOT i686 — it's an external process manager (spawns the game,
-            # never injects), so it needn't match the game's 32-bit-ness.  The
-            # Windows cross-target (x86_64-pc-windows-gnu) for the eframe GUI
-            # is wired in a follow-up (rust-overlay + x86_64 mingw); the
-            # plumbing crate needs neither, so `cargo test` is green with these.
-            rustc
-            cargo
-            clippy
-            rustfmt
+            # launcher/DESIGN.md "Tech decision".  `rustToolchain` does host builds
+            # + tests of the plumbing crate (sml-core; mkShell provides a host `cc`)
+            # AND carries the x86_64-pc-windows-gnu target for the GUI .exe, which
+            # links through the mingw-w64 gcc driver below.  (It bundles
+            # rustc/cargo/clippy/rustfmt, so no separate entries are needed.)
+            rustToolchain
+            mingwW64.gcc           # x86_64-w64-mingw32-gcc — PE linker for the launcher .exe
 
             # ── scripting / tooling ───────────────────────────────────
             pythonEnv
@@ -95,6 +112,12 @@
             export MINGW_CXX=i686-w64-mingw32-g++
             export MINGW_AR=i686-w64-mingw32-ar
 
+            # Launcher cross-link: cargo drives the x86_64-pc-windows-gnu link through
+            # the mingw-w64 gcc (which knows the PE CRT + import libs), plus the winpthreads
+            # lib dir the rust std needs (`-l:libpthread.a`).
+            export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc
+            export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS="-L native=${mingwPthreads}/lib"
+
             echo "sotes-mod-loader dev shell ready"
             echo "  mingw cc:     $(command -v i686-w64-mingw32-gcc)"
             echo "  imgui:        $IMGUI_DIR"
@@ -103,7 +126,8 @@
             echo "  rust:         $(command -v cargo)"
             echo ""
             echo "Build:  nix develop --command make -C core        # -> build/version.dll"
-            echo "Launcher core:  cargo test --manifest-path launcher/Cargo.toml --workspace"
+            echo "Launcher core:  cargo test  --manifest-path launcher/Cargo.toml"
+            echo "Launcher .exe:  cargo build --manifest-path launcher/Cargo.toml -p sml-gui --release --target x86_64-pc-windows-gnu"
           '';
         };
       });

@@ -2,13 +2,16 @@
 # only the GUI needs the Windows cross-toolchain (see DESIGN.md "Tech decision"):
 #
 #   core/  sml-core — registry / verify / modconfig / cfg  (pure logic, unit-tested here)
-#   gui/   sml-gui  — the eframe app  (added in Stage 2; a thin layer over sml-core)
+#   gui/   sml-gui  — the eframe app  (a thin layer over sml-core)
 #
-# `gui` is intentionally NOT a default member yet, so `cargo test` on the plumbing stays
-# fast and needs no eframe / x86_64-pc-windows-gnu toolchain.
+# `gui` is a member but NOT a default member: it builds for the Windows target (its GL +
+# windowing link against the mingw / Win32 libs), so a host build would need Linux GL/X11
+# libs we don't ship. Thus `cargo test` / `cargo build` with no args stay on `core` and are
+# fast; the GUI is built explicitly: `cargo build -p sml-gui --target x86_64-pc-windows-gnu`.
 [workspace]
 resolver = "2"
-members = ["core"]
+members = ["core", "gui"]
+default-members = ["core"]
 
 [workspace.package]
 version = "0.1.0"

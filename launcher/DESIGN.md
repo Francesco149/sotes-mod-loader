@@ -6,10 +6,12 @@ Ships **`sotes-mods`** as the default source. This is the P8 scope for a cold st
 is [`../docs/REGISTRY.md`](../docs/REGISTRY.md); the *mod format / config / versioning* it consumes is
 [`../docs/MOD-FORMAT.md`](../docs/MOD-FORMAT.md).
 
-> **Status:** Tech **decided — Rust + egui** (see "Tech decision"). The plumbing crate
-> `launcher/core` (`sml-core`) is built + tested on Linux: registry parse/validate, sha256 verify,
-> `mod.toml [config]` schema, and byte-compatible `oss_mods.cfg` I/O (25 tests green). GUI +
-> install/proxy/launch next.
+> **Status:** Tech **decided — Rust + egui**, and the WSL→Windows path is proven end-to-end. The
+> plumbing crate `sml-core` (registry, sha256 verify, `mod.toml [config]` schema, byte-compatible
+> `oss_mods.cfg`) is built + tested on Linux (25 tests green); the `sml-gui` eframe app (Browse + a
+> live Config editor) cross-compiles to a **single 64-bit Windows `.exe`** from this Nix/WSL env
+> (`x86_64-pc-windows-gnu`, release = GUI subsystem). Install / proxy / launch — and running the GUI
+> on real Windows — are next.
 
 ## What already exists to build on
 
@@ -97,7 +99,10 @@ stdlib doesn't offset a weak GUI that also breaks the trivial cross-compile via 
 `registry.json`, sha256-verifies (NIST vectors), parses the real `config_demo` / `autoload`
 `mod.toml [config]`, and writes `oss_mods.cfg` **byte-identically** to the loader's C writer — value
 (de)serialization mirrors `core/lua_host.c` CONFIG_LUA (bool→`true`/`false`, int decimal, float shortest,
-clamp+floor). 25 tests green via `nix develop`. The eframe GUI + the Windows cross-`.exe` build land next.
+clamp+floor). 25 tests green via `nix develop`. **And the toolchain is proven:** `sml-gui` (eframe) +
+`sml-core` cross-compile to a single **`x86_64-pc-windows-gnu` `.exe`** (release = GUI subsystem) from
+WSL — rust-overlay supplies the target std, mingw-w64 gcc links it (winpthreads dir added to the target
+rustflags). Running the GUI on real Windows + the install/proxy/launch modules come next.
 
 ## Build plan (phased)
 
@@ -105,14 +110,15 @@ clamp+floor). 25 tests green via `nix develop`. The eframe GUI + the Windows cro
 2. **MVP** in module order: gamedir+proxy → registry fetch/parse → install+verify → config editor →
    launch. Test against `../sotes-mods` (real source) + the scratch game copy.
    *(Done so far: registry parse/validate/merge, sha256 verify, `mod.toml [config]` schema, byte-compatible
-   `oss_mods.cfg` I/O. Next: HTTPS fetch + download, the `version.dll`↔`realver.dll` proxy swap, the
-   installed manifest, launch, and the eframe GUI.)*
+   `oss_mods.cfg` I/O, and the eframe GUI shell — Browse + a live Config editor — cross-building to a Windows
+   `.exe`. Next: HTTPS fetch + download, the `version.dll`↔`realver.dll` proxy swap, the installed manifest,
+   and launch.)*
 3. **v0.2** — sources/search/updates/deps/compat-surfacing.
 
 ## Open decisions (resolve at the start of P8)
 
-1. **GUI paradigm** — native immediate-mode (egui / Dear ImGui) vs web-UI (Wails/Tauri) vs TUI. Drives
-   the language shortlist.
+1. **GUI paradigm** — ✅ **native immediate-mode (egui)** — matches the loader's own in-game ImGui UI
+   model; the language shortlist followed from it.
 2. **Loader settings as schema ("mod zero")** — should the loader ship a `[config]`-style schema for
    its OWN settings so the launcher renders `oss_loader.cfg` generically (not hand-coded)? Clean + DRY;
    small loader-side addition.

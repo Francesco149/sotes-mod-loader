@@ -1,0 +1,17 @@
+[package]
+name = "sml-gui"
+description = "SotES mod-loader launcher — the egui/eframe desktop app (a thin layer over sml-core)."
+version.workspace = true
+edition.workspace = true
+
+# The shipped launcher binary.
+[[bin]]
+name = "sotes-launcher"
+path = "src/main.rs"
+
+[dependencies]
+sml-core = { path = "../core" }
+# Immediate-mode GUI — matches the loader's own in-game ImGui UI model (DESIGN "Tech decision").
+# default-features off drops accesskit + the Linux-only wayland/x11 features: we build for the
+# Windows target, and glow (OpenGL) is the render backend there.
+eframe = { version = "0.31", default-features = false, features = ["glow", "default_fonts"] }
