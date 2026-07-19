@@ -27,28 +27,11 @@
 #include "lauxlib.h"
 #include "luajit.h"
 
-static lua_State *g_L;   // shared state; P0 touches it only from the loader thread
-
-// ── the "Lua Big Lock" (LBL) — serialize lua_State access across threads (P5) ──
-// One RECURSIVE critical section owned here.  The UI thread (ui.cpp) holds it around
-// each frame's draw callbacks; every engine-thread Lua entry point (executor safepoint
-// + both hook dispatchers) holds it around its Lua work.  So the shared lua_State is
-// only ever touched by one thread at a time even though two threads now run Lua.
-// Lazily initialized behind a one-shot flag so it is valid even if a caller reaches it
-// before lh_init (e.g. a host test that drives the executor/hooks without lh_init).
-static CRITICAL_SECTION g_lua_cs;
-static volatile LONG     g_lua_cs_state;   // 0 = uninit, 1 = ready, 2 = initializing
-static void lh_lock_ensure(void) {
-    if (g_lua_cs_state == 1) return;
-    if (InterlockedCompareExchange(&g_lua_cs_state, 2, 0) == 0) {
-        InitializeCriticalSection(&g_lua_cs);   // recursive by default on Win32
-        InterlockedExchange(&g_lua_cs_state, 1);
-    } else {
-        while (g_lua_cs_state != 1) Sleep(0);    // another thread is initializing — spin briefly
-    }
-}
-void lh_lock(void)   { lh_lock_ensure(); EnterCriticalSection(&g_lua_cs); }
-void lh_unlock(void) { LeaveCriticalSection(&g_lua_cs); }
+// The shared Lua state.  Touched ONLY on the engine thread: mod init + on_frame + hook
+// dispatch (executor safepoint) and the per-frame UI snapshot build (ui_build, also on the
+// safepoint) all run there.  The UI thread never touches it — it consumes a lock-free snapshot
+// (ui.cpp), so there is no cross-thread lua_State access and no lock (P5, decoupled model).
+static lua_State *g_L;
 
 // mod.log(...) — like print(): tostring() each arg, space-join, route to the loader
 // log with the mod's name (carried as an upvalue so every mod's log is attributed).
@@ -93,7 +76,6 @@ static void push_mod_table(lua_State *L, const char *name, const char *dir) {
 }
 
 int lh_init(void) {
-    lh_lock_ensure();           // stand up the LBL before any thread can touch the state
     g_L = luaL_newstate();
     if (!g_L) { ml_log("[lua] luaL_newstate FAILED"); return 1; }
     luaL_openlibs(g_L);

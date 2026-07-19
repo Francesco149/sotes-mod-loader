@@ -1,13 +1,11 @@
 -- examples/ui_demo/init.lua — P5 UI demo.
 --
--- Registers a panel + a floating window through mod.ui.  The loader draws them into BOTH the
--- standalone loader window AND the in-game overlay (a mirror), from the SAME Lua callback — so
--- pressing the overlay hotkey (INSERT by default) in-game shows the identical panels on top of
--- the game.  Exercises the widget set + live mod.game reads.  The draw callbacks run on the UI
--- thread under the loader's Lua lock: they READ game memory (guarded) and enqueue any engine work
--- through mod.main — they never call the engine directly.
+-- Registers a panel + a floating window through mod.ui.  The loader draws them in its companion
+-- window.  Exercises the widget set + live mod.game reads.  The callbacks run on the ENGINE thread
+-- (the loader records their output into a lock-free snapshot the UI thread replays) — so they may
+-- read game state directly; push any heavier/engine-mutating work through mod.main.
 
-mod.log("=== ui_demo: registering UI (loader window + overlay mirror) ===")
+mod.log("=== ui_demo: registering UI ===")
 
 local ui = mod.ui
 local frames, show_details, speed = 0, true, 1.0
@@ -40,15 +38,12 @@ ui.panel("UI Demo", function()
   end
 end)
 
--- A standalone floating window (a second surface, movable; also mirrored into the overlay).
+-- A standalone floating window (a second surface, movable).
 ui.window("UI Demo — About", function()
-  ui.text_wrapped("Provided by examples/ui_demo.  mod.ui panels + floating windows are rendered " ..
-    "by the loader into both the standalone window and the in-game overlay from one Lua callback.")
+  ui.text_wrapped("Provided by examples/ui_demo.  mod.ui panels + floating windows are recorded on " ..
+    "the engine thread into a lock-free snapshot and replayed by the loader's companion window.")
   ui.separator()
   ui.text("loader: " .. mod.loader .. " " .. mod.loader_version)
-  if ui.button("toggle overlay") then ui.overlay_toggle() end
-  ui.same_line()
-  ui.text_disabled(ui.overlay_visible() and "(overlay shown)" or "(overlay hidden)")
 end)
 
-mod.log("=== ui_demo armed — open the loader window; press INSERT in-game for the overlay ===")
+mod.log("=== ui_demo armed — open the loader window (F8 toggles it) ===")

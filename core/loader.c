@@ -119,11 +119,12 @@ static DWORD WINAPI loader_thread(void *unused) {
     // on the loader thread (degraded, but non-game hosts + the test stub still work).
     if (exec_bootstrap()) {
         ml_log("[loader] executor armed — %d Lua mod(s) will init on the main thread", nl);
-        // Stand up the ImGui UI host (loader window + in-game overlay) on its own thread, now that
-        // we have the game window to track.  Opt-out with ui=0; keys are VK codes (0 = F8 / INSERT).
+        // Stand up the ImGui UI host (loader-owned companion window) on its own thread.  It's fed
+        // by a lock-free snapshot the executor builds each frame (ui_build), so it never stalls the
+        // game.  Opt-out with ui=0; ui_key is the VK toggle (0 = F8); ui_hz the refresh (0 = 30).
         if (config_get_int("ui", 1)) {
-            ui_start(exec_game_hwnd(), config_get_int("ui_key", 0), config_get_int("overlay_key", 0));
-            ml_log("[loader] UI host starting — main window + in-game overlay mirror");
+            ui_start(config_get_int("ui_key", 0), config_get_int("ui_hz", 0));
+            ml_log("[loader] UI host starting — companion window (lock-free snapshot pipeline)");
         } else ml_log("[loader] UI disabled (ui=0)");
     } else {
         ml_log("[loader] executor not armed — running %d Lua mod(s) on the loader thread (fallback)", nl);

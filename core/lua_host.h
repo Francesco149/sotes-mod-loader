@@ -17,18 +17,6 @@ extern "C" {          // ui.cpp (the C++ UI host) locks the shared state through
 // success, non-zero on failure (loader logs + skips Lua mods).
 int  lh_init(void);
 
-// ── the "Lua Big Lock" (LBL) ─────────────────────────────────────────────────
-// LuaJIT is single-threaded: only ONE thread may touch the shared lua_State at a
-// time.  Before P5 that was always the engine thread; now the UI thread (ui.cpp)
-// also runs Lua (mod.ui draw callbacks + the mem/game reads inside them).  This
-// RECURSIVE lock serializes the two: the UI thread holds it around each frame's
-// draw callbacks, and EVERY engine-thread Lua entry point (the safepoint drain and
-// both hook dispatchers) holds it around its Lua work.  Lazily initialized, so it
-// is safe to call before lh_init (host test harnesses that skip it).  Recursive, so
-// nesting (e.g. a hook that fires during the safepoint drain) never self-deadlocks.
-void lh_lock(void);
-void lh_unlock(void);
-
 // Run one Lua mod: load <init_lua_path> into a fresh sandbox env carrying a
 // per-mod `mod` table (mod.name, mod.dir, mod.log, ...), then pcall it.  Any
 // load/run error is caught + logged; the mod is flagged, the loader continues.

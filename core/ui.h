@@ -1,18 +1,19 @@
-// core/ui.h — the ImGui/DX11 UI host (P5): loader-owned main window + in-game overlay mirror.
+// core/ui.h — the ImGui/DX11 UI host (P5): a loader-owned companion window fed by a LOCK-FREE
+// bidirectional pipeline to/from the game's engine thread.  See ui.cpp for the full contract.
 //
-// Two loader-MANAGED Dear ImGui instances (a mod never creates its own context):
-//   (1) a main window — a normal top-level window with its own DX11 device (the trainer's
-//       proven, stable model; we never touch the game's renderer).  The default UI surface.
-//   (2) an in-game overlay — a SECOND managed instance on a transparent, top-most window
-//       tracked over the game's client area, toggled by a hotkey.  It renders the SAME mod
-//       draw callbacks into a second render target, so the panels are literally a mirror.
-// Both run on ONE dedicated UI thread with one message pump.  Mods add panels/windows via the
-// Lua `mod.ui.*` table (built here); the callbacks run on the UI thread under the "Lua Big
-// Lock" (lua_host.h) so they never race the engine thread's Lua.  UI callbacks READ game
-// memory (guarded) + enqueue engine work through mod.main — they never call the engine directly.
+// Two threads, NOTHING locked between them (the design requirement):
+//   - the ENGINE thread (executor safepoint) calls ui_build(): it runs the mod `mod.ui` callbacks,
+//     records a plain-data UI snapshot, and publishes it lock-free (a triple buffer, latest-wins —
+//     an unconsumed frame is dropped).  It only touches lua_State here (single-threaded Lua).
+//   - the UI thread owns the window + DX11 + ImGui: it fetches the latest snapshot lock-free and
+//     replays it, and returns interactions through per-widget ATOMIC slots (latest value wins;
+//     clicks sticky until drained).  It NEVER touches lua_State.
 //
-// The rest of the loader is C; this TU is C++ (ImGui + DX11).  The interface below is the only
-// seam, kept `extern "C"` so lua_host.c / loader.c call it like any other subsystem.
+// So a slow UI never stalls the game and a busy game never stalls the UI; stale data is dropped
+// rather than queued.  The in-game overlay is deferred (companion window only) — when added it will
+// consume the SAME snapshot through a renderer-hook backend, so mods won't change.
+//
+// This TU is C++ (ImGui + DX11); the interface is `extern "C"` so the C loader drives it.
 #ifndef OSS_UI_H
 #define OSS_UI_H
 
@@ -23,19 +24,21 @@ extern "C" {
 #endif
 
 // Bind the shared Lua state + build the `mod.ui` table.  Call from lh_init (like exec_init /
-// hooks_init), BEFORE any mod runs — so push_mod_table can hand each mod its mod.ui.
+// hooks_init), before any mod runs.
 void ui_init(struct lua_State *L);
 
 // Push the shared `ui` table onto L (for push_mod_table -> mod.ui).  No-op-safe before ui_init.
 void ui_push_table(struct lua_State *L);
 
-// Spawn the UI thread: stand up the main window (+ the overlay over game_hwnd, if non-NULL).
-// Idempotent — a second call is ignored.  game_hwnd is the subclassed game window (HWND as
-// void* to keep <windows.h> out of the C headers); NULL = main window only, no overlay.
-// key_main / key_overlay are the VK_* toggle keys (0 = use the defaults F8 / INSERT).
-void ui_start(void *game_hwnd, int key_main, int key_overlay);
+// Spawn the UI thread (the loader-owned companion window).  Idempotent.  key_toggle is the VK code
+// to show/hide the window (0 = default F8).  build_hz is the engine-side snapshot rate (0 = 30).
+void ui_start(int key_toggle, int build_hz);
 
-// Ask the UI thread to tear down its windows/devices and exit (best-effort, on clean unload).
+// ENGINE THREAD: run the mod.ui callbacks + publish a fresh snapshot.  Called from the executor
+// safepoint every frame; self-throttled to build_hz.  A no-op until ui_start ran (UI disabled).
+void ui_build(void);
+
+// Ask the UI thread to tear down (best-effort, on clean unload).
 void ui_shutdown(void);
 
 #ifdef __cplusplus

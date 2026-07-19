@@ -2,7 +2,6 @@
 
 #include "hooks.h"
 #include "executor.h"
-#include "lua_host.h"          // lh_lock/lh_unlock — the LBL (both dispatchers run Lua)
 #include "loader_internal.h"
 
 #include <windows.h>
@@ -97,7 +96,6 @@ static void gen_gate_thunk(uint8_t *t, void *closure, void *tramp) {
 static void hook_dispatch(hookrec *rec, uint32_t *regs) {
     if (InterlockedExchange(&rec->busy, 1)) return;                 // reentrancy: skip the chain
     if (GetCurrentThreadId() != exec_main_tid()) { InterlockedExchange(&rec->busy, 0); return; }  // engine thread only
-    lh_lock();                                                      // LBL: exclude the UI thread while we touch the lua_State
 
     uintptr_t caller_esp = (uintptr_t)regs + 0x24;                  // above pushfd(4)+pushad(0x20)
     OssHookCtx cc = { regs[6], regs[5], regs[7], (uint32_t)caller_esp,
@@ -128,7 +126,6 @@ static void hook_dispatch(hookrec *rec, uint32_t *regs) {
         }
     }
     if (lua_ctx) lua_pop(L, 1);                                     // ctx
-    lh_unlock();
     InterlockedExchange(&rec->busy, 0);
 }
 
@@ -256,12 +253,6 @@ static int l_hook_log(lua_State *L) {   // __log(preformatted_string) -> route t
     if (s) ml_log("%s", s);
     return 0;
 }
-// __lock/__unlock — the Tier-2 dispatcher (make_dispatch, below) brackets its Lua work in the
-// LBL, exactly like the C Tier-1 dispatcher, so a typed hook firing on the engine thread never
-// runs concurrently with the UI thread's mod.ui draw callbacks.  Recursive, so a typed hook that
-// fires during the safepoint drain (already under the LBL) does not self-deadlock.
-static int l_hook_lock(lua_State *L)   { (void)L; lh_lock();   return 0; }
-static int l_hook_unlock(lua_State *L) { (void)L; lh_unlock(); return 0; }
 
 // ── Tier-2 orchestration, in Lua (LuaJIT FFI closures marshal the typed chain) ──
 // Receives the shared `hook` table as arg #1.  Adds `hook.typed`, wraps `hook.remove` to
@@ -272,12 +263,8 @@ static const char TIER2_LUA[] =
     "local ffi = require('ffi')\n"
     "local mh_install = hook.__mh_install\n"
     "local clog = hook.__log\n"
-    "local lock = hook.__lock\n"
-    "local unlock = hook.__unlock\n"
     "hook.__mh_install = nil\n"
     "hook.__log = nil\n"
-    "hook.__lock = nil\n"
-    "hook.__unlock = nil\n"
     "local function logf(...) clog(string.format(...)) end\n"
     "local recs = {}\n"
     "local NEXT = 0x40000000\n"
@@ -289,7 +276,7 @@ static const char TIER2_LUA[] =
     "  return string.format('%s (*)%s', head, args)\n"
     "end\n"
     "local function make_dispatch(rec)\n"
-    "  local function body(...)\n"
+    "  return function(...)\n"
     "    local orig = rec.orig\n"
     "    if rec.busy then return orig(...) end\n"
     "    rec.busy = true\n"
@@ -318,16 +305,6 @@ static const char TIER2_LUA[] =
     "    rec.busy = false\n"
     "    if ctx.ret == nil then return 0 end\n"
     "    return ctx.ret\n"
-    "  end\n"
-    // The installed detour brackets the whole dispatch in the LBL (like the C Tier-1 dispatcher),\n
-    // so a typed hook that fires on the engine thread never races the UI thread's Lua.  pcall so\n
-    // unlock always runs; a body fault (not a cb — those are pcall'd inside) clears busy + returns 0.\n
-    "  return function(...)\n"
-    "    lock()\n"
-    "    local ok, r = pcall(body, ...)\n"
-    "    unlock()\n"
-    "    if ok then return r end\n"
-    "    logf('[hook] typed dispatch fault @ 0x%08x: %s', rec.va, tostring(r)); rec.busy = false; return 0\n"
     "  end\n"
     "end\n"
     "local function typed(va, sig, spec)\n"
@@ -380,8 +357,6 @@ void hooks_init(lua_State *L) {
     lua_pushcfunction(L, l_hook_count);   lua_setfield(L, -2, "count");
     lua_pushcfunction(L, l_mh_install);   lua_setfield(L, -2, "__mh_install");   // Tier-2 primitives,
     lua_pushcfunction(L, l_hook_log);     lua_setfield(L, -2, "__log");          // hidden by TIER2_LUA
-    lua_pushcfunction(L, l_hook_lock);    lua_setfield(L, -2, "__lock");         // LBL bracket for the
-    lua_pushcfunction(L, l_hook_unlock);  lua_setfield(L, -2, "__unlock");       // typed dispatcher
     // Augment with the Tier-2 layer (adds `typed`, wraps `remove`, hides the primitives).
     if (luaL_loadstring(L, TIER2_LUA) == 0) {
         lua_pushvalue(L, -2);                                     // the hook table -> the chunk's arg
