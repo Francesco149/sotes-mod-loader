@@ -187,6 +187,7 @@ void exec_on_safepoint(void *ti_mgr) {
     drain_jobs();
     run_onframe();
     uint64_t tb = prof_now(); ui_build(); prof_add(PROF_UI_BUILD, tb);   // UI snapshot build (self-throttled; P5)
+    config_mod_flush(0);   // debounced: persist mod-config changes once a burst (e.g. a slider drag) settles
     prof_add(PROF_SAFEPOINT, t0);
     prof_frame();
     InterlockedExchange(&in_sp, 0);

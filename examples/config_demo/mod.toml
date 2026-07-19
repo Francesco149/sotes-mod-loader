@@ -1,0 +1,35 @@
+[mod]
+id          = "config_demo"
+name        = "Config Demo"
+version     = "1.0.0"
+description = "Demonstrates mod.config: settings declared in [config], read + edited via a generic table."
+authors     = ["sotes-mod-loader"]
+target_games = ["sotes_en"]
+
+[loader]
+min_version = "0.1.0"
+
+# Each [config.<key>] declares one setting the mod takes.  The loader parses this (schema) and the
+# launcher will render the SAME table.  Values (overrides of `default`) live in oss_mods.cfg,
+# namespaced "config_demo.<key>".  Supported types: bool / int / float / string.
+[config.enabled]
+type        = "bool"
+default     = true
+label       = "Enabled"
+description = "Master toggle for the demo."
+
+[config.speed]
+type        = "int"
+default     = 5
+min         = 0
+max         = 20
+label       = "Speed"
+description = "An example integer setting (clamped 0..20)."
+
+[config.ratio]
+type        = "float"
+default     = 1.0
+min         = 0.0
+max         = 4.0
+label       = "Ratio"
+description = "An example float setting (0..4)."

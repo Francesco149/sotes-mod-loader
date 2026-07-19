@@ -18,6 +18,7 @@
 #include "executor.h"
 #include "hooks.h"
 #include "ui.h"
+#include "config.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -32,6 +33,10 @@
 // safepoint) all run there.  The UI thread never touches it — it consumes a lock-free snapshot
 // (ui.cpp), so there is no cross-thread lua_State access and no lock (P5, decoupled model).
 static lua_State *g_L;
+
+// mod.config factory (an embedded Lua closure, built once at lh_init): make_mod_config(modid, toml) ->
+// a per-mod config table.  See CONFIG_LUA below.  LUA_NOREF until built.
+static int g_mkconfig_ref = LUA_NOREF;
 
 // mod.log(...) — like print(): tostring() each arg, space-join, route to the loader
 // log with the mod's name (carried as an upvalue so every mod's log is attributed).
@@ -73,6 +78,96 @@ static void push_mod_table(lua_State *L, const char *name, const char *dir) {
     exec_push_on_frame(L);                   lua_setfield(L, -2, "on_frame"); // per-frame callback (P2)
     hooks_push_table(L);                     lua_setfield(L, -2, "hook");     // chained hook registry (P3)
     ui_push_table(L);                        lua_setfield(L, -2, "ui");       // shared ImGui UI host (P5)
+
+    // mod.config — the mod's own settings, schema from <dir>\mod.toml [config], values namespaced in
+    // oss_mods.cfg.  Built by the embedded factory (CONFIG_LUA).  get/set/schema; nil if the factory
+    // failed to build (a mod with no mod.toml still gets a working config with an empty schema).
+    if (g_mkconfig_ref != LUA_NOREF) {
+        char tp[MAX_PATH];
+        _snprintf(tp, MAX_PATH, "%s\\mod.toml", dir);
+        lua_rawgeti(L, LUA_REGISTRYINDEX, g_mkconfig_ref);   // make_mod_config
+        lua_pushstring(L, name);
+        lua_pushstring(L, tp);
+        if (lua_pcall(L, 2, 1, 0) == 0) lua_setfield(L, -2, "config");
+        else { ml_log("[cfg] mod.config build failed for %s: %s", name, lua_tostring(L, -1)); lua_pop(L, 1); }
+    }
+}
+
+// ── mod.config bridge: the raw namespaced value store (oss_mods.cfg, via config.c) ──
+static int l_cfg_raw_get(lua_State *L) {
+    const char *v = config_mod_get(luaL_checkstring(L, 1));
+    if (v) lua_pushstring(L, v); else lua_pushnil(L);
+    return 1;
+}
+static int l_cfg_raw_set(lua_State *L) { config_mod_set(luaL_checkstring(L, 1), luaL_optstring(L, 2, "")); return 0; }
+
+// The mod.config factory, in Lua: parses a mod.toml [config] schema (a small TOML subset) and returns
+// a config table bound to the mod's id.  get(key) resolves the stored value (coerced by the declared
+// type) or the schema default; set(key, v) clamps to min/max, writes the namespaced value + persists;
+// schema() returns (schema, order) for a generic editor (the overlay / the launcher).  Chunk args
+// (...) are the C raw get/set/save.  Runs in the global env, so its closures keep io/string/math even
+// when called from a sandboxed mod.
+static const char *CONFIG_LUA =
+    "local raw_get, raw_set = ...\n"
+    "local function pval(v)\n"
+    "  if v=='true' then return true elseif v=='false' then return false end\n"
+    "  local q=v:match('^\"(.*)\"$'); if q then return q end\n"
+    "  local arr=v:match('^%[(.*)%]$')\n"
+    "  if arr then local t={} for it in arr:gmatch('[^,]+') do it=it:gsub('^%s+',''):gsub('%s+$','')\n"
+    "    t[#t+1]=(it:match('^\"(.*)\"$')) or tonumber(it) or it end return t end\n"
+    "  return tonumber(v) or v\n"
+    "end\n"
+    "local function parse(path)\n"
+    "  local f=io.open(path,'r'); if not f then return {},{} end\n"
+    "  local schema,order={},{}; local cur=nil\n"
+    "  for line in f:lines() do\n"
+    "    line=line:gsub('^%s+',''):gsub('%s+$','')\n"
+    "    if line~='' and line:sub(1,1)~='#' then\n"
+    "      local sect=line:match('^%[config%.([%w_%-]+)%]$')\n"
+    "      if sect then cur={key=sect}; schema[sect]=cur; order[#order+1]=sect\n"
+    "      elseif line:sub(1,1)=='[' then cur=nil\n"
+    "      elseif cur then local k,v=line:match('^([%w_]+)%s*=%s*(.+)$'); if k then cur[k]=pval(v) end end\n"
+    "    end\n"
+    "  end\n"
+    "  f:close(); return schema,order\n"
+    "end\n"
+    "local function coerce(spec,raw)\n"
+    "  if raw==nil then return nil end\n"
+    "  local t=spec and spec.type\n"
+    "  if t=='bool' then return raw=='true' or raw=='1'\n"
+    "  elseif t=='int' then return math.floor(tonumber(raw) or 0)\n"
+    "  elseif t=='float' then return tonumber(raw) or 0 end\n"
+    "  return raw\n"
+    "end\n"
+    "return function(modid, toml_path)\n"
+    "  local schema,order=parse(toml_path)\n"
+    "  local cfg={}\n"
+    "  function cfg.schema() return schema, order end\n"
+    "  function cfg.get(key)\n"
+    "    local spec=schema[key]; local v=coerce(spec, raw_get(modid..'.'..key))\n"
+    "    if v==nil and spec then return spec.default end\n"
+    "    return v\n"
+    "  end\n"
+    "  function cfg.set(key, value)\n"
+    "    local spec=schema[key]\n"
+    "    if spec and (spec.type=='int' or spec.type=='float') and type(value)=='number' then\n"
+    "      if spec.min and value<spec.min then value=spec.min end\n"
+    "      if spec.max and value>spec.max then value=spec.max end\n"
+    "      if spec.type=='int' then value=math.floor(value) end\n"
+    "    end\n"
+    "    local s; if type(value)=='boolean' then s=(value and 'true' or 'false') else s=tostring(value) end\n"
+    "    raw_set(modid..'.'..key, s); return cfg.get(key)\n"
+    "  end\n"
+    "  return cfg\n"
+    "end\n";
+
+static void config_lua_init(lua_State *L) {
+    if (luaL_loadstring(L, CONFIG_LUA) != 0) { ml_log("[cfg] CONFIG_LUA load failed: %s", lua_tostring(L, -1)); lua_pop(L, 1); return; }
+    lua_pushcfunction(L, l_cfg_raw_get);
+    lua_pushcfunction(L, l_cfg_raw_set);
+    if (lua_pcall(L, 2, 1, 0) != 0) { ml_log("[cfg] mod-config factory init failed: %s", lua_tostring(L, -1)); lua_pop(L, 1); return; }
+    g_mkconfig_ref = luaL_ref(L, LUA_REGISTRYINDEX);   // the make_mod_config closure
+    ml_log("[cfg] mod.config ready (mod.toml [config] schema + oss_mods.cfg values)");
 }
 
 int lh_init(void) {
@@ -89,6 +184,7 @@ int lh_init(void) {
     exec_init(g_L);             // the main-thread executor (mod.main / mod.on_frame)
     hooks_init(g_L);            // the chained hook registry (mod.hook.entry / remove)
     ui_init(g_L);               // the ImGui UI host — builds the shared mod.ui table (P5)
+    config_lua_init(g_L);       // the mod.config factory (mod.toml [config] schema + oss_mods.cfg)
 
     ml_log("[lua] LuaJIT up (%s, JIT off, FFI on)", LUAJIT_VERSION);
     return 0;
@@ -128,6 +224,7 @@ void lh_run_mod(const char *name, const char *dir, const char *init_lua_path) {
 lua_State *lh_state(void) { return g_L; }
 
 void lh_shutdown(void) {
+    config_mod_flush(1);   // persist any pending (debounced) mod-config changes before we go
     ui_shutdown();   // signal the UI thread to stop touching the state before we close it (best-effort)
     if (g_L) { lua_close(g_L); g_L = NULL; ml_log("[lua] state closed"); }
 }
