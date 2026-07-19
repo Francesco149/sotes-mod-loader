@@ -156,7 +156,7 @@ what the trainer already computes (party roster, player coordinates), now shared
 | **P1** | `mod.mem` (guarded r/w, scan, module/reloc) **+ togglable `mod.game.*` bindings** (roster, coordinates) | **done** (verified via `examples/probe`; live data pending in-game) |
 | **P2** | Main-thread executor: WndProc bootstrap → safepoint hook → `mod.main`/`on_frame`; profile | **done** (drain/on_frame/`ti_mgr` verified via `exec_test`; MinHook install + bootstrap in-game) |
 | **P3** | Hook registry: Tier-1 chain (per-VA codegen thunk + dispatcher, multi-mod) **+ Tier-2 typed** (FFI-closure detour behind a main-thread gate; modify args/block/return) | **done** (Tier-1 in-game; Tier-2 host-verified across cdecl/stdcall/thiscall — modify/block/gate/exclusion — via `hook_typed_test`) |
-| P4 | Native bridge: C ABI, shared registry, `OssModInit` | |
+| **P4** | Native bridge: stable `OssApi` C ABI, `OssModInit` deferred to the safepoint; native mods share the hook + executor registries with Lua | **done** (host-verified: mem/scan, hook_entry, on_frame, main_enqueue, remove via `native_mod_test`; `examples/native_hello`) |
 | P5 | UI host: DX11 main window + in-game mirror, `ui.panel`/`ui.window` | |
 | P6 | Voice mod: port + exhaustive install/launch test → swap the release | |
 | P7 | Trainer mod: port + map-graph window; coexistence verified | |

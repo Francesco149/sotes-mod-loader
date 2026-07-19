@@ -18,14 +18,20 @@
 #define OSS_EXECUTOR_H
 
 #include <stdint.h>
+#include "oss_mod_api.h"   // OssJobFn, OssModInitFn (native-mod C callbacks)
 struct lua_State;
 
 void exec_init(struct lua_State *L);          // bind the Lua state + init the queue (call in lh_init)
 void exec_push_main(struct lua_State *L);      // push the mod.main closure     (for push_mod_table)
 void exec_push_on_frame(struct lua_State *L);  // push the mod.on_frame closure
 
-void exec_defer_mod(const char *name, const char *dir, const char *init_path);  // run at first safepoint
+void exec_defer_mod(const char *name, const char *dir, const char *init_path);  // Lua mod init at first safepoint
+void exec_defer_native(const char *name, OssModInitFn init);    // native mod OssModInit at first safepoint
 void exec_run_deferred_inline(void);           // fallback: run deferred mods now, on the caller thread
+
+// Native-mod executor callbacks (the C-side of mod.main / mod.on_frame; used by the ABI bridge).
+void exec_enqueue_c(OssJobFn fn, void *user);   // run fn(user) once at the next safepoint (thread-safe)
+void exec_on_frame_c(OssJobFn fn, void *user);  // run fn(user) every frame (register on the main thread)
 
 int  exec_bootstrap(void);   // find + subclass the game window, post bootstrap; 1 = armed, 0 = fallback
 int  exec_armed(void);       // 1 once the safepoint hook is installed

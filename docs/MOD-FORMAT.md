@@ -120,13 +120,44 @@ mod.on.{scene_change, settle, unload, ...}                   -- lifecycle events
 ## Native mod
 
 ```
-mods\<name>.dll     # a plain DLL with its own DllMain
+mods\<name>.dll     # a plain DLL that exports OssModInit
 ```
 
-Loaded with `LOAD_WITH_ALTERED_SEARCH_PATH`, so it can ship co-located deps in
-`mods\`. A native mod registers into the **same** hook + UI registries as Lua mods
-through the C ABI (`OssModInit(const OssApi*)`, P4) — so a perf-critical hook or a big
-feature can ship native while trivial mods stay Lua.
+Loaded with `LOAD_WITH_ALTERED_SEARCH_PATH` (so it can ship co-located deps in `mods\`).
+A native mod `#include`s **`oss_mod_api.h`** (the whole contract — copy it beside your
+source) and exports one entry:
+
+```c
+#include "oss_mod_api.h"
+__declspec(dllexport) int OssModInit(const OssApi *api) {
+    if (api->abi_version != OSS_ABI_VERSION) return 1;
+    api->log("hello from a native mod");
+    uintptr_t va = api->mem_reloc(0x5e2a10);
+    int h = api->hook_entry(va, my_observer, /*user=*/NULL);   // shares the chain with Lua mods
+    api->on_frame(my_per_frame, NULL);
+    return 0;   // 0 = ok
+}
+```
+
+The loader resolves `OssModInit` and calls it **once on the engine thread at the first
+safepoint** (after the DLL's `DllMain`), handing over the **`OssApi`** vtable — the C-side
+of the same services Lua mods get: `log`; guarded `mem_read`/`mem_write`/`mem_readable`/
+`mem_writable`/`mem_base`/`mem_reloc`/`mem_scan`; `main_enqueue`/`on_frame` (run on the
+engine thread); and `hook_entry`/`hook_remove` (Tier-1 observers — a native `OssHookEntryFn`
+gets `OssHookCtx{ecx,edx,eax,esp,ret,va}`, joining the **same per-VA chain** as Lua
+`mod.hook.entry`). So native and Lua mods interleave in one registry — ship a perf-critical
+hook or a big feature native, keep trivial mods in Lua.
+
+- **Stability:** `OssApi` is versioned (`abi_version` + `struct_size`, append-only) so a
+  mod built against an older header keeps working. **Note:** native callbacks are **not**
+  yet SEH-isolated (a Lua mod gets `pcall` isolation; a faulting native mod can fault the
+  game) — native is the powerful/you-are-responsible tier. Do engine work on the main
+  thread (inside `OssModInit`, `on_frame`, or a `main_enqueue` job); off-thread, only read
+  via the guarded `mem_*` and push work through `main_enqueue`.
+- A DLL **without** `OssModInit` still loads (its `DllMain` runs) as a legacy standalone
+  native mod — the loader just doesn't hand it the ABI.
+- Example: `examples/native_hello/` (build: `make -C examples/native_hello`).
+- Tier-2 typed hooks, UI panels, and `mod.game.*` are not in the ABI yet (appended later).
 
 ## `mod.toml`
 

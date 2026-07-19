@@ -15,7 +15,9 @@ static lua_State *g_L;
 
 #define MAX_HOOKS 64
 #define MAX_CB    16
-typedef struct { int used; int ref; } hcb;
+// A Tier-1 chain slot: a Lua callback (ref) OR a native C observer (cfn+user).  Native + Lua
+// entry hooks share the same per-VA chain, so they interleave without fighting the bytes.
+typedef struct { int used; int is_c; int ref; OssHookEntryFn cfn; void *user; } hcb;
 typedef struct {
     int          used;
     int          tier;     // 1 = entry observer (C thunk), 2 = typed (Lua FFI-closure detour)
@@ -87,23 +89,33 @@ static void gen_gate_thunk(uint8_t *t, void *closure, void *tramp) {
     FlushInstructionCache(GetCurrentProcess(), t, THUNK_SZ);
 }
 
-// The Tier-1 dispatcher: walk the chain, call each observer with a register context.  cdecl —
-// the generated thunk calls this as hook_dispatch(rec, regs).
+// The Tier-1 dispatcher: walk the chain, call each observer with an entry context.  cdecl —
+// the generated thunk calls this as hook_dispatch(rec, regs).  Native (C) observers get the
+// OssHookCtx struct directly; Lua observers get the same fields as a table (built lazily, so a
+// native-only hook needs no Lua state).
 static void hook_dispatch(hookrec *rec, uint32_t *regs) {
     if (InterlockedExchange(&rec->busy, 1)) return;                 // reentrancy: skip the chain
-    if (GetCurrentThreadId() != exec_main_tid() || !g_L) { InterlockedExchange(&rec->busy, 0); return; }  // Lua only on the engine thread
+    if (GetCurrentThreadId() != exec_main_tid()) { InterlockedExchange(&rec->busy, 0); return; }  // engine thread only
 
     uintptr_t caller_esp = (uintptr_t)regs + 0x24;                  // above pushfd(4)+pushad(0x20)
+    OssHookCtx cc = { regs[6], regs[5], regs[7], (uint32_t)caller_esp,
+                      *(uint32_t *)caller_esp, (uint32_t)rec->va };  // ecx,edx,eax,esp,ret,va
     lua_State *L = g_L;
-    lua_newtable(L);
-    lua_pushnumber(L, regs[6]);              lua_setfield(L, -2, "ecx");
-    lua_pushnumber(L, regs[5]);              lua_setfield(L, -2, "edx");
-    lua_pushnumber(L, regs[7]);              lua_setfield(L, -2, "eax");
-    lua_pushnumber(L, (double)caller_esp);   lua_setfield(L, -2, "esp");
-    lua_pushnumber(L, *(uint32_t *)caller_esp); lua_setfield(L, -2, "ret");
-    lua_pushnumber(L, (double)rec->va);      lua_setfield(L, -2, "va");
+    int lua_ctx = 0;                                                // the Lua ctx table is built on first need
     for (int i = 0; i < MAX_CB; i++) {
         if (!rec->cb[i].used) continue;
+        if (rec->cb[i].is_c) { if (rec->cb[i].cfn) rec->cb[i].cfn(&cc, rec->cb[i].user); continue; }  // native observer
+        if (!L) continue;
+        if (!lua_ctx) {
+            lua_newtable(L);
+            lua_pushnumber(L, cc.ecx);            lua_setfield(L, -2, "ecx");
+            lua_pushnumber(L, cc.edx);            lua_setfield(L, -2, "edx");
+            lua_pushnumber(L, cc.eax);            lua_setfield(L, -2, "eax");
+            lua_pushnumber(L, (double)cc.esp);    lua_setfield(L, -2, "esp");
+            lua_pushnumber(L, cc.ret);            lua_setfield(L, -2, "ret");
+            lua_pushnumber(L, (double)cc.va);     lua_setfield(L, -2, "va");
+            lua_ctx = 1;
+        }
         lua_rawgeti(L, LUA_REGISTRYINDEX, rec->cb[i].ref);          // the cb
         lua_pushvalue(L, -2);                                       // ctx
         if (lua_pcall(L, 1, 0, 0) != 0) {                          // a faulting cb is disabled
@@ -113,7 +125,7 @@ static void hook_dispatch(hookrec *rec, uint32_t *regs) {
             rec->cb[i].used = 0;
         }
     }
-    lua_pop(L, 1);                                                  // ctx
+    if (lua_ctx) lua_pop(L, 1);                                     // ctx
     InterlockedExchange(&rec->busy, 0);
 }
 
@@ -153,34 +165,51 @@ static hookrec *find_or_create(uintptr_t va) {
     return rec;
 }
 
-// ── Lua: mod.hook.entry / remove / count (Tier-1) ─────────────────────────────
+// ── Tier-1 entry hooks: Lua (mod.hook.entry) + native (hooks_entry_c) ─────────
+// Handle = 0x10000 | (recidx<<8) | slot — bit 16 set so a valid handle is never 0 (the ABI
+// uses 0 = fail); Lua + native entry hooks share one chain + one handle space + one remove.
+static int chain_free_slot(hookrec *rec) {
+    for (int i = 0; i < MAX_CB; i++) if (!rec->cb[i].used) return i;
+    return -1;
+}
+static int chain_handle(hookrec *rec, int slot) { return 0x10000 | ((int)(rec - g_hk) << 8) | slot; }
+
 static int l_hook_entry(lua_State *L) {
     uintptr_t va = (uintptr_t)lua_tonumber(L, 1);
     if (!va || !lua_isfunction(L, 2)) { lua_pushnil(L); return 1; }
     hookrec *rec = find_or_create(va);
     if (!rec) { lua_pushnil(L); return 1; }
-    int slot = -1;
-    for (int i = 0; i < MAX_CB; i++) if (!rec->cb[i].used) { slot = i; break; }
+    int slot = chain_free_slot(rec);
     if (slot < 0) { ml_log("[hook] chain full @ 0x%08x", (unsigned)va); lua_pushnil(L); return 1; }
     lua_pushvalue(L, 2);
-    rec->cb[slot].ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    rec->cb[slot].is_c = 0;
+    rec->cb[slot].ref  = luaL_ref(L, LUA_REGISTRYINDEX);
     rec->cb[slot].used = 1;
-    lua_pushinteger(L, (int)((rec - g_hk) << 8 | slot));   // handle = (recidx<<8)|slot
+    lua_pushinteger(L, chain_handle(rec, slot));
     return 1;
 }
-static int l_hook_remove(lua_State *L) {
-    int handle = (int)lua_tointeger(L, 1);
+// Native ABI: a C entry observer joins the SAME per-VA chain as Lua entry hooks.
+int hooks_entry_c(uintptr_t va, OssHookEntryFn fn, void *user) {
+    if (!va || !fn) return 0;
+    hookrec *rec = find_or_create(va);
+    if (!rec) return 0;
+    int slot = chain_free_slot(rec);
+    if (slot < 0) { ml_log("[hook] chain full @ 0x%08x", (unsigned)va); return 0; }
+    rec->cb[slot].is_c = 1; rec->cb[slot].cfn = fn; rec->cb[slot].user = user; rec->cb[slot].used = 1;
+    return chain_handle(rec, slot);
+}
+static void hooks_remove_handle(int handle) {
     int ri = (handle >> 8) & 0xff, slot = handle & 0xff;
-    if (ri < 0 || ri >= MAX_HOOKS || slot < 0 || slot >= MAX_CB) return 0;
+    if (ri < 0 || ri >= MAX_HOOKS || slot < 0 || slot >= MAX_CB) return;
     hookrec *rec = &g_hk[ri];
     if (rec->used && rec->tier == 1 && rec->cb[slot].used) {
-        luaL_unref(L, LUA_REGISTRYINDEX, rec->cb[slot].ref);
+        if (!rec->cb[slot].is_c && g_L) luaL_unref(g_L, LUA_REGISTRYINDEX, rec->cb[slot].ref);
         rec->cb[slot].used = 0;
-        // NB: the MinHook stays installed even with an empty chain (dispatch is a cheap
-        // no-op then).  Quiescent teardown/reclaim is a later refinement.
+        // The MinHook stays installed on an empty chain (dispatch is a cheap no-op); reclaim later.
     }
-    return 0;
 }
+void hooks_remove(int handle) { hooks_remove_handle(handle); }              // C ABI
+static int l_hook_remove(lua_State *L) { hooks_remove_handle((int)lua_tointeger(L, 1)); return 0; }
 static int l_hook_count(lua_State *L) {
     int n = 0; for (int i = 0; i < MAX_HOOKS; i++) if (g_hk[i].used) n++;
     lua_pushinteger(L, n); return 1;

@@ -51,14 +51,20 @@ void ml_log(const char *fmt, ...) {
 }
 
 // Load one native mod DLL from mods\.  LOAD_WITH_ALTERED_SEARCH_PATH so a mod may
-// ship co-located deps in its own folder without polluting the game dir.
+// ship co-located deps in its own folder without polluting the game dir.  If it exports
+// OssModInit it's an ABI mod: defer its init to the engine thread (like a Lua mod's init).
+// If not, it's a legacy standalone native DLL — its DllMain ran; nothing more to do.
 static int load_native(const char *filename) {
     char full[MAX_PATH];
     _snprintf(full, MAX_PATH, "%smods\\%s", g_gamedir, filename);
     HMODULE m = LoadLibraryExA(full, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
-    if (m) { ml_log("[loader] native mods\\%s -> %p", filename, (void *)m); return 1; }
-    ml_log("[loader] native FAILED mods\\%s (err %lu)", filename, GetLastError());
-    return 0;
+    if (!m) { ml_log("[loader] native FAILED mods\\%s (err %lu)", filename, GetLastError()); return 0; }
+    FARPROC pf = GetProcAddress(m, OSS_MOD_INIT_NAME);
+    OssModInitFn init = NULL;
+    if (pf) memcpy(&init, &pf, sizeof init);   // FARPROC -> typed fn ptr, no -Wcast-function-type
+    if (init) { exec_defer_native(filename, init); ml_log("[loader] native mods\\%s -> %p (OssModInit deferred to safepoint)", filename, (void *)m); }
+    else        ml_log("[loader] native mods\\%s -> %p (no OssModInit — standalone DLL)", filename, (void *)m);
+    return 1;
 }
 
 // A directory mod is a Lua mod iff it contains init.lua.  We DEFER its init to the

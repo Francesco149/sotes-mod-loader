@@ -5,6 +5,7 @@
 #include "mem.h"
 #include "lua_host.h"
 #include "config.h"
+#include "native_bridge.h"
 #include "loader_internal.h"
 
 #include <windows.h>
@@ -49,6 +50,10 @@ int      exec_armed(void)  { return g_armed; }
 #define MAX_DEFER 64
 static struct { char name[64], dir[MAX_PATH], path[MAX_PATH]; } g_defer[MAX_DEFER];
 static int g_ndefer, g_inited;
+// native mods: OssModInit is deferred here too, so it runs on the engine thread (like Lua init).
+#define MAX_NDEFER 64
+static struct { char name[64]; OssModInitFn init; } g_ndef[MAX_NDEFER];
+static int g_nndef;
 
 void exec_defer_mod(const char *name, const char *dir, const char *init_path) {
     if (g_ndefer >= MAX_DEFER) { ml_log("[exec] defer list full — dropping %s", name); return; }
@@ -57,42 +62,63 @@ void exec_defer_mod(const char *name, const char *dir, const char *init_path) {
     _snprintf(g_defer[g_ndefer].path, MAX_PATH, "%s", init_path);
     g_ndefer++;
 }
+void exec_defer_native(const char *name, OssModInitFn init) {
+    if (g_nndef >= MAX_NDEFER) { ml_log("[exec] native defer full — dropping %s", name); return; }
+    _snprintf(g_ndef[g_nndef].name, 64, "%s", name);
+    g_ndef[g_nndef].init = init;
+    g_nndef++;
+}
 static void run_deferred(void) {
+    // Native mods first (typically infrastructure), then Lua mods — both on the engine thread.
+    for (int i = 0; i < g_nndef; i++) {
+        int rc = g_ndef[i].init(oss_api());
+        ml_log("[exec] native mod init: %s -> %d", g_ndef[i].name, rc);
+    }
     for (int i = 0; i < g_ndefer; i++) lh_run_mod(g_defer[i].name, g_defer[i].dir, g_defer[i].path);
 }
 void exec_run_deferred_inline(void) { run_deferred(); }   // fallback (loader thread)
 
-// ── job queue (mod.main) + on_frame list ─────────────────────────────────────
+// ── job queue (mod.main) + on_frame list — each entry is a Lua ref OR a native C cb ──
+typedef struct { int is_c; int ref; OssJobFn cfn; void *user; } exec_cb;
 #define MAX_JOBS 256
-static int g_job[MAX_JOBS], g_job_head, g_job_tail;
+static exec_cb g_job[MAX_JOBS]; static int g_job_head, g_job_tail;
 static CRITICAL_SECTION g_lock;
 static int g_lock_init;
 
 #define MAX_ONFRAME 128
-static int g_onframe[MAX_ONFRAME], g_nonframe;
+static exec_cb g_onframe[MAX_ONFRAME]; static int g_nonframe;
 
 static void run_ref_once(int ref) {   // rawgeti -> pcall -> unref (main thread)
     lua_rawgeti(g_L, LUA_REGISTRYINDEX, ref);
     if (lua_pcall(g_L, 0, 0, 0) != 0) { ml_log("[exec] main job error: %s", lua_tostring(g_L, -1)); lua_pop(g_L, 1); }
     luaL_unref(g_L, LUA_REGISTRYINDEX, ref);
 }
+static void job_push(exec_cb j) {
+    EnterCriticalSection(&g_lock);
+    g_job[g_job_tail] = j;
+    g_job_tail = (g_job_tail + 1) % MAX_JOBS;
+    if (g_job_tail == g_job_head) g_job_head = (g_job_head + 1) % MAX_JOBS;   // full: drop oldest
+    LeaveCriticalSection(&g_lock);
+}
 static void drain_jobs(void) {
     for (;;) {
-        int ref = -1;
+        exec_cb j; int have = 0;
         EnterCriticalSection(&g_lock);
-        if (g_job_head != g_job_tail) { ref = g_job[g_job_head]; g_job_head = (g_job_head + 1) % MAX_JOBS; }
+        if (g_job_head != g_job_tail) { j = g_job[g_job_head]; g_job_head = (g_job_head + 1) % MAX_JOBS; have = 1; }
         LeaveCriticalSection(&g_lock);
-        if (ref < 0) break;
-        run_ref_once(ref);     // outside the lock: a job may enqueue more
+        if (!have) break;
+        if (j.is_c) { if (j.cfn) j.cfn(j.user); } else run_ref_once(j.ref);   // outside the lock: may enqueue more
     }
 }
 static void run_onframe(void) {
     for (int i = 0; i < g_nonframe; ) {
-        lua_rawgeti(g_L, LUA_REGISTRYINDEX, g_onframe[i]);
-        if (lua_pcall(g_L, 0, 0, 0) != 0) {   // a faulting callback is DISABLED, not propagated (invariant #7)
+        exec_cb *c = &g_onframe[i];
+        if (c->is_c) { if (c->cfn) c->cfn(c->user); i++; continue; }   // native cb (not pcall-isolated — see note)
+        lua_rawgeti(g_L, LUA_REGISTRYINDEX, c->ref);
+        if (lua_pcall(g_L, 0, 0, 0) != 0) {   // a faulting Lua callback is DISABLED, not propagated (invariant #7)
             ml_log("[exec] on_frame error (disabling cb): %s", lua_tostring(g_L, -1));
             lua_pop(g_L, 1);
-            luaL_unref(g_L, LUA_REGISTRYINDEX, g_onframe[i]);
+            luaL_unref(g_L, LUA_REGISTRYINDEX, c->ref);
             g_onframe[i] = g_onframe[--g_nonframe];
         } else i++;
     }
@@ -117,20 +143,30 @@ static int l_main(lua_State *L) {
     lua_pushvalue(L, 1);
     int ref = luaL_ref(L, LUA_REGISTRYINDEX);
     if (!g_armed) { run_ref_once(ref); return 0; }   // no executor: run now (already a safe thread)
-    EnterCriticalSection(&g_lock);
-    g_job[g_job_tail] = ref;
-    g_job_tail = (g_job_tail + 1) % MAX_JOBS;
-    if (g_job_tail == g_job_head) g_job_head = (g_job_head + 1) % MAX_JOBS;   // full: drop oldest
-    LeaveCriticalSection(&g_lock);
+    exec_cb j = { 0, ref, NULL, NULL };
+    job_push(j);
     return 0;
 }
 static int l_on_frame(lua_State *L) {
     if (!lua_isfunction(L, 1)) return 0;
     lua_pushvalue(L, 1);
     int ref = luaL_ref(L, LUA_REGISTRYINDEX);
-    if (g_nonframe < MAX_ONFRAME) g_onframe[g_nonframe++] = ref;
+    if (g_nonframe < MAX_ONFRAME) { exec_cb c = { 0, ref, NULL, NULL }; g_onframe[g_nonframe++] = c; }
     else { luaL_unref(L, LUA_REGISTRYINDEX, ref); ml_log("[exec] on_frame list full"); }
     return 0;
+}
+
+// ── native-mod C callbacks (the ABI bridge's main_enqueue / on_frame) ─────────
+void exec_enqueue_c(OssJobFn fn, void *user) {
+    if (!fn) return;
+    if (!g_armed) { fn(user); return; }               // no executor yet: run now (caller is a safe thread)
+    exec_cb j = { 1, 0, fn, user };
+    job_push(j);                                       // thread-safe (locked): a worker may enqueue engine work
+}
+void exec_on_frame_c(OssJobFn fn, void *user) {
+    if (!fn) return;                                   // register on the main thread (the list is unlocked, like Lua's)
+    if (g_nonframe < MAX_ONFRAME) { exec_cb c = { 1, 0, fn, user }; g_onframe[g_nonframe++] = c; }
+    else ml_log("[exec] on_frame list full (native)");
 }
 
 void exec_init(lua_State *L) {

@@ -3,12 +3,13 @@
 Rolling "where we are / what's next" for a fresh session. Orient: this → `DESIGN.md`
 (architecture + phase table) → `MOD-FORMAT.md` (the `mod.*` API) → `TESTING.md`.
 
-## State: P0–P3 DONE (incl. **Tier-2 typed hooks**). Next = **P4** (native-mod C ABI).
+## State: P0–P4 DONE (incl. **Tier-2 typed hooks** + the **native-mod C ABI**). Next = **P5** (UI).
 
-The loader is a usable modding API: a mod reads guarded memory (`mod.mem`), reads live
-RE'd game state (`mod.game.*`), runs per-frame/one-shot on the engine thread
-(`mod.on_frame`/`mod.main`), and **hooks any function alongside other mods** (`mod.hook` —
-Tier-1 observe + Tier-2 typed modify/block/return).
+The loader is a usable modding API — in Lua AND native C: a mod reads guarded memory
+(`mod.mem` / `api->mem_*`), reads live RE'd game state (`mod.game.*`), runs per-frame/one-shot
+on the engine thread (`mod.on_frame`/`mod.main` / `api->on_frame`/`main_enqueue`), and **hooks
+any function alongside other mods** (`mod.hook` — Tier-1 observe + Tier-2 typed; native
+`api->hook_entry` shares the same chain).
 
 | phase | what | status |
 |---|---|---|
@@ -16,8 +17,8 @@ Tier-1 observe + Tier-2 typed modify/block/return).
 | P1 | `mod.mem` (guarded) + togglable `mod.game.*` bindings (roster, coordinates) | ✅ |
 | P2 | main-thread executor: WndProc bootstrap → safepoint hook `0x437c70` → `mod.main`/`on_frame` | ✅ |
 | P3 | chained hook registry — **Tier-1 observers** (`mod.hook.entry`) **+ Tier-2 typed** (`mod.hook.typed`) | ✅ |
-| P4 | native-mod C ABI (`OssModInit`) | ⬜ **next** |
-| P5 | ImGui UI: loader-owned main window + in-game mirror (hotkey) | ⬜ |
+| P4 | native-mod C ABI: `OssModInit(const OssApi*)`, shared hook + executor registries | ✅ |
+| P5 | ImGui UI: loader-owned main window + in-game mirror (hotkey) | ⬜ **next** |
 | P6 | voice patch → a Lua mod; exhaustive install/launch test → swap the release | ⬜ |
 | P7 | trainer → a mod; coexistence verified | ⬜ |
 | P8 | launcher (package manager: git-repo sources, install/update, Launch) | ⬜ |
@@ -60,7 +61,10 @@ not `\\wsl$`). In-game: see `TESTING.md` (stage into the game dir, launch with
 - `hooks.c` — the chained hook registry (both tiers): Tier-1 per-VA codegen thunk →
   `hook_dispatch` → observer chain; Tier-2 per-VA main-thread gate → FFI-closure dispatcher
   (the embedded `TIER2_LUA`) → typed chain. `g_hk[]` carries a `tier` (VA is T1 xor T2).
-- `profile.c` — the C game profile (safepoint VA, launcher class + control ids).
+- `oss_mod_api.h` — the STABLE native-mod ABI (the only header a native mod needs): `OssApi`
+  vtable, `OssHookCtx`, `OssModInit`.  `native_bridge.c` — fills that vtable from mem/executor/
+  hooks and hands it to each native mod (`oss_api()`).
+- `profile.c` — the C game profile (safepoint VA, **window class**, launcher class + control ids).
 - `config.c` — `oss_loader.cfg` (key=value) reader. `minhook/` — vendored trampoline backend.
 
 ## P3 Tier-2 — typed hooks (LANDED)
@@ -90,6 +94,33 @@ not `\\wsl$`). In-game: see `TESTING.md` (stage into the game dir, launch with
 
 Host-proven exhaustively by `core/test/hook_typed_test.c` (`make -C core tests`). Not yet run
 in-game — `examples/hook_typed/init.lua` is the smoke test (typed `kb_poll`, observe-only).
+
+## P4 native-mod C ABI (LANDED)
+
+`mods\<name>.dll` exports `int OssModInit(const OssApi *api)`; the loader resolves it
+(`GetProcAddress`) and **defers it to the first safepoint** so it runs on the engine thread
+like a Lua mod's init.  `OssApi` (`core/oss_mod_api.h` — the whole contract, versioned by
+`abi_version` + `struct_size`, append-only) wires to the internal services via
+`core/native_bridge.c`:
+
+- `log`; guarded `mem_read/write/readable/writable/base/reloc/scan` (the AOB scan core was
+  lifted out of `l_scan` into `mem_scan_aob`).
+- `main_enqueue`/`on_frame` — the C-side of `mod.main`/`mod.on_frame`.  The executor's job
+  queue + on_frame list now hold a tagged entry (Lua ref OR C fn+user).
+- `hook_entry`/`hook_remove` — a native `OssHookEntryFn` joins the SAME per-VA Tier-1 chain as
+  Lua `mod.hook.entry` (the `hcb` slot is tagged; the dispatcher builds the Lua ctx table only
+  when a Lua cb is present, so a native-only hook needs no Lua).  Entry handles are now
+  `0x10000 | (rec<<8) | slot` (never 0, since the ABI uses 0 = fail).
+- A DLL with NO `OssModInit` still loads as a legacy standalone native mod (the trainer/voice
+  today) — its DllMain runs, no ABI handoff.
+
+Host-proven by `core/test/native_mod_test.c` (`>> NATIVE_ABI_OK`).  Example: `examples/
+native_hello/` (a real `.dll` — `make -C examples/native_hello`).  **Not yet run in-game**
+(host-verified; the trainer/voice migrations P6/P7 will exercise it live).
+
+Native gaps (deferred, ABI-compatible to add): **no SEH isolation** for native cbs (a faulting
+native mod can fault the game; Lua gets pcall); no native **Tier-2 typed** hooks; no native
+`mod.game.*` accessor.
 
 ## Open debts / follow-ups
 

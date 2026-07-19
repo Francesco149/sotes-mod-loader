@@ -174,8 +174,9 @@ static int hexv(char c) {
     if (c >= 'A' && c <= 'F') return c - 'A' + 10;
     return -1;
 }
-static int l_scan(lua_State *L) {
-    const char *s = luaL_checkstring(L, 1);
+// C core (shared by Lua l_scan + the native ABI mem_scan): returns the first match VA or 0.
+uintptr_t mem_scan_aob(const char *s) {
+    if (!s) return 0;
     uint8_t pat[256]; int mask[256], n = 0;
     while (*s && n < 256) {
         while (*s == ' ') s++;
@@ -187,7 +188,7 @@ static int l_scan(lua_State *L) {
             pat[n] = (uint8_t)((hi << 4) | lo); mask[n] = 1; n++; s += 2;
         }
     }
-    if (n == 0 || !g_main_size) { lua_pushnil(L); return 1; }
+    if (n == 0 || !g_main_size) return 0;
     uintptr_t base = g_main_base, end = base + g_main_size;
     uint8_t *addr = (uint8_t *)base;
     MEMORY_BASIC_INFORMATION mbi;
@@ -199,13 +200,17 @@ static int l_scan(lua_State *L) {
             uint8_t *e = next - n;
             for (; p <= e && (uintptr_t)p < end; ++p) {
                 int i; for (i = 0; i < n; i++) if (mask[i] && p[i] != pat[i]) break;
-                if (i == n) { lua_pushnumber(L, (double)(uintptr_t)p); return 1; }
+                if (i == n) return (uintptr_t)p;
             }
         }
         if (next <= addr) break;
         addr = next;
     }
-    lua_pushnil(L);
+    return 0;
+}
+static int l_scan(lua_State *L) {
+    uintptr_t hit = mem_scan_aob(luaL_checkstring(L, 1));
+    if (hit) lua_pushnumber(L, (double)hit); else lua_pushnil(L);
     return 1;
 }
 

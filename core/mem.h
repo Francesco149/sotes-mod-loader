@@ -23,6 +23,7 @@ int mem_rd32(const void *p, uint32_t *out);   // guarded 4-byte read (0 = unread
 void      mem_init(void);            // compute the host module's base + PE ImageBase + delta
 uintptr_t mem_main_base(void);       // GetModuleHandle(NULL) (the running exe base)
 uintptr_t mem_reloc(uintptr_t va);   // an ImageBase-relative VA -> live address (va + ASLR delta)
+uintptr_t mem_scan_aob(const char *pattern);   // AOB over the exe image ("48 8B ?? C3"); 0 = miss
 
 // ── Lua surface ──────────────────────────────────────────────────────────────
 void mem_install_lua(struct lua_State *L);   // build the shared `mem` table; store a registry ref

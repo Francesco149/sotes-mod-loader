@@ -26,7 +26,7 @@ LJ_INC := $(LJ_DIR)/src
 LJ_HOSTCC ?= $(LUAJIT_HOST_CC)
 
 # ── host sources ─────────────────────────────────────────────────────────────
-CSRC   := loader.c lua_host.c mem.c game_bindings.c sotes_bindings.c executor.c profile.c config.c hooks.c
+CSRC   := loader.c lua_host.c mem.c game_bindings.c sotes_bindings.c executor.c profile.c config.c hooks.c native_bridge.c
 # MinHook (vendored, BSD-2): the trampoline backend for the safepoint hook (P2) + the
 # general chained hook registry (P3).
 MINHOOK := minhook/src/hook.c minhook/src/buffer.c minhook/src/trampoline.c \
@@ -80,7 +80,7 @@ $(LJ_LIB):
 TESTDIR   := test
 TESTOBJ   := $(filter-out $(OBJ)/loader.o, $(COBJ))
 TESTLINK  := -static -static-libgcc
-TESTS     := ../build/exec_test.exe ../build/hook_typed_test.exe
+TESTS     := ../build/exec_test.exe ../build/hook_typed_test.exe ../build/native_mod_test.exe
 
 ../build/%.exe: $(TESTDIR)/%.c $(TESTOBJ)
 	@mkdir -p ../build
@@ -91,6 +91,7 @@ tests: $(TESTS)
 	@cp $(TESTDIR)/exec_test_mod.lua $(TESTDIR)/hook_typed_test_mod.lua ../build/
 	@echo "== exec_test =="        && (cd ../build && ./exec_test.exe)
 	@echo "== hook_typed_test ==" && (cd ../build && ./hook_typed_test.exe)
+	@echo "== native_mod_test ==" && (cd ../build && ./native_mod_test.exe)
 
 clean:
 	rm -rf $(OBJ) $(OUT) $(TESTS)

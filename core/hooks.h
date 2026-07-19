@@ -25,9 +25,14 @@
 #ifndef OSS_HOOKS_H
 #define OSS_HOOKS_H
 
+#include "oss_mod_api.h"   // OssHookEntryFn (native entry observers)
 struct lua_State;
 
 void hooks_init(struct lua_State *L);         // bind the Lua state (call in lh_init)
 void hooks_push_table(struct lua_State *L);    // push the shared `hook` table (for push_mod_table)
+
+// Native ABI: a C entry observer joins the same Tier-1 chain as Lua mod.hook.entry.
+int  hooks_entry_c(uintptr_t va, OssHookEntryFn fn, void *user);   // -> handle (0 = fail)
+void hooks_remove(int handle);                                     // remove an entry hook (Lua or native)
 
 #endif
