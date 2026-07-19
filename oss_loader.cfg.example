@@ -52,9 +52,6 @@ profile=0
 # the overlay.  Re-posts WM_ACTIVATEAPP only (no focus steal).  1 = on (default), 0 = off.
 keepactive=1
 
-# Auto-load a save at boot (SotES only): drive the title + save-picker menus straight into a save, so
-# launch takes you into your game instead of the title screen.  Handy as a QoL shortcut (and for
-# testing/profiling, which needs to reach actual gameplay).  0 = off (default), 1 = on.
-# autoload_slot selects the savedataNN file index; -1 (default) loads the picker's newest/default save.
-autoload=0
-autoload_slot=-1
+# Auto-loading a save at boot is now the `autoload` MOD (in the sotes-mods repo), not a core flag:
+# install it and set its `slot` in the mod's config (oss_mods.cfg / the launcher).  It drives the
+# menus via the loader's mod.game.save op.  (Reaching gameplay in dev tests = drop that mod in mods\.)

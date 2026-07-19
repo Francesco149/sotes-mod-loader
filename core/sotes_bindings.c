@@ -16,6 +16,8 @@
 #include "game_bindings.h"
 #include "mem.h"
 #include "executor.h"
+#include "hooks.h"            // hooks_entry_c — the picker-poll observer (mod.game.save)
+#include "oss_mod_api.h"      // OssHookCtx
 #include "prof.h"
 #include "ddraw_present.h"   // ddp_cursor_game — cursor -> game 640x480 screen space (mod.game.mouse)
 #include "loader_internal.h"
@@ -314,6 +316,115 @@ static void install_mouse(lua_State *L) {
     lua_pushcfunction(L, l_mouse_get); lua_setfield(L, -2, "get");
 }
 
+// ══════════════ semantic loader ops — RE'd menu-drive, exposed so mods ORCHESTRATE it ══════════════
+// The attract-mode toggle + auto-load-a-save mechanism (input-record ring, the demo trigger, the
+// title/picker poll VAs) lives HERE in the loader; a mod just says mod.game.save.load(slot).  This is
+// the old core/sotes_autoload.c, retired into a proper binding — same mechanism, now mod-facing.
+// Input-record contract: a record is {id@0, now@4, state=1@8}; its pointer is published into the input
+// manager's 64-slot ring at mgr+0x0c, slot 63 (first polled); the poll matches id + state==1 +
+// (poll_now - record_now) <= 0x64.  `now` = the poll's own timestamp.  Everything runs engine-thread.
+#define VA_PICKER_POLL  0x4378d0    // save-slot picker input poll (thiscall; ecx = picker ctrl, arg2 = now)
+#define VA_DEMO_JL      0x583866    // attract/demo trigger (jl 0x5832e1)
+#define BTN_CONFIRM     0x25        // title/picker confirm button id
+#define RING_OFF        0x0c        // input mgr -> 64 record-pointer ring
+#define RING_SLOT       63          // ordinal 0 = the first-polled ring slot
+
+static int      g_al_target = -1;   // savedataNN index; < 0 = newest/default
+static int      g_al_state;         // 0 idle, 1 title-confirm, 2 picker-confirm, 3 done
+static uint32_t g_al_pk_mgr;        // captured picker controller
+static int      g_al_pk_logged, g_al_done_logged;
+static uint8_t  g_al_rec[8][16];    // rotating record buffers (static -> always game-readable)
+static int      g_al_recn;
+static int      g_al_demo_frozen;
+static uint8_t  g_al_demo_orig[6];  // original demo-trigger bytes (restore on attract ON)
+
+static int al_scene_loaded(void) {
+    uint32_t root = 0;
+    return mem_rd32((void *)mem_reloc(VA_RENDER_ROOT), &root) && root != 0;
+}
+static void al_inject(uint32_t mgr, uint32_t id, uint32_t now) {   // publish {id,now,1} into ring slot 63
+    if (!mgr) return;
+    uintptr_t slot = mgr + RING_OFF + RING_SLOT * 4;
+    if (!mem_writable((void *)slot, 4)) return;
+    uint8_t *rec = g_al_rec[g_al_recn++ & 7];
+    *(uint32_t *)(rec + 0) = id; *(uint32_t *)(rec + 4) = now; *(uint32_t *)(rec + 8) = 1;
+    *(uint32_t *)slot = (uint32_t)(uintptr_t)rec;
+}
+// Freeze / restore the attract-demo trigger (0f 8c .. jl  <->  e9 .. 90 jmp+nop) so the title stays up.
+static void al_attract_freeze(int freeze) {
+    void *va = (void *)mem_reloc(VA_DEMO_JL);
+    DWORD old;
+    if (freeze) {
+        if (g_al_demo_frozen) return;
+        static const uint8_t want[2] = { 0x0f, 0x8c };
+        if (!mem_readable(va, 6) || memcmp(va, want, 2) != 0) { ml_log("[sotes] attract: demo bytes unexpected — not frozen"); return; }
+        memcpy(g_al_demo_orig, va, 6);
+        static const uint8_t patch[6] = { 0xe9, 0x76, 0xfa, 0xff, 0xff, 0x90 };   // jmp 0x5832e1 + nop
+        if (VirtualProtect(va, 6, PAGE_EXECUTE_READWRITE, &old)) {
+            memcpy(va, patch, 6); VirtualProtect(va, 6, old, &old); FlushInstructionCache(GetCurrentProcess(), va, 6);
+            g_al_demo_frozen = 1; ml_log("[sotes] attract OFF — demo trigger frozen @ %p", va);
+        }
+    } else {
+        if (!g_al_demo_frozen) return;
+        if (VirtualProtect(va, 6, PAGE_EXECUTE_READWRITE, &old)) {
+            memcpy(va, g_al_demo_orig, 6); VirtualProtect(va, 6, old, &old); FlushInstructionCache(GetCurrentProcess(), va, 6);
+            g_al_demo_frozen = 0; ml_log("[sotes] attract ON — demo trigger restored @ %p", va);
+        }
+    }
+}
+static void al_mark_done(void) {
+    g_al_state = 3;
+    al_attract_freeze(0);   // drive done (past the title) — restore the demo so attract works normally again
+    if (!g_al_done_logged) { g_al_done_logged = 1; ml_log("[sotes] save.load: scene loaded — gameplay reached, drive stopped"); }
+}
+static void al_picker_cb(const OssHookCtx *ctx, void *user) {   // picker poll observer: capture ctrl + confirm
+    (void)user;
+    if (!g_al_pk_logged) { g_al_pk_logged = 1; ml_log("[sotes] save.load: picker open (ctrl=0x%08x) — confirming", (unsigned)ctx->ecx); }
+    g_al_pk_mgr = ctx->ecx;
+    if (g_al_state == 1) g_al_state = 2;
+    if (g_al_state != 2) return;
+    if (al_scene_loaded()) { al_mark_done(); return; }
+    uint32_t now = 0; mem_rd32((void *)(uintptr_t)(ctx->esp + 8), &now);   // 0x4378d0 arg2 = the poll's now
+    al_inject(ctx->ecx, BTN_CONFIRM, now);
+}
+static void al_title_cb(void *user) {   // title poll drive, every safepoint
+    (void)user;
+    if (g_al_state == 3) return;
+    if (al_scene_loaded()) { al_mark_done(); return; }
+    if (g_al_state == 1 && !g_al_pk_mgr) al_inject(exec_ti_mgr(), BTN_CONFIRM, exec_sp_now());
+}
+
+// mod.game.attract.set(on): on=false freezes the attract/demo (keeps the title up); on=true restores.
+static int l_attract_set(lua_State *L) {
+    if (!gb_enabled("attract")) return 0;
+    al_attract_freeze(lua_toboolean(L, 1) ? 0 : 1);
+    return 0;
+}
+// mod.game.save.load([slot]) -> ok: drive the title + picker menus into a save (slot < 0 / nil =
+// newest/default).  Runs on the engine thread (mod init / on_frame), so it installs the picker hook +
+// the per-frame drive directly; arms once (a second call while driving is a no-op that returns false).
+static int l_save_load(lua_State *L) {
+    if (!gb_enabled("save")) { lua_pushboolean(L, 0); return 1; }
+    if (g_al_state != 0) { lua_pushboolean(L, 0); return 1; }
+    g_al_target = lua_isnumber(L, 1) ? (int)lua_tointeger(L, 1) : -1;
+    al_attract_freeze(1);                                   // don't cut to the demo mid-drive
+    uintptr_t pk = mem_reloc(VA_PICKER_POLL);
+    int h = hooks_entry_c(pk, al_picker_cb, NULL);
+    exec_on_frame_c(al_title_cb, NULL);
+    g_al_state = 1;
+    ml_log("[sotes] save.load: armed — picker hook @ 0x%08x (handle %d), slot %d (<0 = newest)", (unsigned)pk, h, g_al_target);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+static void install_attract(lua_State *L) {
+    lua_newtable(L);
+    lua_pushcfunction(L, l_attract_set); lua_setfield(L, -2, "set");
+}
+static void install_save(lua_State *L) {
+    lua_newtable(L);
+    lua_pushcfunction(L, l_save_load); lua_setfield(L, -2, "load");
+}
+
 // ── registration ─────────────────────────────────────────────────────────────
 void sotes_bindings_register(void) {
     static const gb_def ROSTER = {
@@ -328,7 +439,17 @@ void sotes_bindings_register(void) {
         "mouse", "cursor in game 640x480 screen-space + world centi-px (screen_x/y, world_x/y, over)",
         install_mouse, 1
     };
+    static const gb_def ATTRACT = {
+        "attract", "attract/demo-mode toggle — .set(on) (off keeps the title up)",
+        install_attract, 1
+    };
+    static const gb_def SAVE = {
+        "save", "auto-load a save by driving the menus — .load(slot) (<0 = newest)",
+        install_save, 1
+    };
     gb_register(&ROSTER);
     gb_register(&COORD);
     gb_register(&MOUSE);
+    gb_register(&ATTRACT);
+    gb_register(&SAVE);
 }

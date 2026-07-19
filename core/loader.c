@@ -20,7 +20,6 @@
 #include "loader_internal.h"
 #include "lua_host.h"
 #include "sotes_bindings.h"
-#include "sotes_autoload.h"
 #include "executor.h"
 #include "profile.h"
 #include "config.h"
@@ -113,14 +112,8 @@ static DWORD WINAPI loader_thread(void *unused) {
     // Keep the game ticking while its window is unfocused (the game idles its input poll when it
     // loses foreground).  DEFAULT-ON built-in: the companion UI window steals foreground when you
     // click it, which would otherwise freeze the game loop + the UI snapshot.  keepactive=0 opts out.
-    if (config_get_int("keepactive", 1) || config_get_int("autoload", 0)) exec_keepactive();
-
-    // Auto-load a save at boot: drive the title/picker menus straight into a save — a QoL shortcut
-    // (and how testing/profiling reaches real gameplay).  Opt-in (autoload=1); SotES-only.
-    if (g_is_sotes && config_get_int("autoload", 0)) {
-        sotes_autoload_enable(config_get_int("autoload_slot", -1));
-        ml_log("[loader] autoload enabled — will drive the title/picker into a save");
-    }
+    // (The auto-load-a-save feature is now the `autoload` MOD — mod.game.save.load — not a core flag.)
+    if (config_get_int("keepactive", 1)) exec_keepactive();
 
     if (lh_init() != 0) ml_log("[loader] Lua host down — Lua mods skipped, native still load");
 
