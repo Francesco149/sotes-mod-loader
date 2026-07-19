@@ -24,6 +24,7 @@
 #include "profile.h"
 #include "config.h"
 #include "ui.h"
+#include "prof.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -87,6 +88,7 @@ static DWORD WINAPI loader_thread(void *unused) {
     (void)unused;
 
     config_load(g_gamedir);   // oss_loader.cfg (skip_launcher etc.), before the executor arms
+    prof_enable(config_get_int("profile", 0));   // opt-in per-frame profiler (dev; profile=1)
 
     // Register the profile's native game bindings BEFORE the Lua game table finalizes,
     // so mod.game.<id> resolves them (game-agnostic core; SotES knowledge stays in its TU).

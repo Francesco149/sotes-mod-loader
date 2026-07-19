@@ -24,3 +24,8 @@ ui_key=0
 # Engine-side snapshot refresh rate in Hz (0 = default 30).  Higher = snappier live data but more
 # per-frame work on the game thread; the UI itself only redraws when the snapshot changes.
 ui_hz=0
+
+# Dev profiler: time the loader's per-frame overhead on the engine thread (the safepoint drain, the
+# UI snapshot build, and the roster heap-scan) and log avg/max microseconds every 5s to
+# oss_modloader.log.  0 = off (default, zero cost), 1 = on.
+profile=0

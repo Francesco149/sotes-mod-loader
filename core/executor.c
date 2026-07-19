@@ -7,6 +7,7 @@
 #include "config.h"
 #include "native_bridge.h"
 #include "ui.h"
+#include "prof.h"
 #include "loader_internal.h"
 
 #include <windows.h>
@@ -31,12 +32,15 @@ uint32_t *exec_main_tid_ptr(void) { return &g_main_tid; }   // hooks.c bakes thi
 void      safepoint_c(void)        asm("oss_sp_c");
 void     *g_sp_orig                asm("oss_sp_orig");   // MinHook trampoline (original)
 volatile uint32_t g_ti_mgr         asm("oss_sp_mgr");    // captured input manager (ecx)
+volatile uint32_t g_sp_now         asm("oss_sp_now");    // captured poll timestamp (arg1 at [esp+4])
 
 __asm__(
     ".text\n"
     ".globl oss_sp_detour\n"
     "oss_sp_detour:\n"
     "  movl %ecx, oss_sp_mgr\n"   // capture this (= input manager) before anything clobbers ecx
+    "  movl 4(%esp), %eax\n"      // capture arg1 = the poll's `now` timestamp (thiscall: args on the stack)
+    "  movl %eax, oss_sp_now\n"   // (eax is caller-scratch at the callee's entry — safe to clobber)
     "  pushal\n"                   // preserve all GP regs across the observer
     "  call oss_sp_c\n"            // run the drain (cdecl, no args; reads oss_sp_mgr)
     "  popal\n"
@@ -45,6 +49,7 @@ __asm__(
 extern void oss_sp_detour(void) asm("oss_sp_detour");   // defined by the asm block above (no _ prefix)
 
 uint32_t exec_ti_mgr(void) { return g_ti_mgr; }
+uint32_t exec_sp_now(void) { return g_sp_now; }   // the safepoint poll's timestamp (for input injection)
 int      exec_armed(void)  { return g_armed; }
 
 // ── deferred mod inits (run on the main thread at the first safepoint) ───────
@@ -131,10 +136,13 @@ void exec_on_safepoint(void *ti_mgr) {
     if (InterlockedExchange(&in_sp, 1)) return;   // reentrancy guard
     if (!g_main_tid) g_main_tid = GetCurrentThreadId();   // this IS the engine thread
     g_ti_mgr = (uint32_t)(uintptr_t)ti_mgr;
+    uint64_t t0 = prof_now();                      // profile the loader's per-frame cost (profile=1)
     if (!g_inited) { g_inited = 1; run_deferred(); }   // mods init here — on the main thread
     drain_jobs();
     run_onframe();
-    ui_build();                                    // build the UI snapshot on the engine thread (self-throttled; P5)
+    uint64_t tb = prof_now(); ui_build(); prof_add(PROF_UI_BUILD, tb);   // UI snapshot build (self-throttled; P5)
+    prof_add(PROF_SAFEPOINT, t0);
+    prof_frame();
     InterlockedExchange(&in_sp, 0);
 }
 void safepoint_c(void) { exec_on_safepoint((void *)(uintptr_t)g_ti_mgr); }

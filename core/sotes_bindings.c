@@ -16,6 +16,7 @@
 #include "game_bindings.h"
 #include "mem.h"
 #include "executor.h"
+#include "prof.h"
 #include "loader_internal.h"
 
 #include "lua.h"
@@ -102,7 +103,7 @@ static uintptr_t g_ros[3];
 
 // Refresh the roster: revalidate cached actors; if any slot is empty, do ONE throttled
 // full-heap walk to (re)fill it (preferring the box-tracking live actor over a ghost).
-static void ensure_roster(void) {
+static void ensure_roster_impl(void) {
     int need_walk = 0;
     for (int k = 0; k < 3; k++) {
         if (g_ros[k] && !actor_valid(g_ros[k], CODES[k])) g_ros[k] = 0;
@@ -139,6 +140,9 @@ static void ensure_roster(void) {
     for (int k = 0; k < 3; k++)
         if (!g_ros[k]) g_ros[k] = best[k] ? best[k] : fallback[k];
 }
+// Timed wrapper — the roster refresh is the suspected per-frame spike (the full-heap walk when a
+// slot goes empty, e.g. after a scene change); prof_add captures it under `profile=1`.
+static void ensure_roster(void) { uint64_t t = prof_now(); ensure_roster_impl(); prof_add(PROF_ROSTER, t); }
 
 // ── Lua: mod.game.roster ─────────────────────────────────────────────────────
 static void push_member(lua_State *L, int k) {
