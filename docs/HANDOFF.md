@@ -9,12 +9,13 @@ Rolling "where we are / what's next" for a fresh session. Orient: this → `DESI
 > THERE** (`SE_CODE_MAP.md` / `engine-quirks.md`), not only in this repo — loader docs cover the
 > loader, game facts belong to the port so both projects benefit. (README "Related".)
 
-## State: P0–P5 DONE + **DDraw present backend / borderless-fullscreen** + **`mod.game.mouse`** (2026-07-19). Next = **Phase C: the in-game overlay** (then P6 voice).
+## State: P0–P5 DONE + **DDraw present backend / borderless-fullscreen** + **`mod.game.mouse`** + **Phase C: the in-game overlay** (2026-07-19). Next = flip `ddraw_takeover` default-on after edge-testing, then **P6 voice**.
 
 The loader now also OWNS THE DISPLAY: it hooks the DirectDraw present, and either mirrors the game in
 the companion window (`ddraw=1`, default) or takes the game window borderless-fullscreen with a vsync'd,
-sharp-bilinear D3D11 swapchain (`ddraw_takeover=1`, opt-in — user-confirmed smooth in-game).  See the
-"DDraw present backend" section below.  **The immediate next task is Phase C — see "Next: Phase C".**
+sharp-bilinear D3D11 swapchain (`ddraw_takeover=1`, opt-in — user-confirmed smooth in-game).  In
+takeover the `mod.ui` host draws as an **in-game overlay** on top of the game frame (F10 toggles) —
+retiring the companion window there.  See "DDraw present backend" and "Phase C — the in-game overlay".
 
 The loader is a usable modding API — in Lua AND native C: a mod reads guarded memory
 (`mod.mem` / `api->mem_*`), reads live RE'd game state (`mod.game.*`), runs per-frame/one-shot
@@ -55,36 +56,31 @@ Also **`mod.game.mouse.get()`** → `{screen_x, screen_y, over, world_x, world_y
 game's 640×480 space (the ddraw layer undoes the pillarbox / client scale) + world centi-px via the
 camera (`render_root+0x104c` → view obj; origin `+0x60/+0x5c`, span `+0x64/+0x68`).  *Validated to the px.*
 
-## Next: Phase C — the in-game overlay (draw `mod.ui` in the game window)
+## Phase C — the in-game overlay (DONE, 2026-07-19)
 
-**Goal:** render the `mod.ui` ImGui panels ON TOP of the game frame, inside the game window, so the mod
-UI is usable in borderless-fullscreen — retiring the separate companion window (today it's hidden in
-takeover, F8 to show).  This is the P5-anticipated "renderer-hook backend consuming the SAME snapshot".
+The `mod.ui` panels now draw ON TOP of the game frame, inside the game window, in borderless takeover —
+retiring the companion window there.  The P5-anticipated "renderer-hook backend consuming the SAME
+snapshot": **`mod.ui` is unchanged.**  Implemented (`ddraw: Phase C` commit):
 
-**Where:** `ddp_engine_present()` (engine thread, `ddraw_present.cpp`) already draws the game-frame quad
-into the game window's swapchain each present.  Add an ImGui pass AFTER the quad, BEFORE `Present(1,0)`.
+- **ONE ImGui context, owned by the ENGINE thread** — `ui_overlay_present()` (`ui.cpp`), called from
+  `ddp_engine_present()` after the game-frame quad, before `Present(1,0)`.  In takeover `ui_start`
+  does NOT spawn the companion UI thread (the ⚠ from the plan — ImGui's global current-context would
+  be raced across two threads), so there's exactly one context on one thread.  The engine thread is
+  BOTH producer (`ui_build`) and consumer, so the lock-free triple buffer just degenerates to
+  same-thread latest-wins — the existing `draw_from_snapshot`/`replay_cmds`/`snap_fetch` are reused
+  as-is (all already in `ui.cpp`; no factoring needed).
+- **Input** — the executor's `boot_wndproc` forwards to `ui_overlay_wndproc()`; the overlay is
+  **MOUSE-ONLY** (no ImGui keyboard-nav), so gameplay keys belong entirely to the game (you keep full
+  control with the overlay up).  The game ignores the mouse — no contention.  Toggle is **F10** (F8
+  collides with SotES' in-game menu; F10 is a system key so we consume it to avoid menu-mode).
+- **Validated in-game** (unpacked EN-SE, `ddraw_takeover=1`): overlay drew on the engine-thread ImGui
+  over the game frame, gameplay reached via autoload, F10 toggles, mouse clicks reached the `mod.ui`
+  callbacks (button presses logged), keyboard still drove the character — no crash.
 
-**The pieces** (all engine-thread; reuse the existing engine D3D11 device `g_e_dev`/`g_e_ctx`):
-1. **ImGui bring-up on the engine thread** — once (lazily in/after `e_create`): an ImGui context +
-   `ImGui_ImplDX11_Init(g_e_dev, g_e_ctx)` + `ImGui_ImplWin32_Init(game_hwnd)`.  ⚠ ImGui's current
-   context is global and the companion window (UI thread, `ui.cpp`) has its OWN — either `ImGui::
-   SetCurrentContext` to switch per thread, OR (simpler) in takeover DON'T run the companion's ImGui at
-   all and use ONE engine-thread context here (the companion window is already hidden in takeover).
-2. **Input** — route the game window's messages to `ImGui_ImplWin32_WndProcHandler` inside the
-   executor's `boot_wndproc` (`executor.c`) when the overlay is visible; add the F8 show/hide toggle.
-   (The game ignores the mouse, so no input contention with gameplay.)
-3. **Replay the snapshot** — `ui_build()` (engine thread, from the safepoint) already runs the `mod.ui`
-   callbacks + records the lock-free snapshot; replay the LATEST snapshot into the engine-thread ImGui.
-   Factor `draw_from_snapshot`/`replay_cmds` out of `ui.cpp` into something callable from the engine
-   thread (or a shared TU).  **No mod-facing change** — `mod.ui` is unchanged.
-
-**Anchors:** `ddraw_present.cpp` (`g_e_*` device, `ddp_engine_present`, `e_create`); `ui.cpp`
-(`draw_from_snapshot`/`replay_cmds` to reuse, the snapshot triple buffer as the data); `executor.c`
-(`boot_wndproc` — where to route input, already subclasses the game window).
-
-**Then** flip `ddraw_takeover` default-on after edge-testing: multi-monitor (`MonitorFromWindow` picks
-the game's monitor — verify placement), alt-tab in/out of the borderless window, and restoring the
-`WS_POPUP` style on clean unload (`DllMain` `DLL_PROCESS_DETACH`, reserved==NULL).
+**Next:** flip `ddraw_takeover` default-on after edge-testing — multi-monitor (`MonitorFromWindow`
+picks the game's monitor — verify placement), alt-tab in/out of the borderless window, and restoring
+the `WS_POPUP` style + overlay ImGui teardown on clean unload (`DllMain` `DLL_PROCESS_DETACH`,
+reserved==NULL).  Then **P6 voice**.
 
 **In-game validation** (unpacked EN-SE `sotes-trainer-oss.exe`, 2026-07-19): executor armed
 on the real `0x437c70` (game ran 24 min, no crash); `mod.game.roster` read all 3 live party
@@ -227,10 +223,10 @@ Replaced — the LBL is **gone**; Lua is single-threaded on the engine thread ag
 buffer and input is a fixed atomic-slot array — both latest-wins / drop-old, so a slow UI never
 stalls the game and a busy game never stalls the UI, and stale data is dropped, not accumulated.
 
-**In-game overlay: DEFERRED** (companion window only for now).  Read: the transparent overlay's
-DWM compositing was a minor hit vs. the lock.  It returns later as an **internal renderer-hook
-backend** consuming the SAME snapshot (so mods won't change), once the separate window is proven
-performant.  (`exec_game_hwnd()` is kept, reserved for that backend.)
+**In-game overlay: DONE** (Phase C — see that section).  It landed exactly as the P5 note predicted:
+an **internal renderer-hook backend** (the engine-thread D3D11 present) consuming the SAME snapshot,
+so `mod.ui` didn't change.  In takeover it replaces the companion window (which isn't started there);
+the transparent-DWM-window approach stayed retired.
 
 **Build:** `ui.cpp` + the ImGui TUs compile with **g++**; the whole DLL links with **g++ +
 `-static -static-libgcc -static-libstdc++`** (the game's DLL path has no `libstdc++-6`/`libgcc_s`),
@@ -244,7 +240,7 @@ build→triple-buffer→replay path host-side (`make -C core ../build/ui_smoke.e
 the armed safepoint (`[ui] companion window up`, `ui_build` running every frame), no crash, no draw
 faults.
 
-UI gaps (deferred): the in-game overlay (internal backend); no `mod.ui` in the native ABI (Lua-
+UI gaps (deferred): no `mod.ui` in the native ABI (Lua-
 only); no input-text / combo / tree widgets (curated set — extend as needed); no per-surface remove
 (`ui.panel`/`window` return a handle for a future `ui.remove`); positional input keys can
 misattribute one frame if a mod reorders its widgets (self-correcting).
@@ -302,6 +298,10 @@ misattribute one frame if a mod reorders its widgets (self-correcting).
 - **UI: linking is g++ now.** The final DLL + the host tests link with `i686-w64-mingw32-g++` and
   `-static-libstdc++` (the ImGui TUs pull in libstdc++). A plain-gcc link will fail to resolve C++
   symbols; a non-static link produces a DLL the game can't `LoadLibrary` (no libstdc++-6 on its path).
-- **UI: the in-game overlay is deferred** (companion window only). It returns as an internal
-  renderer-hook backend consuming the SAME snapshot — do NOT resurrect the transparent-window
-  overlay; the snapshot abstraction is what makes the internal backend a mod-invisible swap.
+- **UI: the in-game overlay (takeover) and the companion window are MUTUALLY EXCLUSIVE — never run
+  both.** They'd be two ImGui contexts on two threads racing ImGui's global current-context.  `ui_start`
+  starts the companion ONLY when not in takeover; the overlay (engine thread, `ui_overlay_present`) runs
+  ONLY in takeover.  Keep that invariant if you touch either.  Both consume the SAME snapshot — do NOT
+  resurrect the transparent-DWM-window overlay; the snapshot abstraction is what makes the swap
+  mod-invisible.  The overlay is MOUSE-ONLY (keyboard stays with the game); toggle is F10, not F8
+  (F8 is SotES' in-game menu key).

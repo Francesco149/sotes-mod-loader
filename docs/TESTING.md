@@ -66,11 +66,30 @@ launch, and:
 
 1. **Companion window** — a "SotES Mod Loader" window appears. The built-in header shows
    `executor armed` + the panel/window counts; the "UI Demo" section shows a live frame counter and
-   a working button / checkbox / slider; the party roster fills in once a save is loaded. **F8**
+   a working button / checkbox / slider; the party roster fills in once a save is loaded. **F10**
    toggles the window.
 2. Confirm the game stays smooth with the UI up — the UI thread is fully decoupled (a lock-free
    snapshot; no lock between it and the game). Check `oss_modloader.log` for `[ui] companion window
    up`, the armed safepoint (so `ui_build` runs every frame), and no `[ui] '<name>' draw error`.
 
 Confirmed on the real EN-SE (2026-07-19): `[ui] companion window up` on the armed `0x437c70`, the
-demo registered its panel + window, no crash. (The in-game overlay is deferred — see `HANDOFF.md`.)
+demo registered its panel + window, no crash.
+
+## In-game overlay test (Phase C) — VALIDATED ✅
+
+Same `examples/ui_demo/` staging, but add `ddraw_takeover=1` to `oss_loader.cfg`.  Now the panels draw
+as an **overlay on top of the game frame** (no separate window), and `ui_start` does NOT create the
+companion window (log: `[ui] in-game overlay mode (takeover) — companion window disabled`).
+
+1. The "SotES Mod Loader" overlay draws over the borderless-fullscreen game; the UI Demo panel + the
+   floating "UI Demo — About" window replay the same snapshot.  **F10** toggles it (F8 stays the
+   game's own menu key).
+2. **Mouse drives the overlay, keyboard drives the game** — you keep full character control with the
+   overlay up.  Clicking "log a line" writes `[mod] ui_demo: ... button pressed at frame N` (proves
+   mouse → WndProc → ImGui → atomic slot → engine → the Lua callback).
+3. Log: `[ddraw] TAKEOVER: ... borderless`, then `[ui] in-game overlay up (engine-thread ImGui ...)`,
+   no `draw error`, no fault.
+
+Confirmed on the real EN-SE (2026-07-19): overlay up on the engine-thread ImGui over the game frame,
+gameplay reached via autoload, F10 toggles, button clicks logged, keyboard still moved the character —
+no crash.

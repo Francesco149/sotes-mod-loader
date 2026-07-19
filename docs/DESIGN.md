@@ -104,8 +104,9 @@ boundary:
 - So **nothing locks between the two threads**, stale data is dropped rather than accumulated, and a
   slow UI never stalls the game (nor vice-versa). The `mod.ui` API stays immediate-mode; a UI-thread
   live-value cache keeps sliders smooth between the throttled builds. Input lag is ~1 build cycle.
-- The snapshot is also the **backend seam**: the deferred in-game overlay will consume the same
-  snapshot through an internal renderer-hook backend, so mods won't change when it lands.
+- The snapshot is also the **backend seam**: the in-game overlay (takeover) consumes the same
+  snapshot through an internal renderer-hook backend (the engine-thread D3D11 present) — mods don't
+  change between the companion window and the overlay.
 
 ### Launcher (package manager) — same repo, `launcher/`
 
@@ -176,7 +177,7 @@ what the trainer already computes (party roster, player coordinates), now shared
 | **P2** | Main-thread executor: WndProc bootstrap → safepoint hook → `mod.main`/`on_frame`; profile | **done** (drain/on_frame/`ti_mgr` verified via `exec_test`; MinHook install + bootstrap in-game) |
 | **P3** | Hook registry: Tier-1 chain (per-VA codegen thunk + dispatcher, multi-mod) **+ Tier-2 typed** (FFI-closure detour behind a main-thread gate; modify args/block/return) | **done** (Tier-1 in-game; Tier-2 host-verified across cdecl/stdcall/thiscall — modify/block/gate/exclusion — via `hook_typed_test`) |
 | **P4** | Native bridge: stable `OssApi` C ABI, `OssModInit` deferred to the safepoint; native mods share the hook + executor registries with Lua | **done** (host-verified: mem/scan, hook_entry, on_frame, main_enqueue, remove via `native_mod_test`; `examples/native_hello`) |
-| P5 | UI host: DX11 companion window, `ui.panel`/`ui.window` | **done** (companion window fed by a lock-free snapshot pipeline — engine records, UI replays, no lock; validated host + in-game. In-game overlay deferred to a later internal renderer-hook backend on the same snapshot) |
+| P5 | UI host: DX11 companion window, `ui.panel`/`ui.window` | **done** (companion window fed by a lock-free snapshot pipeline — engine records, UI replays, no lock; validated host + in-game. In-game overlay landed (Phase C): in takeover the same snapshot draws over the game frame via the engine-thread renderer-hook backend, F10 toggle) |
 | P6 | Voice mod: port + exhaustive install/launch test → swap the release | |
 | P7 | Trainer mod: port + map-graph window; coexistence verified | |
 | P8 | Launcher: git-repo sources, install/update, Launch | |

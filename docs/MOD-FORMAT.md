@@ -145,9 +145,11 @@ keep the value in a Lua variable and reassign it each frame, e.g. `open = mod.ui
   it), never the game or other mods. Widget calls made *outside* a build (e.g. from init) are inert
   no-ops, so they can't crash.
 - **Config:** the UI is on by default once the executor arms; `ui=0` in `oss_loader.cfg` disables it,
-  `ui_key` (a VK code) overrides the F8 toggle, and `ui_hz` sets the build rate (default 30).
-- **In-game overlay:** deferred — a later internal (renderer-hook) backend will draw the same panels
-  over the game from the same snapshot, so your mod won't change when it lands.
+  `ui_key` (a VK code) overrides the F10 toggle, and `ui_hz` sets the build rate (default 30).
+- **In-game overlay:** in borderless takeover (`ddraw_takeover=1`) the same panels draw as an overlay
+  ON TOP of the game frame (F10 toggles), from the same snapshot — no mod change either way.  The
+  overlay is mouse-only; the keyboard stays with the game.  Otherwise the panels show in a companion
+  window.
 
 ### `mod.*` API — roadmap (later phases, see DESIGN.md)
 
