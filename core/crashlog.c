@@ -64,10 +64,33 @@ static void cl_addr(const char *label, uintptr_t addr) {
         cl_line("  %s%08X  (no module)", label, (unsigned)addr);
 }
 
+// Human name for the exception code in the crash header (esp. the fail-fast codes a plain AV filter misses).
+static const char *cl_code_name(DWORD code) {
+    switch (code) {
+        case EXCEPTION_ACCESS_VIOLATION:      return "ACCESS_VIOLATION";
+        case EXCEPTION_ILLEGAL_INSTRUCTION:   return "ILLEGAL_INSTRUCTION";
+        case EXCEPTION_PRIV_INSTRUCTION:      return "PRIV_INSTRUCTION";
+        case EXCEPTION_STACK_OVERFLOW:        return "STACK_OVERFLOW";
+        case EXCEPTION_INT_DIVIDE_BY_ZERO:    return "INT_DIVIDE_BY_ZERO";
+        case EXCEPTION_IN_PAGE_ERROR:         return "IN_PAGE_ERROR";
+        case EXCEPTION_ARRAY_BOUNDS_EXCEEDED: return "ARRAY_BOUNDS_EXCEEDED";
+        case 0xC0000409u:                     return "STACK_BUFFER_OVERRUN (/GS or __fastfail)";
+        case 0xC000041Du:                     return "FATAL_USER_CALLBACK (exception escaped a WndProc/callback)";
+        case 0xC0000374u:                     return "HEAP_CORRUPTION";
+        case 0xC0000420u:                     return "ASSERTION_FAILURE";
+        default:                              return "(unnamed error-severity NTSTATUS)";
+    }
+}
+
 static LONG CALLBACK cl_veh(EXCEPTION_POINTERS *ep) {
     const EXCEPTION_RECORD *er = ep->ExceptionRecord;
     const DWORD code = er->ExceptionCode;
-    // Only genuine crash-class codes — skip C++ EH (0xE06D7363), OutputDebugString, guard pages, etc.
+    // Log genuine crash-class exceptions.  Two nets: (1) the common NAMED codes; (2) a catch-all for ANY
+    // STATUS_SEVERITY_ERROR NTSTATUS (top nibble 0xC — severity=ERROR, customer bit clear) so FAIL-FAST
+    // crashes that never raise a plain AV are ALSO caught: /GS stack-buffer-overrun (0xC0000409), a fatal
+    // user-callback (0xC000041D — an exception escaping a WndProc; the likely F8→title culprit), heap
+    // corruption (0xC0000374), etc.  Skips C++ EH (0xE06D7363) + other app-defined 0xE/0xD codes (customer
+    // bit set) and info/warning-severity codes (0x0/0x4/0x8) that fire during normal play.
     switch (code) {
         case EXCEPTION_ACCESS_VIOLATION:
         case EXCEPTION_ILLEGAL_INSTRUCTION:
@@ -78,7 +101,8 @@ static LONG CALLBACK cl_veh(EXCEPTION_POINTERS *ep) {
         case EXCEPTION_ARRAY_BOUNDS_EXCEEDED:
             break;
         default:
-            return EXCEPTION_CONTINUE_SEARCH;
+            if ((code & 0xF0000000u) != 0xC0000000u) return EXCEPTION_CONTINUE_SEARCH;
+            break;   // an error-severity NTSTATUS we don't specifically name — log it anyway (fail-fast, etc.)
     }
     // Dedupe by faulting address so a fault the game raises + handles every frame logs only once.
     uintptr_t at = (uintptr_t)er->ExceptionAddress;
@@ -90,13 +114,16 @@ static LONG CALLBACK cl_veh(EXCEPTION_POINTERS *ep) {
 
     const CONTEXT *c = ep->ContextRecord;
     cl_line("");
-    cl_line("==================== [crash] exception %08X (tid %u) ====================",
-            (unsigned)code, (unsigned)GetCurrentThreadId());
+    cl_line("==================== [crash] exception %08X %s (tid %u) ====================",
+            (unsigned)code, cl_code_name(code), (unsigned)GetCurrentThreadId());
     if (code == EXCEPTION_ACCESS_VIOLATION && er->NumberParameters >= 2)
         cl_line("  access  %s @ %08X",
                 er->ExceptionInformation[0] == 1 ? "WRITE"
                     : er->ExceptionInformation[0] == 8 ? "EXEC" : "READ",
                 (unsigned)er->ExceptionInformation[1]);
+    else if (er->NumberParameters)   // fail-fast / callback codes carry the real detail here (e.g. a nested status)
+        for (DWORD i = 0; i < er->NumberParameters && i < 4; i++)
+            cl_line("  param%u  %08X", (unsigned)i, (unsigned)er->ExceptionInformation[i]);
     cl_addr("fault   ", at);
 #if defined(_M_IX86) || defined(__i386__)
     cl_line("  eax %08X  ebx %08X  ecx %08X  edx %08X",
