@@ -478,7 +478,14 @@ static void al_mark_done(void) {
 }
 static void al_picker_cb(const OssHookCtx *ctx, void *user) {   // picker poll observer: capture ctrl + confirm
     (void)user;
-    if (!g_al_pk_logged) { g_al_pk_logged = 1; ml_log("[sotes] save.load: picker open (ctrl=0x%08x) — confirming", (unsigned)ctx->ecx); }
+    // 0x4378d0 is a SHARED input poll (10+ menus call it), so we must gate on the CALLER or we confirm
+    // (and thus auto-skip) unrelated menus — e.g. the NEW-GAME config when the user picks Start.  The
+    // save-data list (our target) calls it from the LOW code region (~0x436xxx, right next to the poll);
+    // every other menu — options, the new-game config, etc. — calls it from 0x57xxxx+.  Confirm only the
+    // low-region caller.  (Caller VA is logged so this bound can be tightened if needed.)
+    if (ctx->ret >= mem_reloc(0x500000)) return;
+    if (!g_al_pk_logged) { g_al_pk_logged = 1;
+        ml_log("[sotes] save.load: save-list poll (ctrl=0x%08x, caller=0x%08x) — confirming", (unsigned)ctx->ecx, (unsigned)ctx->ret); }
     g_al_pk_mgr = ctx->ecx;
     if (g_al_state == 1) g_al_state = 2;
     if (g_al_state != 2) return;

@@ -64,6 +64,7 @@ struct Cmd {
 struct Surface {
     std::string name;
     bool is_window;
+    bool collapsed;   // panels only: start collapsed (mod.ui.panel(name, fn, true))
     std::vector<Cmd> cmds;
 };
 struct SnapStatus { int armed; uint32_t tid, ti_mgr; int npanel, nwindow; };
@@ -120,7 +121,7 @@ static uint64_t input_take(int surf, int wix) {       // engine: read + clear
 
 // ════════════════════════════ engine-side: the build ════════════════════════════
 // The mod registry (touched only on the engine thread: registered from mod init, read at build).
-struct Reg { std::string name; int ref; bool is_window; bool used; };
+struct Reg { std::string name; int ref; bool is_window; bool used; bool collapsed; };
 static std::vector<Reg> g_reg;
 
 static bool  g_building = false;       // true only inside ui_build, on the engine thread
@@ -139,7 +140,7 @@ static uint64_t snap_hash(const Snapshot &s) {   // FNV-1a over the visible cont
     #define MIX(p, n) do { const unsigned char *bp=(const unsigned char*)(p); for (size_t i=0;i<(n);i++){ h^=bp[i]; h*=1099511628211ull; } } while (0)
     MIX(&s.status, sizeof s.status);
     for (const Surface &sf : s.surfaces) {
-        MIX(sf.name.data(), sf.name.size()); MIX(&sf.is_window, sizeof sf.is_window);
+        MIX(sf.name.data(), sf.name.size()); MIX(&sf.is_window, sizeof sf.is_window); MIX(&sf.collapsed, sizeof sf.collapsed);
         for (const Cmd &c : sf.cmds) { MIX(&c.t, sizeof c.t); MIX(c.s.data(), c.s.size()); MIX(&c.a, 4*sizeof(float)); MIX(&c.ix, sizeof c.ix); }
     }
     #undef MIX
@@ -168,7 +169,7 @@ void ui_build(void) {
         if (surf >= MAX_SURFACES) break;
         snap.surfaces.push_back(Surface{});
         Surface &s = snap.surfaces.back();
-        s.name = r.name; s.is_window = r.is_window;
+        s.name = r.name; s.is_window = r.is_window; s.collapsed = r.collapsed;
         r.is_window ? nwindow++ : npanel++;
         g_cur = &s.cmds; g_cur_surf = surf; g_cur_wix = 0;
         lua_rawgeti(L, LUA_REGISTRYINDEX, r.ref);
@@ -203,7 +204,9 @@ static int reg_common(lua_State *L, bool is_window) {
     int ref = luaL_ref(L, LUA_REGISTRYINDEX);
     int idx = -1;
     for (size_t i = 0; i < g_reg.size(); i++) if (!g_reg[i].used) { idx = (int)i; break; }
+    // panels take an optional 3rd arg: collapsed-by-default (windows ignore it).
     Reg r; r.name = name; r.ref = ref; r.is_window = is_window; r.used = true;
+    r.collapsed = !is_window && lua_toboolean(L, 3);
     if (idx >= 0) g_reg[idx] = r; else { idx = (int)g_reg.size(); g_reg.push_back(r); }
     lua_pushinteger(L, idx);
     return 1;
@@ -470,7 +473,7 @@ static bool draw_from_snapshot(const Snapshot &snap) {
             const Surface &s = snap.surfaces[i];
             if (s.is_window) continue;
             char label[160]; snprintf(label, sizeof label, "%s##oss_panel_%zu", s.name.c_str(), i);
-            if (ImGui::CollapsingHeader(label, ImGuiTreeNodeFlags_DefaultOpen)) replay_cmds((int)i, s.cmds);
+            if (ImGui::CollapsingHeader(label, s.collapsed ? ImGuiTreeNodeFlags_None : ImGuiTreeNodeFlags_DefaultOpen)) replay_cmds((int)i, s.cmds);
         }
     }
     reclamp_current_window();
