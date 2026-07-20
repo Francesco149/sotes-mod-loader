@@ -388,10 +388,8 @@ static void install_mouse(lua_State *L) {
 static int      g_al_target = -1;   // savedataNN index; < 0 = newest/default
 static int      g_al_state;         // 0 idle, 1 title-confirm, 2 picker-confirm, 3 done
 static uint32_t g_al_pk_mgr;        // captured picker controller
-static uint32_t g_al_title_ctrl;    // captured TITLE menu_ctrl (validated: mode 1 + Start & Continue rows)
-static uint32_t g_al_poll_mgr, g_al_poll_now;  // TITLE poll's live ecx(mgr) + arg1(now), captured @ 0x43c110
-static int      g_al_pk_h, g_al_menu_h, g_al_poll_h;  // hook handles — all dropped when the drive ends
-static int      g_al_pk_logged, g_al_done_logged, g_al_ctrl_logged, g_al_poll_logged, g_al_commit_logged;
+static int      g_al_pk_h;          // picker-poll hook handle — dropped when the drive ends
+static int      g_al_pk_logged, g_al_done_logged;
 static uint8_t  g_al_rec[8][16];    // rotating record buffers (static -> always game-readable)
 static int      g_al_recn;
 static int      g_al_demo_frozen;
@@ -434,9 +432,7 @@ static void al_attract_freeze(int freeze) {
 static void al_stop(void) {   // tear the drive down (restore attract, drop hooks); safe to call once
     g_al_state = 3;
     al_attract_freeze(0);     // past the title — restore the demo so attract works normally again
-    if (g_al_menu_h) { hooks_remove(g_al_menu_h); g_al_menu_h = 0; }
-    if (g_al_pk_h)   { hooks_remove(g_al_pk_h);   g_al_pk_h   = 0; }
-    if (g_al_poll_h) { hooks_remove(g_al_poll_h); g_al_poll_h = 0; }
+    if (g_al_pk_h) { hooks_remove(g_al_pk_h); g_al_pk_h = 0; }
 }
 static void al_mark_done(void) {
     al_stop();
@@ -461,97 +457,20 @@ static void al_picker_cb(const OssHookCtx *ctx, void *user) {   // picker poll o
     uint32_t now = 0; mem_rd32((void *)(uintptr_t)(ctx->esp + 8), &now);   // 0x4378d0 arg2 = the poll's now
     al_inject(ctx->ecx, BTN_CONFIRM, now);
 }
-// Classify the captured menu_ctrl: >=0 = the Continue row index; -1 = NOT the title menu (keep waiting);
-// -2 = it IS the title but has no Continue row (no save to load — must NOT fall back to Start).  Requiring
-// the Start row (0x1a) as a signature keeps us from ever writing the cursor of some unrelated menu that
-// happens to be latching input while we drive.
-static int al_title_continue_row(uint32_t ctrl) {
-    uint32_t mode = 0, list = 0, rows = 0, count = 0;
-    if (!ctrl) return -1;
-    if (!mem_rd32((void *)(uintptr_t)(ctrl + MC_MODE), &mode) || mode != 1)               return -1;
-    if (!mem_rd32((void *)(uintptr_t)(ctrl + MC_LIST), &list) || !list)                   return -1;
-    if (!mem_rd32((void *)(uintptr_t)(ctrl + MC_ROWS), &rows) || !rows)                   return -1;
-    if (!mem_rd32((void *)(uintptr_t)(list + LH_COUNT), &count) || !count || count > 16)  return -1;
-    int cont = -1, start = 0;
-    for (uint32_t i = 0; i < count; i++) {
-        uint32_t act = 0;
-        if (!mem_rd32((void *)(uintptr_t)(rows + i * ROW_SZ + ROW_ACTION), &act))         return -1;
-        if (act == ACT_START)    start = 1;
-        if (act == ACT_CONTINUE) cont  = (int)i;
-    }
-    if (!start) return -1;          // not the title menu
-    return cont >= 0 ? cont : -2;   // title, but Continue may be absent (no save present)
-}
-// Write the title cursor onto `row` (and keep the page-top consistent) so the next commit selects it.
-static void al_title_set_cursor(uint32_t ctrl, int row) {
-    uint32_t list = 0, stride = 0;
-    if (!mem_rd32((void *)(uintptr_t)(ctrl + MC_LIST), &list) || !list) return;
-    if (mem_writable((void *)(uintptr_t)(list + LH_CURSOR), 4))
-        *(uint32_t *)(uintptr_t)(list + LH_CURSOR) = (uint32_t)row;
-    if (mem_rd32((void *)(uintptr_t)(list + LH_STRIDE), &stride) && stride &&
-        mem_writable((void *)(uintptr_t)(list + LH_SEL2), 4))
-        *(uint32_t *)(uintptr_t)(list + LH_SEL2) = (uint32_t)((row / (int)stride) * (int)stride);
-}
-// menu_list_latch (0x43ce50) entry observer — the latch runs only when a button is consumed, so this is how
-// we grab the live title menu_ctrl (its ecx), but only while driving the title and only if it validates.
-static void al_menu_latch_cb(const OssHookCtx *ctx, void *user) {
-    (void)user;
-    if (g_al_state != 1) return;
-    if (al_title_continue_row(ctx->ecx) == -1) return;   // not the title menu (or unreadable) — ignore
-    g_al_title_ctrl = ctx->ecx;
-    if (!g_al_ctrl_logged) { g_al_ctrl_logged = 1;
-        ml_log("[sotes] save.load: title menu_ctrl captured (0x%08x)", (unsigned)ctx->ecx); }
-}
-// input_poll_consume (0x43c110) entry observer — grab the title poll's LIVE mgr(ecx) + now(arg1 @ esp+4)
-// so our injected records use the exact object + freshness clock the title compares against.  The old
-// code injected with the SAFEPOINT now (exec_sp_now), which didn't match, so the title injection never
-// landed — only the picker half worked (it already uses its own poll's live now).
-static void al_poll_cb(const OssHookCtx *ctx, void *user) {
-    (void)user;
-    if (g_al_state != 1) return;
-    uint32_t now = 0;
-    if (!mem_rd32((void *)(uintptr_t)(ctx->esp + 4), &now)) return;   // arg1 = now (just above the ret addr)
-    g_al_poll_mgr = ctx->ecx;
-    g_al_poll_now = now;
-    if (!g_al_poll_logged) { g_al_poll_logged = 1;
-        ml_log("[sotes] save.load: title poll live — mgr=0x%08x now=%u (safepoint now=%u, ti_mgr=0x%08x)",
-               (unsigned)ctx->ecx, now, (unsigned)exec_sp_now(), (unsigned)exec_ti_mgr()); }
-}
-static void al_title_cb(void *user) {   // title drive: capture ctrl -> force Continue -> commit
+// TITLE AUTO-SELECT DISABLED (2026-07-20).  The menu VAs it drove — menu_list_latch (0x43ce50) and
+// input_poll_consume (0x43c110) — were RE'd against `sotes.unpacked.exe` (sha 9e0324..), but the SHIPPING
+// exe (`sotes_en.exe` / `sotes-trainer-oss.exe`, sha bed4e1..) has DIFFERENT functions at those VAs (0x43ce50
+// is a struct-init, not the latch).  Hooking them byte-patched mid-instruction, and the patch PERSISTS after
+// the drive ends, so combat later executed the corrupted function and CRASHED (the [crash] block fingered
+// 0x43ce4b).  Until the menu path is re-RE'd against the shipping binary, the drive is PICKER-ONLY: freeze
+// attract, then auto-confirm the save PICKER once it opens (0x4378d0 matches the shipping exe — proven).
+// Reach the picker manually (press Continue).  Everything hooked here (picker poll, safepoint, attract) is
+// byte-verified against the shipping exe; no title-menu VAs are touched.
+static void al_title_cb(void *user) {
     (void)user;
     if (g_al_state == 3) return;
     if (al_scene_loaded()) { al_mark_done(); return; }
-    if (g_al_state != 1 || g_al_pk_mgr) return;
-    // Inject through the TITLE poll's OWN live mgr+now (captured @ 0x43c110) so the record passes its
-    // freshness check; fall back to the safepoint capture until the first poll is observed.
-    uint32_t mgr = g_al_poll_mgr ? g_al_poll_mgr : exec_ti_mgr();
-    uint32_t now = g_al_poll_mgr ? g_al_poll_now : exec_sp_now();
-    if (!mgr) return;
-
-    if (!g_al_title_ctrl) {                 // provoke a latch call so al_menu_latch_cb can capture ctrl
-        al_inject(mgr, BTN_TITLE_NAV, now);
-        return;
-    }
-    int row = al_title_continue_row(g_al_title_ctrl);
-    if (row == -2) {                        // the title has no Continue row -> nothing to load
-        if (!g_al_done_logged) { g_al_done_logged = 1;
-            ml_log("[sotes] save.load: title has no 'Continue' row (no save present?) — refusing to start "
-                   "a NEW GAME; drive stopped."); }
-        al_stop();
-        return;
-    }
-    if (row < 0) { g_al_title_ctrl = 0; return; }   // ctrl went stale — re-capture
-
-    uint32_t sub = 0, ready = 0;            // only commit once the menu is interactive (fade-in complete)
-    if (mem_rd32((void *)(uintptr_t)(g_al_title_ctrl + MC_SUB), &sub) && sub &&
-        mem_rd32((void *)(uintptr_t)(sub + SUB_READY), &ready) && ready == MENU_READY) {
-        al_title_set_cursor(g_al_title_ctrl, row);
-        al_inject(mgr, BTN_TITLE_OK, now);          // commit Continue -> opens the save-data list
-        if (!g_al_commit_logged) { g_al_commit_logged = 1;
-            ml_log("[sotes] save.load: cursor -> Continue (row %d, ready) — injecting commit 0x24", row); }
-    } else {
-        al_inject(mgr, BTN_TITLE_NAV, now);         // not ready yet — keep the latch alive to hold ctrl
-    }
+    // No title-menu injection — the safe, shipping-verified step is the picker (al_picker_cb).
 }
 
 // mod.game.attract.set(on): on=false freezes the attract/demo (keeps the title up); on=true restores.
@@ -567,17 +486,13 @@ static int l_save_load(lua_State *L) {
     if (!gb_enabled("save")) { lua_pushboolean(L, 0); return 1; }
     if (g_al_state != 0) { lua_pushboolean(L, 0); return 1; }
     g_al_target = lua_isnumber(L, 1) ? (int)lua_tointeger(L, 1) : -1;
-    g_al_title_ctrl = 0; g_al_ctrl_logged = 0;              // fresh menu_ctrl capture for this drive
-    g_al_poll_mgr = 0; g_al_poll_now = 0; g_al_poll_logged = 0; g_al_commit_logged = 0;
     al_attract_freeze(1);                                   // don't cut to the demo mid-drive
-    uintptr_t pk = mem_reloc(VA_PICKER_POLL), ml = mem_reloc(VA_MENU_LATCH), ip = mem_reloc(VA_INPUT_POLL);
-    g_al_pk_h   = hooks_entry_c(pk, al_picker_cb,     NULL);
-    g_al_menu_h = hooks_entry_c(ml, al_menu_latch_cb, NULL);   // capture the title menu_ctrl to steer the cursor
-    g_al_poll_h = hooks_entry_c(ip, al_poll_cb,       NULL);   // capture the title poll's live mgr + now
+    uintptr_t pk = mem_reloc(VA_PICKER_POLL);
+    g_al_pk_h = hooks_entry_c(pk, al_picker_cb, NULL);      // auto-confirm the save PICKER once it opens
     exec_on_frame_c(al_title_cb, NULL);
     g_al_state = 1;
-    ml_log("[sotes] save.load: armed — picker @ 0x%08x (h%d), latch @ 0x%08x (h%d), poll @ 0x%08x (h%d), slot %d",
-           (unsigned)pk, g_al_pk_h, (unsigned)ml, g_al_menu_h, (unsigned)ip, g_al_poll_h, g_al_target);
+    ml_log("[sotes] save.load: armed — picker @ 0x%08x (h%d), slot %d (title auto-select disabled pending "
+           "re-RE vs the shipping exe; reach the picker manually)", (unsigned)pk, g_al_pk_h, g_al_target);
     lua_pushboolean(L, 1);
     return 1;
 }
