@@ -15,8 +15,13 @@ is [`../docs/REGISTRY.md`](../docs/REGISTRY.md); the *mod format / config / vers
 > now installs over HTTPS**: per-mod Install/Update drives `fetch_registry` + `install_version`
 > (download → sha256-verify → place → manifest), with a native `rfd` picker for `user_supplied`
 > files and installed/update state per mod — verified end-to-end on Windows (autoload from the live
-> registry; a download + `user_supplied` fixture). Remaining: update/downgrade (clean stale files),
-> sources management, and launcher-state persistence.
+> registry; a download + `user_supplied` fixture). **Sources management** (add/remove/status in
+> Browse), **launcher-state persistence** (`launcher.json` in the per-user config dir), and
+> **update/downgrade stale-file pruning** (`install_version` deletes files the prior version placed
+> that the new one drops) are DONE.  **Loader settings editor** landed too — the loader ships
+> `loader.toml` (a `[config]` schema for its own `oss_loader.cfg`, "mod zero"), rendered by the new
+> **⚙ Loader** view with the SAME generic editor mods use; release notes show on hover in Browse.
+> Remaining = v0.2: search, dependency resolution, compat surfacing, explicit downgrade/pin.
 
 ## What already exists to build on
 
@@ -119,17 +124,18 @@ rustflags). Running the GUI on real Windows + the install/proxy/launch modules c
    user_supplied, installed manifest) + a ureq/rustls HTTP fetcher · the game-dir-centric eframe GUI
    (Installed w/ per-mod config, Browse **that installs over HTTPS** — per-mod Install/Update, native
    picker for `user_supplied` files, Launch) — all cross-building to a Windows `.exe` and verified
-   running on real Windows via WSL interop. Next: update/downgrade (clean stale files) + sources +
-   launcher-state persistence.)*
-3. **v0.2** — sources/search/updates/deps/compat-surfacing.
+   running on real Windows via WSL interop. Also done: sources management, launcher-state persistence,
+   update stale-file pruning, the ⚙ Loader settings editor ("mod zero"), and release notes on hover.)*
+3. **v0.2** — search · dependency resolution · compat surfacing · explicit downgrade/pin.
 
 ## Open decisions (resolve at the start of P8)
 
 1. **GUI paradigm** — ✅ **native immediate-mode (egui)** — matches the loader's own in-game ImGui UI
    model; the language shortlist followed from it.
-2. **Loader settings as schema ("mod zero")** — should the loader ship a `[config]`-style schema for
-   its OWN settings so the launcher renders `oss_loader.cfg` generically (not hand-coded)? Clean + DRY;
-   small loader-side addition.
+2. **Loader settings as schema ("mod zero")** — ✅ **YES.** The loader ships `loader.toml` (a `[config]`
+   schema for its own settings); the launcher renders it with the SAME generic editor mods use (the ⚙
+   Loader view), writing the flat `oss_loader.cfg` (bare keys, empty namespace). Add a setting = add a
+   `[config.*]` block — no hand-coded widgets.
 3. **Installed-state manifest** — location (game dir vs launcher data dir) + format (json). Needed for
    update detection + clean removal.
 4. **Fetch mechanism** — raw-HTTPS of `registry.json` + release assets (no git dependency, simplest) vs
