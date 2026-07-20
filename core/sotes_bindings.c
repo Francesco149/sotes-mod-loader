@@ -46,10 +46,21 @@
 // armor/passive, and the shown total additionally folds in the weapon (so a mod that boosts these
 // changes the character's intrinsic stat).  Character "Level" = combat_level + adventurer_level.
 #define OFF_NAME        0x00       // char[8], NUL-terminated ("Arche"/"Sana"/"Stella")
-#define OFF_ATK         0x64
+#define OFF_ATK         0x64       // combat stats: RAW value (before growth/equipment)
 #define OFF_DEF         0x68
 #define OFF_SPIRIT      0x6c
 #define OFF_RESIST      0x70
+// combat-stat modifiers (RE'd live vs Stella's sheet 2026-07-20, all 4 stats exact): the status
+// screen shows "effective/base" where base = raw + growth and effective = raw + growth + equipment.
+// Same 3-cluster layout as HP/MP (equip 0x84/0x88, buff 0x9c/0xa0 sit after the atk/def/spi/res ones).
+#define OFF_ATK_EQUIP   0x74       // equipment bonus (weapon WP / armor AP) — the +N in "eff/base"
+#define OFF_DEF_EQUIP   0x78
+#define OFF_SPI_EQUIP   0x7c
+#define OFF_RES_EQUIP   0x80
+#define OFF_ATK_GROWTH  0x8c       // level/innate growth — folded into the displayed base
+#define OFF_DEF_GROWTH  0x90
+#define OFF_SPI_GROWTH  0x94
+#define OFF_RES_GROWTH  0x98
 #define OFF_COMBAT_LV_MAX 0xe0     // max combat level (the HUD stars' "N"; "Combat Level M/N")
 #define OFF_ADV_LEVEL   0xe4       // adventurer level ("Adventurer Level")
 #define OFF_EXP_CUR     0xec       // current EXP
@@ -73,6 +84,14 @@ static int stat_max(uintptr_t sb, int base_off, int equip_off, int buff_off) {
     mem_rd32((void *)(sb + equip_off), &e);
     mem_rd32((void *)(sb + buff_off), &f);
     int m = (int)b + (int)e + (int)f;
+    return m < 0 ? 0 : m;
+}
+// Two-term stat sum (raw + growth) — the combat-stat "base" (2nd) number, effective minus equipment.
+static int stat_sum2(uintptr_t sb, int off_a, int off_b) {
+    uint32_t a = 0, b = 0;
+    mem_rd32((void *)(sb + off_a), &a);
+    mem_rd32((void *)(sb + off_b), &b);
+    int m = (int)a + (int)b;
     return m < 0 ? 0 : m;
 }
 
@@ -211,6 +230,7 @@ static void push_member(lua_State *L, int k) {
     uintptr_t a = g_ros[k];
     uint32_t sb = 0, wx = 0, wy = 0, clv = 0, alv = 0, hpc = 0, mpc = 0;
     uint32_t atk = 0, def = 0, spi = 0, res = 0, expc = 0, expm = 0;
+    int atk_b = 0, def_b = 0, spi_b = 0, res_b = 0;   // combat-stat BASE (2nd number) = raw + growth
     mem_rd32((void *)(a + OFF_STATBLOCK), &sb);
     mem_rd32((void *)(a + OFF_WORLD_X), &wx);
     mem_rd32((void *)(a + OFF_WORLD_Y), &wy);
@@ -220,10 +240,14 @@ static void push_member(lua_State *L, int k) {
         mem_rd32((void *)(sb + OFF_ADV_LEVEL), &alv);
         mem_rd32((void *)(sb + OFF_HP_CUR), &hpc);
         mem_rd32((void *)(sb + OFF_MP_CUR), &mpc);
-        mem_rd32((void *)(sb + OFF_ATK), &atk);
-        mem_rd32((void *)(sb + OFF_DEF), &def);
-        mem_rd32((void *)(sb + OFF_SPIRIT), &spi);
-        mem_rd32((void *)(sb + OFF_RESIST), &res);
+        atk = (uint32_t)stat_max(sb, OFF_ATK, OFF_ATK_EQUIP, OFF_ATK_GROWTH);   // effective (w/ equip)
+        def = (uint32_t)stat_max(sb, OFF_DEF, OFF_DEF_EQUIP, OFF_DEF_GROWTH);
+        spi = (uint32_t)stat_max(sb, OFF_SPIRIT, OFF_SPI_EQUIP, OFF_SPI_GROWTH);
+        res = (uint32_t)stat_max(sb, OFF_RESIST, OFF_RES_EQUIP, OFF_RES_GROWTH);
+        atk_b = stat_sum2(sb, OFF_ATK, OFF_ATK_GROWTH);                          // base = raw + growth
+        def_b = stat_sum2(sb, OFF_DEF, OFF_DEF_GROWTH);
+        spi_b = stat_sum2(sb, OFF_SPIRIT, OFF_SPI_GROWTH);
+        res_b = stat_sum2(sb, OFF_RESIST, OFF_RES_GROWTH);
         mem_rd32((void *)(sb + OFF_EXP_CUR), &expc);
         mem_rd32((void *)(sb + OFF_EXP_MAX), &expm);
         hpm = stat_max(sb, OFF_HP_BASE, OFF_HP_EQUIP, OFF_HP_BUFF);
@@ -246,11 +270,16 @@ static void push_member(lua_State *L, int k) {
     lua_pushinteger(L, hpm);                lua_setfield(L, -2, "hp_max");
     lua_pushinteger(L, (int)mpc);           lua_setfield(L, -2, "mp");
     lua_pushinteger(L, mpm);                lua_setfield(L, -2, "mp_max");
-    // the 4 combat stats — raw base (docs/findings/save15-live-stats.md in ../OpenSummoners).
+    // the 4 combat stats — the status screen's "effective/base" (effective = with equipment; base =
+    // raw + growth).  RE'd live vs Stella's sheet 2026-07-20 (all 4 exact).  `attack` = effective.
     lua_pushinteger(L, (int)atk);           lua_setfield(L, -2, "attack");
+    lua_pushinteger(L, atk_b);              lua_setfield(L, -2, "attack_base");
     lua_pushinteger(L, (int)def);           lua_setfield(L, -2, "defense");
+    lua_pushinteger(L, def_b);              lua_setfield(L, -2, "defense_base");
     lua_pushinteger(L, (int)spi);           lua_setfield(L, -2, "spirit");
+    lua_pushinteger(L, spi_b);              lua_setfield(L, -2, "spirit_base");
     lua_pushinteger(L, (int)res);           lua_setfield(L, -2, "resist");
+    lua_pushinteger(L, res_b);              lua_setfield(L, -2, "resist_base");
     lua_pushinteger(L, (int)expc);          lua_setfield(L, -2, "exp");
     lua_pushinteger(L, (int)expm);          lua_setfield(L, -2, "exp_max");
     lua_pushboolean(L, actor_is_active(a)); lua_setfield(L, -2, "active");  // controlled member (needs the executor)
