@@ -35,6 +35,7 @@
 #include <ctype.h>
 
 char        g_gamedir[MAX_PATH];   // our dir (= game dir), trailing '\'
+#include "crashlog.h"
 static char g_logpath[MAX_PATH];
 static int  g_is_sotes;            // host exe matches the SotES profile (register its bindings)
 
@@ -239,6 +240,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID reserved) {
         char *bs = strrchr(g_gamedir, '\\');
         if (bs) bs[1] = 0; else g_gamedir[0] = 0;
         _snprintf(g_logpath, MAX_PATH, "%soss_modloader.log", g_gamedir);
+        crashlog_init(g_logpath);   // catch crashes from here on (a bad mod, a mis-RE'd offset, our hooks)
 
         char host[MAX_PATH] = ""; GetModuleFileNameA(NULL, host, MAX_PATH);
         char *hslash = strrchr(host, '\\'); const char *hbase = hslash ? hslash + 1 : host;
