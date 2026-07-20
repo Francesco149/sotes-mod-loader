@@ -358,6 +358,9 @@ static void install_mouse(lua_State *L) {
 #define VA_PICKER_POLL  0x4378d0    // save-slot picker input poll (thiscall; ecx = picker ctrl, arg2 = now)
 #define VA_MENU_LATCH   0x43ce50    // menu_list_latch(thiscall; ecx = menu_ctrl) — the RE'd cursor controller
                                     //   the title menu steers its selection through (../OpenSummoners menu-list.md)
+#define VA_INPUT_POLL   0x43c110    // input_poll_consume(ecx=mgr, arg1=now, arg2=btn) — the title's ACTUAL poll;
+                                    //   hooked to grab the live mgr+now so injected records match its freshness
+                                    //   clock exactly (the picker step already uses its poll's live now)
 #define VA_DEMO_JL      0x583866    // attract/demo trigger (jl 0x5832e1)
 #define BTN_CONFIRM     0x25        // save-slot PICKER confirm id (the picker reads input via its own path)
 #define BTN_TITLE_OK    0x24        // TITLE commit — RE-verified: input_poll_consume(0x24) @ 0x56b8cc -> latch
@@ -386,8 +389,9 @@ static int      g_al_target = -1;   // savedataNN index; < 0 = newest/default
 static int      g_al_state;         // 0 idle, 1 title-confirm, 2 picker-confirm, 3 done
 static uint32_t g_al_pk_mgr;        // captured picker controller
 static uint32_t g_al_title_ctrl;    // captured TITLE menu_ctrl (validated: mode 1 + Start & Continue rows)
-static int      g_al_pk_h, g_al_menu_h;  // hook handles (picker poll / menu latch) — dropped when the drive ends
-static int      g_al_pk_logged, g_al_done_logged, g_al_ctrl_logged;
+static uint32_t g_al_poll_mgr, g_al_poll_now;  // TITLE poll's live ecx(mgr) + arg1(now), captured @ 0x43c110
+static int      g_al_pk_h, g_al_menu_h, g_al_poll_h;  // hook handles — all dropped when the drive ends
+static int      g_al_pk_logged, g_al_done_logged, g_al_ctrl_logged, g_al_poll_logged, g_al_commit_logged;
 static uint8_t  g_al_rec[8][16];    // rotating record buffers (static -> always game-readable)
 static int      g_al_recn;
 static int      g_al_demo_frozen;
@@ -432,6 +436,7 @@ static void al_stop(void) {   // tear the drive down (restore attract, drop hook
     al_attract_freeze(0);     // past the title — restore the demo so attract works normally again
     if (g_al_menu_h) { hooks_remove(g_al_menu_h); g_al_menu_h = 0; }
     if (g_al_pk_h)   { hooks_remove(g_al_pk_h);   g_al_pk_h   = 0; }
+    if (g_al_poll_h) { hooks_remove(g_al_poll_h); g_al_poll_h = 0; }
 }
 static void al_mark_done(void) {
     al_stop();
@@ -497,12 +502,30 @@ static void al_menu_latch_cb(const OssHookCtx *ctx, void *user) {
     if (!g_al_ctrl_logged) { g_al_ctrl_logged = 1;
         ml_log("[sotes] save.load: title menu_ctrl captured (0x%08x)", (unsigned)ctx->ecx); }
 }
+// input_poll_consume (0x43c110) entry observer — grab the title poll's LIVE mgr(ecx) + now(arg1 @ esp+4)
+// so our injected records use the exact object + freshness clock the title compares against.  The old
+// code injected with the SAFEPOINT now (exec_sp_now), which didn't match, so the title injection never
+// landed — only the picker half worked (it already uses its own poll's live now).
+static void al_poll_cb(const OssHookCtx *ctx, void *user) {
+    (void)user;
+    if (g_al_state != 1) return;
+    uint32_t now = 0;
+    if (!mem_rd32((void *)(uintptr_t)(ctx->esp + 4), &now)) return;   // arg1 = now (just above the ret addr)
+    g_al_poll_mgr = ctx->ecx;
+    g_al_poll_now = now;
+    if (!g_al_poll_logged) { g_al_poll_logged = 1;
+        ml_log("[sotes] save.load: title poll live — mgr=0x%08x now=%u (safepoint now=%u, ti_mgr=0x%08x)",
+               (unsigned)ctx->ecx, now, (unsigned)exec_sp_now(), (unsigned)exec_ti_mgr()); }
+}
 static void al_title_cb(void *user) {   // title drive: capture ctrl -> force Continue -> commit
     (void)user;
     if (g_al_state == 3) return;
     if (al_scene_loaded()) { al_mark_done(); return; }
     if (g_al_state != 1 || g_al_pk_mgr) return;
-    uint32_t mgr = exec_ti_mgr(), now = exec_sp_now();
+    // Inject through the TITLE poll's OWN live mgr+now (captured @ 0x43c110) so the record passes its
+    // freshness check; fall back to the safepoint capture until the first poll is observed.
+    uint32_t mgr = g_al_poll_mgr ? g_al_poll_mgr : exec_ti_mgr();
+    uint32_t now = g_al_poll_mgr ? g_al_poll_now : exec_sp_now();
     if (!mgr) return;
 
     if (!g_al_title_ctrl) {                 // provoke a latch call so al_menu_latch_cb can capture ctrl
@@ -524,6 +547,8 @@ static void al_title_cb(void *user) {   // title drive: capture ctrl -> force Co
         mem_rd32((void *)(uintptr_t)(sub + SUB_READY), &ready) && ready == MENU_READY) {
         al_title_set_cursor(g_al_title_ctrl, row);
         al_inject(mgr, BTN_TITLE_OK, now);          // commit Continue -> opens the save-data list
+        if (!g_al_commit_logged) { g_al_commit_logged = 1;
+            ml_log("[sotes] save.load: cursor -> Continue (row %d, ready) — injecting commit 0x24", row); }
     } else {
         al_inject(mgr, BTN_TITLE_NAV, now);         // not ready yet — keep the latch alive to hold ctrl
     }
@@ -543,14 +568,16 @@ static int l_save_load(lua_State *L) {
     if (g_al_state != 0) { lua_pushboolean(L, 0); return 1; }
     g_al_target = lua_isnumber(L, 1) ? (int)lua_tointeger(L, 1) : -1;
     g_al_title_ctrl = 0; g_al_ctrl_logged = 0;              // fresh menu_ctrl capture for this drive
+    g_al_poll_mgr = 0; g_al_poll_now = 0; g_al_poll_logged = 0; g_al_commit_logged = 0;
     al_attract_freeze(1);                                   // don't cut to the demo mid-drive
-    uintptr_t pk = mem_reloc(VA_PICKER_POLL), ml = mem_reloc(VA_MENU_LATCH);
+    uintptr_t pk = mem_reloc(VA_PICKER_POLL), ml = mem_reloc(VA_MENU_LATCH), ip = mem_reloc(VA_INPUT_POLL);
     g_al_pk_h   = hooks_entry_c(pk, al_picker_cb,     NULL);
     g_al_menu_h = hooks_entry_c(ml, al_menu_latch_cb, NULL);   // capture the title menu_ctrl to steer the cursor
+    g_al_poll_h = hooks_entry_c(ip, al_poll_cb,       NULL);   // capture the title poll's live mgr + now
     exec_on_frame_c(al_title_cb, NULL);
     g_al_state = 1;
-    ml_log("[sotes] save.load: armed — picker @ 0x%08x (h%d), latch @ 0x%08x (h%d), slot %d (<0 = newest)",
-           (unsigned)pk, g_al_pk_h, (unsigned)ml, g_al_menu_h, g_al_target);
+    ml_log("[sotes] save.load: armed — picker @ 0x%08x (h%d), latch @ 0x%08x (h%d), poll @ 0x%08x (h%d), slot %d",
+           (unsigned)pk, g_al_pk_h, (unsigned)ml, g_al_menu_h, (unsigned)ip, g_al_poll_h, g_al_target);
     lua_pushboolean(L, 1);
     return 1;
 }
