@@ -840,16 +840,27 @@ impl App {
             self.status = format!("game exe not found: {}", exe.display());
             return;
         }
-        // Ensure the loader proxy is present, then start the exe detached (spawn + drop = no wait).
-        if let Err(e) = self.proxy_installer().install(g) {
-            self.status = format!("could not install proxy before launch: {e:#}");
-            return;
-        }
-        self.proxy = self.detect_proxy();
+        // Best-effort proxy install — NEVER block the launch on it. The dir usually already has our
+        // version.dll (from a prior install / stage), and a user without our bundled loader should
+        // still be able to launch. (This is why the button seemed dead before: the pre-launch install
+        // failed because the launcher has no reference loader dll, and that aborted the whole launch.)
+        let note = match self.proxy_installer().install(g) {
+            Ok(s) => {
+                self.proxy = Some(s);
+                "loader installed".to_owned()
+            }
+            Err(_) => {
+                self.proxy = self.detect_proxy();
+                match self.proxy {
+                    Some(ProxyState::Installed) => "loader present".to_owned(),
+                    _ => "no loader — launching vanilla".to_owned(),
+                }
+            }
+        };
         self.cfg.game_exe = self.game_exe.clone();
         let _ = self.cfg.save();
         match std::process::Command::new(&exe).current_dir(&g.root).spawn() {
-            Ok(_child) => self.status = format!("launched {} — proxy {:?}", exe.display(), self.proxy),
+            Ok(_child) => self.status = format!("launched {} — {note}", exe.display()),
             Err(e) => self.status = format!("launch failed ({}): {e}", exe.display()),
         }
     }
