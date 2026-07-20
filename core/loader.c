@@ -24,6 +24,8 @@
 #include "profile.h"
 #include "config.h"
 #include "voice.h"
+#include "mem.h"
+#include "native_bridge.h"
 #include "ui.h"
 #include "prof.h"
 
@@ -64,35 +66,77 @@ void ml_log(const char *fmt, ...) {
     if (g_log_cs_init) LeaveCriticalSection(&g_log_cs);
 }
 
-// Load one native mod DLL from mods\.  It must be a mod written against our C ABI — i.e.
-// export OssModInit.  A plain DLL that isn't (the old trainer, the voice patch) does all its
-// work in its own DllMain and would install conflicting hooks the instant we LoadLibrary it, so
-// we PROBE the export first WITHOUT running any of its code (DONT_RESOLVE_DLL_REFERENCES maps the
-// image + lets GetProcAddress read exports, but does NOT call DllMain) and skip the DLL entirely
-// if the export is absent.  Real load uses LOAD_WITH_ALTERED_SEARCH_PATH so a mod may ship
-// co-located deps in its own folder without polluting the game dir.
+// Load one native mod DLL from mods\.  It must be a mod written against our C ABI — export
+// OssModInit (engine-thread init at the safepoint) and/or OssModEarlyInit (loader-thread patch in
+// the early-boot phase, before the game boots).  A plain DLL that is neither (the old trainer, the
+// standalone voice patch) does all its work in its own DllMain and would install conflicting hooks
+// the instant we LoadLibrary it, so we PROBE the exports first WITHOUT running any of its code
+// (DONT_RESOLVE_DLL_REFERENCES maps the image + lets GetProcAddress read exports, but does NOT call
+// DllMain) and skip the DLL entirely if neither export is present.  Real load uses
+// LOAD_WITH_ALTERED_SEARCH_PATH so a mod may ship co-located deps in its own folder.  Called from the
+// early-boot pass (scan_native_mods_early), so OssModEarlyInit runs before the game's own boot code.
 static int load_native(const char *filename) {
     char full[MAX_PATH];
     _snprintf(full, MAX_PATH, "%smods\\%s", g_gamedir, filename);
 
-    // Probe: is this a mod-API DLL?  Map it without running a byte of its code, check the export, free.
+    // Probe: does this DLL export either loader entry?  Map it without running a byte of its code.
     HMODULE probe = LoadLibraryExA(full, NULL, DONT_RESOLVE_DLL_REFERENCES);
     if (!probe) { ml_log("[loader] native FAILED mods\\%s (err %lu)", filename, GetLastError()); return 0; }
-    int is_api = GetProcAddress(probe, OSS_MOD_INIT_NAME) != NULL;
+    int has_early = GetProcAddress(probe, OSS_MOD_EARLY_INIT_NAME) != NULL;
+    int has_init  = GetProcAddress(probe, OSS_MOD_INIT_NAME)       != NULL;
     FreeLibrary(probe);
-    if (!is_api) {
-        ml_log("[loader] SKIP mods\\%s — no %s export (not a mod-API DLL; move it aside or port it to the API)", filename, OSS_MOD_INIT_NAME);
+    if (!has_early && !has_init) {
+        ml_log("[loader] SKIP mods\\%s — no %s / %s export (not a mod-API DLL; move it aside or port it)",
+               filename, OSS_MOD_INIT_NAME, OSS_MOD_EARLY_INIT_NAME);
         return 0;
     }
 
-    // Real load: runs DllMain, then defer OssModInit to the engine thread (like a Lua mod's init).
+    // Real load: runs DllMain once.
     HMODULE m = LoadLibraryExA(full, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
     if (!m) { ml_log("[loader] native FAILED mods\\%s (err %lu)", filename, GetLastError()); return 0; }
-    FARPROC pf = GetProcAddress(m, OSS_MOD_INIT_NAME);
-    OssModInitFn init = NULL;
-    if (pf) memcpy(&init, &pf, sizeof init);   // FARPROC -> typed fn ptr, no -Wcast-function-type
-    if (init) { exec_defer_native(filename, init); ml_log("[loader] native mods\\%s -> %p (OssModInit deferred to safepoint)", filename, (void *)m); }
+
+    // OssModEarlyInit: run NOW, on the loader thread, in the early-boot phase (before the game boots)
+    // — for patches that must beat the game's own boot code.  It gets the smaller early vtable.
+    if (has_early) {
+        FARPROC pe = GetProcAddress(m, OSS_MOD_EARLY_INIT_NAME);
+        OssModEarlyInitFn early = NULL;
+        if (pe) memcpy(&early, &pe, sizeof early);   // FARPROC -> typed fn ptr, no -Wcast-function-type
+        if (early) {
+            int rc = early(oss_early_api());
+            ml_log("[loader] native mods\\%s OssModEarlyInit -> %d (early-boot phase)", filename, rc);
+        }
+    }
+    // OssModInit: defer to the first safepoint so it runs on the engine thread (like a Lua mod init).
+    if (has_init) {
+        FARPROC pf = GetProcAddress(m, OSS_MOD_INIT_NAME);
+        OssModInitFn init = NULL;
+        if (pf) memcpy(&init, &pf, sizeof init);
+        if (init) { exec_defer_native(filename, init); ml_log("[loader] native mods\\%s -> %p (OssModInit deferred to safepoint)", filename, (void *)m); }
+    }
     return 1;
+}
+
+// Early-boot native pass: scan mods\*.dll and load each (running OssModEarlyInit now, deferring
+// OssModInit to the safepoint), then start the shared decrypt/boot waiter.  Runs BEFORE lh_init —
+// native mods don't need the Lua host, and an early patch must land before the game's boot code.
+// Returns the count of native mods loaded (for the summary log).
+static int scan_native_mods_early(void) {
+    char pat[MAX_PATH];
+    _snprintf(pat, MAX_PATH, "%smods\\*.dll", g_gamedir);
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pat, &fd);
+    int nn = 0;
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;   // a dir named *.dll — skip
+            nn += load_native(fd.cFileName);
+        } while (FindNextFileA(h, &fd));
+        FindClose(h);
+    }
+    // Every early mod has now registered its when_text_ready callbacks — start the ONE shared poll
+    // thread (keeps registration [loader thread] and polling [waiter thread] disjoint; see the bridge).
+    oss_early_waiter_start();
+    return nn;
 }
 
 // A directory mod is a Lua mod iff it contains init.lua.  We DEFER its init to the
@@ -114,14 +158,20 @@ static DWORD WINAPI loader_thread(void *unused) {
     (void)unused;
 
     config_load(g_gamedir);   // oss_loader.cfg (skip_launcher etc.), before the executor arms
+    mem_init();               // host base / PE ImageBase / ASLR delta — the early phase needs mem_reloc
 
     // Early-boot phase: BEFORE the game's own boot code runs, some patches must land (the built-in
     // Japanese voice restore seeds the bank + fixes the monster-SFX registrar before the sound-def
     // registrar runs — normal mod init at the first-frame safepoint is far too late).  Kept minimal
-    // (config is loaded; nothing else yet) so the waiter it spawns beats the registrar, matching the
-    // standalone patch's timing.  A no-op unless `voice=1` (see voice.c).  The general early-boot
-    // ABI for mods (OssModEarlyInit) builds on this next.
+    // (config + mem are up; nothing else yet) so a waiter it spawns beats the registrar, matching the
+    // standalone patch's timing.  A no-op unless `voice=1` (see voice.c).
     voice_early_init();
+
+    // The general early-boot ABI for mods: native mods that export OssModEarlyInit run HERE (loader
+    // thread, before the game boots) with the smaller early vtable (oss_early_api) — same phase as
+    // the built-in voice restore.  This also loads the native mods and defers each OssModInit to the
+    // safepoint (the Lua-directory scan stays below, after the Lua host is up).
+    int nn = scan_native_mods_early();
 
     prof_enable(config_get_int("profile", 0));   // opt-in per-frame profiler (dev; profile=1)
 
@@ -138,11 +188,13 @@ static DWORD WINAPI loader_thread(void *unused) {
 
     if (lh_init() != 0) ml_log("[loader] Lua host down — Lua mods skipped, native still load");
 
+    // Lua mods: directories under mods\ that hold an init.lua (native *.dll already loaded in the
+    // early-boot pass above).  Deferred to the engine thread; the Lua host is up now.
     char pat[MAX_PATH];
     _snprintf(pat, MAX_PATH, "%smods\\*", g_gamedir);
     WIN32_FIND_DATAA fd;
     HANDLE h = FindFirstFileA(pat, &fd);
-    int nn = 0, nl = 0;
+    int nl = 0;
     if (h == INVALID_HANDLE_VALUE) {
         // No mods\ folder at all (renamed/missing) — still arm the executor + UI below.  The
         // built-in QoL (focus-keep, launcher dismiss, the overlay/UI) is independent of any mods.
@@ -150,13 +202,9 @@ static DWORD WINAPI loader_thread(void *unused) {
     } else {
         do {
             const char *nm = fd.cFileName;
-            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-                if (strcmp(nm, ".") == 0 || strcmp(nm, "..") == 0) continue;
-                nl += load_lua_dir(nm);
-            } else {
-                size_t len = strlen(nm);
-                if (len > 4 && _stricmp(nm + len - 4, ".dll") == 0) nn += load_native(nm);
-            }
+            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;   // native *.dll handled early
+            if (strcmp(nm, ".") == 0 || strcmp(nm, "..") == 0) continue;
+            nl += load_lua_dir(nm);
         } while (FindNextFileA(h, &fd));
         FindClose(h);
     }

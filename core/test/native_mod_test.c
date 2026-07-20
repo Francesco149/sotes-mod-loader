@@ -50,6 +50,13 @@ static void nat_hook_cb(const OssHookCtx *ctx, void *user) {
 static void nat_onframe_cb(void *user) { (void)user; g_onframe_n++; }
 static void nat_main_cb(void *user)    { (void)user; g_main_ran = 1; }
 
+// ── early-boot ABI (OssModEarlyInit) fixtures ─────────────────────────────────
+static const unsigned char g_sig6[6] = { 0xDE,0xAD,0xBE,0xEF,0xCA,0xFE };
+static unsigned char       g_delayed_probe[6];               // starts != sig; "decrypts" mid-test
+static volatile int        g_early_immediate, g_early_delayed;
+static void early_cb_immediate(void *u) { (void)u; g_early_immediate = 1; }
+static void early_cb_delayed(void *u)   { (void)u; g_early_delayed = 1; }
+
 // The mod's entry — the loader resolves + defers this (here we pass it to exec_defer_native).
 static int TestModInit(const OssApi *api) {
     if (!api || api->abi_version != OSS_ABI_VERSION) return 1;
@@ -115,5 +122,32 @@ int main(void) {
     api_remove_check(oss_api());      // remove the hook, confirm it stops firing
 
     printf(">> %s (fails=%d)\n", g_fails ? "NATIVE_ABI_FAIL" : "NATIVE_ABI_OK", g_fails);
+
+    // ── early-boot ABI (OssEarlyApi) — patch + the decrypt/boot barrier ────────
+    printf(">> early-boot ABI (OssEarlyApi):\n");
+    const OssEarlyApi *e = oss_early_api();
+    check("early abi_version", e->abi_version, OSS_ABI_VERSION);
+    check("early struct_size", e->struct_size, (long)sizeof(OssEarlyApi));
+
+    unsigned char patch_buf[8] = { 1,2,3,4,5,6,7,8 };
+    unsigned char patch_new[4] = { 0xAA,0xBB,0xCC,0xDD };
+    check("patch returns ok", e->patch(patch_buf, patch_new, 4), 1);
+    check("patch wrote bytes", (patch_buf[0] == 0xAA && patch_buf[3] == 0xDD), 1);
+    check("patch rejects null", e->patch(NULL, patch_new, 4), 0);
+
+    // when_text_ready: one probe already matches (fires on the first poll); one starts mismatched and
+    // only fires after we overwrite it with the sig (simulating the SteamStub .text decrypt).
+    unsigned char ready_probe[6]; memcpy(ready_probe, g_sig6, 6);   // already matches
+    check("register immediate", e->when_text_ready(ready_probe, g_sig6, 6, early_cb_immediate, NULL), 1);
+    check("register delayed",   e->when_text_ready(g_delayed_probe, g_sig6, 6, early_cb_delayed, NULL), 1);
+    oss_early_waiter_start();                                       // start the shared poll thread
+    Sleep(30);
+    check("immediate fired", g_early_immediate, 1);
+    check("delayed not yet fired", g_early_delayed, 0);
+    memcpy(g_delayed_probe, g_sig6, 6);                             // "decrypt" the delayed probe
+    for (int i = 0; i < 200 && !g_early_delayed; i++) Sleep(5);     // <= 1 s
+    check("delayed fired after decrypt", g_early_delayed, 1);
+
+    printf(">> %s (fails=%d)\n", g_fails ? "EARLY_ABI_FAIL" : "EARLY_ABI_OK", g_fails);
     return g_fails ? 1 : 0;
 }

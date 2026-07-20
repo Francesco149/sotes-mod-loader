@@ -42,6 +42,8 @@ int mem_rd32(const void *p, uint32_t *out) {
 static uintptr_t g_main_base, g_main_size, g_image_base, g_delta;
 
 void mem_init(void) {
+    if (g_main_base) return;   // idempotent: the loader inits mem in the early-boot phase, and lh_init
+                               // also calls this — recomputing would just re-log the same base/delta.
     g_main_base = (uintptr_t)GetModuleHandleA(NULL);
     g_image_base = g_main_base;
     g_main_size  = 0;

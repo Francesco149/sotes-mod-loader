@@ -63,4 +63,75 @@ typedef struct OssApi {
 // The entry a native mod exports (resolved by name OSS_MOD_INIT_NAME).
 typedef int (*OssModInitFn)(const OssApi *api);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// EARLY-BOOT ABI (OssModEarlyInit) — patch the game DURING ITS OWN BOOT
+//
+// OssModInit (above) runs at the first-frame safepoint, on the engine thread — the right place for
+// hooks / per-frame / roster reads.  But some patches must land BEFORE the game's boot code runs
+// (e.g. seeding a global the boot registrar reads, fixing a boot-time table) — the safepoint is far
+// too late.  A native mod that also exports:
+//   __declspec(dllexport) int OssModEarlyInit(const OssEarlyApi *api);
+// gets called ONCE on the LOADER thread in the loader's early-boot phase — after config is loaded,
+// before the game boots — with the smaller vtable below.  (A mod may export either entry or both;
+// the two are independent.  Early runs first, on the loader thread; Init later, on the engine thread.)
+//
+// TIMING / WHAT'S SAFE HERE.  The engine does not exist yet: there is NO safepoint, NO engine
+// thread, NO hook/executor registry (main_enqueue / on_frame / hook_entry are NOT in this vtable —
+// use OssModInit for those).  On the retail SteamStub build the game's .text is still ENCRYPTED at
+// this point, so DO NOT read / scan / patch engine code in OssModEarlyInit itself — instead register
+// a `when_text_ready` callback and do the patching there, the instant .text is decrypted (the loader
+// runs one shared poll thread; on an already-unpacked exe it fires almost immediately).  What IS safe
+// now: log, read config, compute addresses (mem_base / mem_reloc), and register when_text_ready.
+// Return 0 on success (non-zero => the loader logs it; the mod is not unloaded — early is fire-once).
+//
+// This is the general form of the loader's built-in Japanese-voice restore (which seeds a bank global
+// + fixes a boot table right after .text decrypt).  struct_size / abi_version version it like OssApi.
+
+#define OSS_MOD_EARLY_INIT_NAME "OssModEarlyInit"
+
+typedef void (*OssEarlyReadyFn)(void *user);   // when_text_ready callback (runs on the shared poll thread)
+
+typedef struct OssEarlyApi {
+    uint32_t abi_version;   // == OSS_ABI_VERSION at load (a mod may refuse a mismatch)
+    uint32_t struct_size;   // == sizeof(OssEarlyApi); fields are append-only
+
+    // ── logging (-> oss_modloader.log) ────────────────────────────────────────
+    void (*log)(const char *msg);
+
+    // ── guarded memory (VirtualQuery-checked; never faults) ───────────────────
+    // Usable NOW for anything already mapped (PE headers, your own DLL).  NB: on the packed retail
+    // build the engine's .text reads as CIPHERTEXT until decrypt — gate real engine access on
+    // when_text_ready, don't trust a scan/read of engine code before it fires.
+    int  (*mem_readable)(const void *p, size_t n);
+    int  (*mem_writable)(const void *p, size_t n);
+    int  (*mem_read)(const void *src, void *dst, size_t n);
+    int  (*mem_write)(void *dst, const void *src, size_t n);
+    uintptr_t (*mem_base)(void);                 // running exe base
+    uintptr_t (*mem_reloc)(uintptr_t va);        // ImageBase-relative VA -> live addr (ASLR-safe)
+    uintptr_t (*mem_scan)(const char *pattern);  // AOB over the exe image; 0 = miss (see .text caveat)
+
+    // ── patch CODE (or any page), even read-only / executable ─────────────────
+    // VirtualProtect RWX -> memcpy -> restore protection -> flush icache.  Use this for .text
+    // patches: mem_write REFUSES a read-only code page, this does not.  Returns 1 on success, 0 if
+    // the range is unreadable or the protect failed.  (The native form of Lua's mod.mem.patch.)
+    int  (*patch)(void *va, const void *bytes, size_t n);
+
+    // ── loader config (oss_loader.cfg) — the same reader the core uses ─────────
+    int         (*config_get_int)(const char *key, int def);
+    const char *(*config_get_str)(const char *key, const char *def);
+
+    // ── decrypt/boot barrier ──────────────────────────────────────────────────
+    // Register fn(user) to fire the instant [probe, probe+n) reads back exactly as `sig` — i.e. once
+    // the packed exe's .text is decrypted (SteamStub decrypts .text wholesale at OEP) and the code you
+    // mean to patch is present.  The loader runs ONE shared thread that polls ~every 1 ms and calls
+    // fn on that thread the moment it matches (times out ~120 s -> skipped, fail-safe; on an already-
+    // unpacked exe it fires on the first poll).  Pick `probe`/`sig` = the first bytes of the very
+    // function you will patch, so the barrier also VALIDATES the target (a build shift => no match =>
+    // no patch, never a corrupt game).  n <= 16.  Returns 1 if registered, 0 if bad args / table full.
+    int  (*when_text_ready)(const void *probe, const void *sig, size_t n, OssEarlyReadyFn fn, void *user);
+} OssEarlyApi;
+
+// The early entry a native mod exports (resolved by name OSS_MOD_EARLY_INIT_NAME).
+typedef int (*OssModEarlyInitFn)(const OssEarlyApi *api);
+
 #endif
