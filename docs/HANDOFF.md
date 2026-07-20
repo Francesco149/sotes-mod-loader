@@ -23,10 +23,15 @@ Rolling "where we are / what's next" for a fresh session. Orient: this → `DESI
   array**) and `docs/findings/title-menu-state.md` (the title runner + input-ring + injection).
 - **`mod.game.roster`** now exposes the full stats (attack/defense/spirit/resist, combat & adventurer
   level, `char_level` = their sum, exp/exp_max); `mod.game.input.press(id)` injects UI buttons for
-  **arbitrary menu navigation**.  Auto-load now warns on the Start-default new-game case.
-- **Open follow-up:** the title-menu selection **cursor** is not in the input manager (it's in the
-  title scene object) — needed to fully fix "auto-load starts a new game when the title defaults to
-  Start".  Building block (button injection) is in place.  See `title-menu-state.md`.
+  **arbitrary menu navigation**.
+- **Auto-load "defaults to Start" bug — FIXED:** the title-menu selection **cursor** is the standard
+  `menu_ctrl` cursor (`*(ctrl+0x174)+0x14`), and `ctrl` = `menu_list_latch`'s ecx (`0x43ce50`).
+  `save.load` now hooks that latch to capture the live title ctrl, injects nav `3` to provoke the
+  first latch (it only runs on a consumed button), forces the cursor onto the **Continue** row
+  (`action 0x1c`), then commits with **`0x24`** (the RE-verified title commit; the old code injected
+  `0x25`, which the title never polls).  No Continue row (no save) → refuses to start a new game.
+  Disasm-verified; **end-to-end in-game run still to confirm**.  See `../OpenSummoners`
+  `docs/findings/title-menu-state.md`.
 
 The loader now also OWNS THE DISPLAY: it hooks the DirectDraw present, and either mirrors the game in
 the companion window (`ddraw=1`, default) or TAKES OVER the game window with a vsync'd, sharp-bilinear
