@@ -15,3 +15,7 @@ sml-core = { path = "../core", features = ["http"] }
 # default-features off drops accesskit + the Linux-only wayland/x11 features: we build for the
 # Windows target, and glow (OpenGL) is the render backend there.
 eframe = { version = "0.31", default-features = false, features = ["glow", "default_fonts"] }
+# Native file picker for locating `user_supplied` install files (e.g. the voice bank DLL). On the
+# Windows target it uses the OS common dialog (no GTK); the Linux backend is cfg-gated away, so it
+# doesn't touch the host `cargo test` (which builds `core` only).
+rfd = { version = "0.15", default-features = false }

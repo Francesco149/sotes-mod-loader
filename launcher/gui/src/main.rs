@@ -4,7 +4,9 @@
 //!   - **Installed** — the mods in the game dir; each shows a **Config** button *only if its
 //!     `mod.toml` declares `[config]`*, expanding an inline generic editor bound to that mod's
 //!     namespaced `oss_mods.cfg` values; plus Remove.
-//!   - **Browse** — load a source's `registry.json` and list its mods (install wiring is next).
+//!   - **Browse** — load a source's `registry.json` (an HTTPS URL or a local path) and list its
+//!     mods; **Install** each latest version (download → sha256-verify → place), prompting for any
+//!     `user_supplied` files via a native picker. Shows installed/update state per mod.
 //!   - **Launch** — the `version.dll`↔`realver.dll` proxy state + install/repair/uninstall, and
 //!     launch the game.
 //!
@@ -17,9 +19,10 @@
 use eframe::egui;
 use sml_core::cfg::KvFile;
 use sml_core::gamedir::{GameDir, ProxyInstaller, ProxyState};
-use sml_core::install::{self, InstalledManifest};
+use sml_core::install::{self, HttpFetcher, InstalledManifest};
 use sml_core::modconfig::{ConfigField, ConfigValue, FieldKind, ModManifest};
-use sml_core::registry::Registry;
+use sml_core::registry::{FileSpec, Registry};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -50,12 +53,49 @@ impl Installed {
     }
 }
 
-/// `--smoke [--game DIR] [--registry PATH]`: load the game dir + registry, exercise a config
-/// write, print a `[smoke]` report, and self-close — so the Windows build is verifiable from WSL.
+/// A pending install waiting on the user to locate its `user_supplied` files. Opened when Install
+/// is clicked on a mod whose latest version declares any `user_supplied` file; it drives a modal
+/// that collects a local path per file (native picker or typed) before the download+verify runs.
+struct InstallPrompt {
+    mod_id: String,
+    mod_name: String,
+    version: String,
+    files: Vec<UserFileReq>,
+}
+
+/// One `user_supplied` file the install needs located: its registry `dest` + the prompt to show,
+/// whether it may be skipped, and the local path the user picked (empty until chosen).
+struct UserFileReq {
+    dest: String,
+    prompt: String,
+    optional: bool,
+    path: String,
+}
+
+/// A snapshot of one Browse mod row — decouples rendering from the borrowed registry so an Install
+/// click can mutate self (manifest/prompt) after the loop.
+struct BrowseRow {
+    id: String,
+    name: String,
+    description: String,
+    /// Latest version string, or `None` for a not-yet-released mod (no Install button).
+    latest: Option<String>,
+    /// The latest version declares ≥1 `user_supplied` file (so Install opens the locate prompt).
+    needs_user_files: bool,
+    /// Installed version from the manifest, or `None` if not installed.
+    installed: Option<String>,
+}
+
+/// `--smoke [--game DIR] [--registry URL|PATH] [--install MOD_ID] [--user-file DEST=PATH]...`:
+/// load the game dir + registry, exercise a config write, optionally install a mod over HTTPS
+/// (supplying any `user_supplied` files from `--user-file`, as the modal does), print a `[smoke]`
+/// report, and self-close — so the Windows build is verifiable headlessly from WSL.
 #[derive(Clone)]
 struct Smoke {
     game: Option<String>,
     registry: Option<String>,
+    install: Option<String>,
+    user_files: BTreeMap<String, PathBuf>,
 }
 
 struct App {
@@ -79,6 +119,7 @@ struct App {
     // browse
     registry_path: String,
     registry: Option<Result<Registry, String>>,
+    install_prompt: Option<InstallPrompt>,
 
     smoke: Option<Smoke>,
     smoke_done: bool,
@@ -100,8 +141,11 @@ impl Default for App {
             loader_dll: "version.dll".to_owned(),
             game_exe: "sotes-trainer-oss.exe".to_owned(),
             proxy: None,
-            registry_path: "../sotes-mods/registry.json".to_owned(),
+            // Ships pointing at the live default source (install over HTTPS out of the box); a
+            // local registry.json path also works (Load auto-detects http(s):// vs a file path).
+            registry_path: "https://raw.githubusercontent.com/Francesco149/sotes-mods/master/registry.json".to_owned(),
             registry: None,
+            install_prompt: None,
             smoke: None,
             smoke_done: false,
         }
@@ -153,6 +197,9 @@ impl eframe::App for App {
             View::Browse => self.render_browse(ui),
             View::Launch => self.render_launch(ui),
         });
+
+        // A pending user_supplied-file prompt floats above everything (modal-ish).
+        self.render_install_prompt(ctx);
     }
 }
 
@@ -298,38 +345,231 @@ impl App {
     fn render_browse(&mut self, ui: &mut egui::Ui) {
         ui.heading("Browse");
         ui.horizontal(|ui| {
-            ui.label("registry.json:");
-            ui.text_edit_singleline(&mut self.registry_path);
+            ui.label("Source (URL or path):");
+            ui.add(egui::TextEdit::singleline(&mut self.registry_path).desired_width(420.0));
             if ui.button("Load").clicked() {
-                self.registry = Some(Registry::from_path(&self.registry_path).map_err(|e| format!("{e:#}")));
+                self.load_registry();
             }
         });
         ui.separator();
-        match &self.registry {
+
+        // Snapshot the rows so we can mutate self (install → manifest) inside the render loop.
+        let (header, rows): (String, Vec<BrowseRow>) = match &self.registry {
             None => {
-                ui.label("Load a source's registry.json to browse its mods.");
+                ui.label("Load a source's registry (the default is the sotes-mods URL) to browse its mods.");
+                return;
             }
             Some(Err(e)) => {
                 ui.colored_label(egui::Color32::RED, e);
+                return;
             }
             Some(Ok(reg)) => {
-                ui.label(egui::RichText::new(format!("{}  (registry v{})", reg.source.name, reg.registry_version)).strong());
-                ui.add_space(4.0);
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    for m in &reg.mods {
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(&m.name).strong());
-                            match m.latest() {
-                                Some(v) => ui.label(egui::RichText::new(format!("v{}", v.version)).weak()),
-                                None => ui.label(egui::RichText::new("no release yet").italics().weak()),
-                            };
-                        });
-                        if !m.description.is_empty() {
-                            ui.label(egui::RichText::new(&m.description).small());
+                let header = format!("{}  (registry v{})", reg.source.name, reg.registry_version);
+                let rows = reg
+                    .mods
+                    .iter()
+                    .map(|m| {
+                        let latest = m.latest();
+                        BrowseRow {
+                            id: m.id.clone(),
+                            name: m.name.clone(),
+                            description: m.description.clone(),
+                            latest: latest.map(|v| v.version.clone()),
+                            needs_user_files: latest
+                                .is_some_and(|v| v.files.iter().any(|f| matches!(f, FileSpec::UserSupplied { .. }))),
+                            installed: self.manifest.get(&m.id).map(|im| im.version.clone()),
                         }
-                        ui.add_space(6.0);
+                    })
+                    .collect();
+                (header, rows)
+            }
+        };
+
+        ui.label(egui::RichText::new(header).strong());
+        if self.game.is_none() {
+            ui.label(egui::RichText::new("set a game dir above to install").small().weak());
+        }
+        ui.add_space(4.0);
+
+        let has_game = self.game.is_some();
+        let mut install_click: Option<String> = None;
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for row in &rows {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(&row.name).strong());
+                    match &row.latest {
+                        Some(v) => ui.label(egui::RichText::new(format!("v{v}")).weak()),
+                        None => ui.label(egui::RichText::new("no release yet").italics().weak()),
+                    };
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        browse_action(ui, row, has_game, &mut install_click);
+                    });
+                });
+                if !row.description.is_empty() {
+                    ui.label(egui::RichText::new(&row.description).small());
+                }
+                ui.add_space(6.0);
+                ui.separator();
+            }
+        });
+
+        if let Some(id) = install_click {
+            self.begin_install(&id);
+        }
+    }
+
+    // ── install (Browse → download + verify + place) ─────────────────────────
+    /// Load `registry_path` as a source: an `http(s)://` value is fetched over HTTPS, anything else
+    /// is read as a local `registry.json`. Either way, downloads are sha256-verified at install —
+    /// the file host stays untrusted; only the registry is (see `docs/REGISTRY.md`).
+    fn load_registry(&mut self) {
+        let src = self.registry_path.trim().to_string();
+        let res = if src.starts_with("http://") || src.starts_with("https://") {
+            install::fetch_registry(&HttpFetcher::new(), &src)
+        } else {
+            Registry::from_path(&src)
+        };
+        self.status = match &res {
+            Ok(r) => format!("loaded {} — {} mod(s)", r.source.name, r.mods.len()),
+            Err(e) => format!("load failed: {e:#}"),
+        };
+        self.registry = Some(res.map_err(|e| format!("{e:#}")));
+    }
+
+    /// Clicked Install/Update on a Browse row. If the latest version declares `user_supplied`
+    /// files, open the prompt to locate them; otherwise install straight away.
+    fn begin_install(&mut self, id: &str) {
+        // Pull owned data out so the `self.registry` borrow ends before we touch self again.
+        let extracted = {
+            let Some(Ok(reg)) = &self.registry else {
+                self.status = "load a registry first".into();
+                return;
+            };
+            let Some(m) = reg.find(id) else {
+                self.status = format!("{id} is not in the loaded registry");
+                return;
+            };
+            let Some(v) = m.latest() else {
+                self.status = format!("{id} has no release to install");
+                return;
+            };
+            let files: Vec<UserFileReq> = v
+                .files
+                .iter()
+                .filter_map(|f| match f {
+                    FileSpec::UserSupplied { dest, prompt, optional, .. } => Some(UserFileReq {
+                        dest: dest.clone(),
+                        prompt: prompt.clone(),
+                        optional: *optional,
+                        path: String::new(),
+                    }),
+                    _ => None,
+                })
+                .collect();
+            (m.name.clone(), v.version.clone(), files)
+        };
+        let (mod_name, version, files) = extracted;
+        if files.is_empty() {
+            self.do_install(id, &version, BTreeMap::new());
+        } else {
+            self.install_prompt = Some(InstallPrompt { mod_id: id.to_string(), mod_name, version, files });
+        }
+    }
+
+    /// Download + verify + place `id`'s `version` (falls back to latest) into the game dir, copying
+    /// any located `user_supplied` files, then record it in the manifest and refresh Installed.
+    fn do_install(&mut self, id: &str, version: &str, user_files: BTreeMap<String, PathBuf>) {
+        let Some(g) = self.game.clone() else {
+            self.status = "set a game dir before installing".into();
+            return;
+        };
+        // Clone the mod + version out so the registry borrow ends before we mutate self.manifest.
+        let picked = {
+            let Some(Ok(reg)) = &self.registry else {
+                self.status = "load a registry first".into();
+                return;
+            };
+            let Some(m) = reg.find(id) else {
+                self.status = format!("{id} is not in the loaded registry");
+                return;
+            };
+            let Some(v) = m.versions.iter().find(|v| v.version == version).or_else(|| m.latest()) else {
+                self.status = format!("{id} has no release to install");
+                return;
+            };
+            (m.clone(), v.clone(), reg.source.name.clone())
+        };
+        let (m, v, source) = picked;
+        // ureq is blocking; mod files are small so a synchronous install keeps the UI simple
+        // (async download + progress is a v0.2 nicety — see DESIGN).
+        let fetcher = HttpFetcher::new();
+        match install::install_version(&g, &fetcher, Some(&source), &m, &v, &user_files, &mut self.manifest) {
+            Ok(()) => {
+                let n = self.manifest.get(id).map_or(0, |e| e.files.len());
+                self.refresh_installed();
+                self.status = format!("installed {} v{} — {n} file(s) placed", m.id, v.version);
+            }
+            Err(e) => self.status = format!("install failed: {e:#}"),
+        }
+    }
+
+    /// The modal collecting `user_supplied` file locations for a pending install. Taken out and put
+    /// back each frame unless the user cancels or confirms (then the install runs).
+    fn render_install_prompt(&mut self, ctx: &egui::Context) {
+        let Some(mut prompt) = self.install_prompt.take() else {
+            return;
+        };
+        enum Act {
+            Keep,
+            Cancel,
+            Install,
+        }
+        let mut act = Act::Keep;
+        egui::Window::new(format!("Install {}  ·  v{}", prompt.mod_name, prompt.version))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label("This mod needs files you supply from your own copy of the game:");
+                ui.add_space(6.0);
+                for f in &mut prompt.files {
+                    let tag = if f.optional { "optional" } else { "required" };
+                    ui.label(egui::RichText::new(format!("{}  ({tag} → {})", f.prompt, f.dest)).small());
+                    ui.horizontal(|ui| {
+                        ui.add(egui::TextEdit::singleline(&mut f.path).desired_width(360.0).hint_text("path to the file"));
+                        if ui.button("Browse…").clicked() {
+                            if let Some(p) = rfd::FileDialog::new().pick_file() {
+                                f.path = p.display().to_string();
+                            }
+                        }
+                    });
+                    ui.add_space(4.0);
+                }
+                ui.separator();
+                let ready = prompt.files.iter().all(|f| f.optional || !f.path.trim().is_empty());
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(ready, egui::Button::new("Install")).clicked() {
+                        act = Act::Install;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        act = Act::Cancel;
+                    }
+                    if !ready {
+                        ui.label(egui::RichText::new("locate the required file(s) to continue").small().weak());
                     }
                 });
+            });
+        match act {
+            Act::Keep => self.install_prompt = Some(prompt),
+            Act::Cancel => self.status = "install cancelled".into(),
+            Act::Install => {
+                let user_files: BTreeMap<String, PathBuf> = prompt
+                    .files
+                    .iter()
+                    .filter(|f| !f.path.trim().is_empty())
+                    .map(|f| (f.dest.clone(), PathBuf::from(f.path.trim())))
+                    .collect();
+                self.do_install(&prompt.mod_id, &prompt.version, user_files);
             }
         }
     }
@@ -442,18 +682,63 @@ impl App {
         }
 
         if let Some(reg) = &s.registry {
-            match Registry::from_path(reg) {
-                Ok(r) => {
+            self.registry_path = reg.clone();
+            self.load_registry(); // http(s):// or a local path — same as the Browse Load button
+            match &self.registry {
+                Some(Ok(r)) => {
                     let ids: Vec<&str> = r.mods.iter().map(|m| m.id.as_str()).collect();
                     out += &format!("[smoke] registry OK: {} ({} mods: {})\n", r.source.name, r.mods.len(), ids.join(", "));
                 }
-                Err(e) => out += &format!("[smoke] registry FAIL: {e:#}\n"),
+                Some(Err(e)) => out += &format!("[smoke] registry FAIL: {e}\n"),
+                None => {}
+            }
+        }
+
+        // Exercise the real install pipeline (HttpFetcher → download → sha256-verify → place →
+        // manifest) — the exact path the Browse Install button runs. Needs --registry + --game.
+        if let Some(id) = &s.install {
+            self.do_install(id, "", s.user_files.clone());
+            out += &format!("[smoke] install {id}: {}\n", self.status);
+            if let Some(g) = &self.game {
+                if let Ok(txt) = std::fs::read_to_string(InstalledManifest::path(g)) {
+                    for line in txt.lines() {
+                        out += &format!("[smoke]   {line}\n");
+                    }
+                }
             }
         }
 
         out += "[smoke] window + GL + egui init OK (reached update); closing\n";
         print!("{out}");
         let _ = std::io::stdout().flush();
+    }
+}
+
+/// The right-aligned install control for one Browse row, keyed on release + installed state. Sets
+/// `click` to the mod id when an Install/Update button is pressed (applied after the render loop).
+fn browse_action(ui: &mut egui::Ui, row: &BrowseRow, has_game: bool, click: &mut Option<String>) {
+    let Some(latest) = &row.latest else {
+        return; // no release yet — the "no release yet" label at the left says it all
+    };
+    match &row.installed {
+        // Installed at the latest — nothing to do.
+        Some(cur) if cur == latest => {
+            ui.label(egui::RichText::new("installed ✓").color(egui::Color32::from_rgb(60, 160, 60)));
+        }
+        // Installed at an older/other version — offer update-to-latest (installs over).
+        Some(cur) => {
+            if ui.add_enabled(has_game, egui::Button::new(format!("Update → v{latest}"))).clicked() {
+                *click = Some(row.id.clone());
+            }
+            ui.label(egui::RichText::new(format!("v{cur} installed")).small().weak());
+        }
+        // Not installed — `Install…` (ellipsis) hints the user_supplied locate prompt.
+        None => {
+            let label = if row.needs_user_files { "Install…" } else { "Install" };
+            if ui.add_enabled(has_game, egui::Button::new(label)).clicked() {
+                *click = Some(row.id.clone());
+            }
+        }
     }
 }
 
@@ -508,9 +793,17 @@ fn main() -> eframe::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let arg_after =
         |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned();
+    // All `--user-file DEST=PATH` pairs (repeatable), mapping a user_supplied dest to a local path.
+    let user_files: BTreeMap<String, PathBuf> = args
+        .windows(2)
+        .filter(|w| w[0] == "--user-file")
+        .filter_map(|w| w[1].split_once('=').map(|(d, p)| (d.to_string(), PathBuf::from(p))))
+        .collect();
     let smoke = args.iter().any(|a| a == "--smoke").then(|| Smoke {
         game: arg_after("--game"),
         registry: arg_after("--registry"),
+        install: arg_after("--install"),
+        user_files,
     });
 
     let options = eframe::NativeOptions {
