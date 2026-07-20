@@ -15,7 +15,7 @@ use crate::registry::{FileSpec, Mod, Registry, Version};
 use crate::verify;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 /// Fetches the bytes at a URL. Abstracted so install is testable without network.
@@ -101,6 +101,13 @@ pub fn install_version<F: Fetcher>(
         }
     }
 
+    // If this is an UPDATE (or reinstall/downgrade) of an already-installed mod, remember the files the
+    // previous version placed so we can prune any it left behind that this version no longer ships.
+    let prev_files: Vec<String> = manifest
+        .get(&m.id)
+        .map(|e| e.files.clone())
+        .unwrap_or_default();
+
     let mut written: Vec<(String, PathBuf)> = Vec::new();
     let placed = place_files(game, fetcher, v, user_files, &mut written);
 
@@ -108,7 +115,19 @@ pub fn install_version<F: Fetcher>(
         for (_, abs) in &written {
             let _ = std::fs::remove_file(abs); // best-effort rollback of this call's writes
         }
-        return Err(e);
+        return Err(e); // the old install (manifest + its files) is left untouched
+    }
+
+    // Prune stale files: anything the previous version placed that the new one doesn't (re)write.
+    // (Files present in both were just overwritten in place, so only the leftovers are removed.)
+    let new_dests: BTreeSet<&str> = written.iter().map(|(d, _)| d.as_str()).collect();
+    for old in &prev_files {
+        if !new_dests.contains(old.as_str()) {
+            if let Some(abs) = game.resolve_dest(old) {
+                let _ = std::fs::remove_file(&abs);
+                prune_empty_dirs(&game.root, abs.parent());
+            }
+        }
     }
 
     manifest.mods.insert(
@@ -349,6 +368,40 @@ mod tests {
         assert!(!g.root.join("mods/x/init.lua").exists());
         assert!(!g.root.join("mods/x/a.lua").exists(), "the good file must be rolled back too");
         assert!(!manifest.is_installed("x"));
+    }
+
+    #[test]
+    fn update_prunes_stale_files_from_the_previous_version() {
+        let (_td, g) = game();
+        let (a, old, new) = (b"shared\n".as_slice(), b"old-only\n".as_slice(), b"new-only\n".as_slice());
+        let ver = |v: &str, files: Vec<FileSpec>| Version {
+            version: v.into(),
+            released: String::new(),
+            notes: String::new(),
+            min_loader: None,
+            requires: Default::default(),
+            files,
+        };
+        let v1 = ver("1.0.0", vec![dl("mods/m/a.lua", "https://host/a", a), dl("mods/m/old.lua", "https://host/old", old)]);
+        let v2 = ver("2.0.0", vec![dl("mods/m/a.lua", "https://host/a", a), dl("mods/m/new.lua", "https://host/new", new)]);
+        let fetcher = StubFetcher(BTreeMap::from([
+            ("https://host/a".to_string(), a.to_vec()),
+            ("https://host/old".to_string(), old.to_vec()),
+            ("https://host/new".to_string(), new.to_vec()),
+        ]));
+        let mut manifest = InstalledManifest::default();
+
+        install_version(&g, &fetcher, None, &a_mod("m"), &v1, &BTreeMap::new(), &mut manifest).unwrap();
+        assert!(g.root.join("mods/m/old.lua").exists());
+
+        // update to v2: old.lua (v1-only) must be pruned; a.lua (shared) stays; new.lua appears
+        install_version(&g, &fetcher, None, &a_mod("m"), &v2, &BTreeMap::new(), &mut manifest).unwrap();
+        assert!(!g.root.join("mods/m/old.lua").exists(), "stale file from v1 must be pruned on update");
+        assert_eq!(fs::read(g.root.join("mods/m/a.lua")).unwrap(), a);
+        assert_eq!(fs::read(g.root.join("mods/m/new.lua")).unwrap(), new);
+        let e = manifest.get("m").unwrap();
+        assert_eq!(e.version, "2.0.0");
+        assert_eq!(e.files, ["mods/m/a.lua", "mods/m/new.lua"]);
     }
 
     #[test]
