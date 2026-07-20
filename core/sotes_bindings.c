@@ -427,6 +427,9 @@ static uint32_t g_al_title_ctrl;    // captured TITLE menu_ctrl (0x5e7fe0's ecx;
 static int      g_al_committed;     // 1 once the title's Continue was committed — stop driving the title, let the
                                     //   save-list picker (al_picker_cb) confirm the save.  Also GATES al_picker_cb
                                     //   (only auto-confirm 0x4378d0 after Continue, never the new-game/other menus).
+static uint32_t g_al_slot_ctrl;     // captured save-DATA list menu_ctrl (steered to a specific slot when g_al_target>=0)
+static int      g_al_slot_ready;    // 1 once the save-list cursor is on the target slot (or the slot wasn't found)
+static int      g_al_slot_logged;
 static int      g_al_pk_h, g_al_nav_h;   // picker-poll + menu-nav hook handles — both dropped when the drive ends
 static int      g_al_pk_logged, g_al_done_logged, g_al_ctrl_logged, g_al_commit_logged;
 static uint8_t  g_al_rec[8][16];    // rotating record buffers (static -> always game-readable)
@@ -495,6 +498,7 @@ static void al_picker_cb(const OssHookCtx *ctx, void *user) {   // picker poll o
     // "confirm only ~0x436xxx" — was a base-game address; in the EN-SE shipping exe the save-list scene polls
     // 0x4378d0 from 0x586a13 (ret 0x586a18), which that gate REJECTED, so the save never loaded.)
     if (!g_al_committed) return;                        // not driving into a save yet — ignore other 0x4378d0 users
+    if (g_al_target >= 0 && !g_al_slot_ready) return;   // a specific slot: hold until the save-list cursor is on it
     if (!g_al_pk_logged) { g_al_pk_logged = 1;
         ml_log("[sotes] save.load: save-list poll (ctrl=0x%08x, caller=0x%08x) — confirming", (unsigned)ctx->ecx, (unsigned)ctx->ret); }
     g_al_pk_mgr = ctx->ecx;
@@ -535,17 +539,49 @@ static void al_title_set_cursor(uint32_t ctrl, int row) {
         mem_writable((void *)(uintptr_t)(list + LH_SEL2), 4))
         *(uint32_t *)(uintptr_t)(list + LH_SEL2) = (uint32_t)((row / (int)stride) * (int)stride);
 }
-// 0x5e7fe0 (menu_ctrl nav/action) entry observer — it runs ONLY when a nav/confirm button is consumed, so this
-// is how we grab the live title menu_ctrl (its ecx), but only while driving the title and only if it validates.
-// 0x5e7fe0 is a real function entry (clean `push esi;mov esi,ecx` prologue), so — unlike the old 0x43ce50 — the
-// MinHook patch sits on a proper boundary and leaving it installed after the drive is a harmless no-op.
+// A save-DATA list is a mode-1 menu_ctrl with many rows (the title has 5); each row's `action` is the
+// savedataNN slot index (verified live: the first rows are actions 0,1,2,3,4,5…).  al_slot_row returns the
+// row whose action == the requested slot, or -1 if that slot isn't listed.
+static int al_is_slot_list(uint32_t ctrl) {
+    uint32_t mode = 0, list = 0, count = 0;
+    if (!mem_rd32((void *)(uintptr_t)(ctrl + MC_MODE), &mode) || mode != 1)   return 0;
+    if (!mem_rd32((void *)(uintptr_t)(ctrl + MC_LIST), &list) || !list)       return 0;
+    if (!mem_rd32((void *)(uintptr_t)(list + LH_COUNT), &count) || count < 8) return 0;   // >5 rows -> not the title
+    return 1;
+}
+static int al_slot_row(uint32_t ctrl, int slot) {
+    uint32_t rows = 0, list = 0, count = 0;
+    if (!mem_rd32((void *)(uintptr_t)(ctrl + MC_ROWS), &rows) || !rows)          return -1;
+    if (!mem_rd32((void *)(uintptr_t)(ctrl + MC_LIST), &list) || !list)          return -1;
+    if (!mem_rd32((void *)(uintptr_t)(list + LH_COUNT), &count) || count > 256)  return -1;
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t act = 0;
+        if (mem_rd32((void *)(uintptr_t)(rows + i * ROW_SZ + ROW_ACTION), &act) && (int)act == slot)
+            return (int)i;
+    }
+    return -1;
+}
+// 0x5e7fe0 (menu_ctrl nav/action) entry observer — runs ONLY when a nav/confirm button is consumed, so this is how
+// we grab a live menu_ctrl (its ecx): the TITLE (to steer onto Continue) and, when a specific slot was requested,
+// the save-DATA list (to steer onto that slot).  0x5e7fe0 is a real function entry (clean `push esi;mov esi,ecx`),
+// so — unlike the old 0x43ce50 — the MinHook patch sits on a proper boundary and outlives the drive harmlessly.
 static void al_menu_nav_cb(const OssHookCtx *ctx, void *user) {
     (void)user;
     if (g_al_state != 1) return;
-    if (al_title_continue_row(ctx->ecx) == -1) return;   // not the title menu (or unreadable) — ignore
-    g_al_title_ctrl = ctx->ecx;
-    if (!g_al_ctrl_logged) { g_al_ctrl_logged = 1;
-        ml_log("[sotes] save.load: title menu_ctrl captured (0x%08x)", (unsigned)ctx->ecx); }
+    uint32_t ctrl = ctx->ecx;
+    if (al_title_continue_row(ctrl) != -1) {             // the TITLE menu (has a Start-row signature)
+        g_al_title_ctrl = ctrl;
+        if (!g_al_ctrl_logged) { g_al_ctrl_logged = 1;
+            ml_log("[sotes] save.load: title menu_ctrl captured (0x%08x)", (unsigned)ctrl); }
+        return;
+    }
+    // Post-commit, a big mode-1 list (no Start row) = the save-DATA list — capture it to steer onto the slot.
+    if (g_al_committed && g_al_target >= 0 && !g_al_slot_ctrl && al_is_slot_list(ctrl)) {
+        g_al_slot_ctrl = ctrl;
+        if (!g_al_slot_logged) { g_al_slot_logged = 1;
+            ml_log("[sotes] save.load: save-list menu_ctrl captured (0x%08x) — steering to slot %d",
+                   (unsigned)ctrl, g_al_target); }
+    }
 }
 // Title drive (INJECTION ONLY — the only hooks are the picker poll + the nav observer, both real entries): provoke
 // one 0x5e7fe0 call with a nav (0x04) to CAPTURE the title menu_ctrl, force the cursor onto the Continue row, then
@@ -563,9 +599,26 @@ static void al_title_cb(void *user) {
     if (!mgr) return;
 
     if (!g_al_title_ctrl) {
-        if (g_al_committed) return;         // committed once + the title ctrl is gone -> the save-list is up; wait for
-        al_inject(mgr, BTN_TITLE_NAV, now); //   the picker (never re-provoke/nav — that spams the save-list).  Pre-
-        return;                             //   commit: provoke a nav call so al_menu_nav_cb can capture menu_ctrl.
+        if (g_al_committed) {               // the title committed -> the save-DATA list is up
+            // Default slot (-1): let al_picker_cb confirm the save-list's own default selection.  A SPECIFIC
+            // slot: provoke one save-list nav to capture its menu_ctrl (al_menu_nav_cb), force the cursor onto
+            // that slot, then let the picker confirm (gated on g_al_slot_ready).  The provoke-nav wanders the
+            // cursor, but we overwrite it right after and the picker won't confirm until g_al_slot_ready.
+            if (g_al_target >= 0 && !g_al_slot_ready) {
+                if (!g_al_slot_ctrl) { al_inject(mgr, BTN_TITLE_NAV, now); return; }   // provoke the save-list capture
+                int r = al_slot_row(g_al_slot_ctrl, g_al_target);
+                if (r >= 0) {
+                    al_title_set_cursor(g_al_slot_ctrl, r);
+                    ml_log("[sotes] save.load: save-list cursor -> slot %d (row %d)", g_al_target, r);
+                } else {
+                    ml_log("[sotes] save.load: slot %d not in the save-data list — loading the default instead", g_al_target);
+                }
+                g_al_slot_ready = 1;
+            }
+            return;                         // never fall back to nav here — that would spam the save-list
+        }
+        al_inject(mgr, BTN_TITLE_NAV, now); // pre-commit: provoke a nav call so al_menu_nav_cb can capture the title
+        return;
     }
     int row = al_title_continue_row(g_al_title_ctrl);
     if (row == -2) {                        // the title has no Continue row -> nothing to load
@@ -597,6 +650,7 @@ static int l_save_load(lua_State *L) {
     if (g_al_state != 0) { lua_pushboolean(L, 0); return 1; }
     g_al_target = lua_isnumber(L, 1) ? (int)lua_tointeger(L, 1) : -1;
     g_al_title_ctrl = 0; g_al_ctrl_logged = 0; g_al_commit_logged = 0; g_al_committed = 0;   // fresh drive state
+    g_al_slot_ctrl = 0; g_al_slot_ready = 0; g_al_slot_logged = 0;                            // + fresh save-list steer
     al_attract_freeze(1);                                   // don't cut to the demo mid-drive
     uintptr_t pk = mem_reloc(VA_PICKER_POLL), nv = mem_reloc(VA_MENU_NAV);
     g_al_pk_h  = hooks_entry_c(pk, al_picker_cb,   NULL);   // auto-confirm the save PICKER once it opens
