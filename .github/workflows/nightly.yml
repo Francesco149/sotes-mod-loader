@@ -1,0 +1,71 @@
+name: nightly
+
+# Build the loader (version.dll) + launcher (sotes-launcher.exe) via the Nix flake, then publish a
+# ROLLING "nightly" prerelease with both binaries.  The `nightly` tag is auto-bumped (deleted +
+# recreated at the built commit) every run, so it always points at the latest master.
+on:
+  push:
+    branches: [master]
+  schedule:
+    - cron: '0 6 * * *'   # 06:00 UTC daily
+  workflow_dispatch:       # manual "Run workflow" button
+
+permissions:
+  contents: write          # push the nightly tag + create the release
+
+concurrency:
+  group: nightly
+  cancel-in-progress: true
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Free disk space (Nix + the cross-toolchains are large)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          sudo docker image prune --all --force 2>/dev/null || true
+          df -h /
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix (flakes enabled)
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Build the loader (build/version.dll)
+        run: nix develop --command make -C core
+
+      - name: Build the launcher (sotes-launcher.exe)
+        run: nix develop --command cargo build --manifest-path launcher/Cargo.toml -p sml-gui --release --target x86_64-pc-windows-gnu
+
+      - name: Collect artifacts
+        run: |
+          set -eu
+          mkdir -p dist
+          cp build/version.dll dist/version.dll
+          cp launcher/target/x86_64-pc-windows-gnu/release/sotes-launcher.exe dist/sotes-launcher.exe
+          ls -la dist
+
+      - name: Publish rolling nightly (auto-bump the tag + refresh the release)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          SHORT="$(git rev-parse --short HEAD)"
+          DATE="$(date -u +%Y-%m-%d)"
+          printf '%s\n' \
+            "Rolling nightly, built from master @ $GITHUB_SHA (UTC $DATE)." \
+            "" \
+            "Files:" \
+            "- version.dll — the loader proxy: place beside the game exe, and rename the original Windows version.dll to realver.dll." \
+            "- sotes-launcher.exe — the mod-manager launcher (install mods, edit config, launch the game)." \
+            > /tmp/notes.md
+          # Auto-bump: remove the previous nightly release + its tag, then recreate both at THIS commit.
+          gh release delete nightly --yes --cleanup-tag 2>/dev/null || true
+          gh release create nightly \
+            dist/version.dll dist/sotes-launcher.exe \
+            --title "Nightly $DATE ($SHORT)" \
+            --notes-file /tmp/notes.md \
+            --prerelease \
+            --target "$GITHUB_SHA"
