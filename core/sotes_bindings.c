@@ -407,7 +407,21 @@ static void al_attract_freeze(int freeze) {
 static void al_mark_done(void) {
     g_al_state = 3;
     al_attract_freeze(0);   // drive done (past the title) — restore the demo so attract works normally again
-    if (!g_al_done_logged) { g_al_done_logged = 1; ml_log("[sotes] save.load: scene loaded — gameplay reached, drive stopped"); }
+    if (!g_al_done_logged) {
+        g_al_done_logged = 1;
+        // Distinguish the real load (the save picker opened → Continue→load) from the Start-default bug
+        // (a scene loaded but the picker NEVER opened → the title defaulted to "Start" and the injected
+        // confirm started a NEW GAME).  We can't yet select Continue regardless of the default (that
+        // needs the title menu cursor — ../OpenSummoners findings/title-menu-state.md), but at least
+        // make the failure LOUD instead of silently "succeeding" into a new game.
+        if (g_al_pk_mgr)
+            ml_log("[sotes] save.load: scene loaded via the save picker — gameplay reached, drive stopped");
+        else
+            ml_log("[sotes] save.load: WARNING — a scene loaded but the save PICKER never opened.  The "
+                   "title likely defaulted to 'Start' (a new game was started last boot), so the injected "
+                   "confirm began a NEW GAME instead of Continue->load.  Selecting Continue regardless "
+                   "needs the title menu cursor (not yet RE'd); drive stopped.");
+    }
 }
 static void al_picker_cb(const OssHookCtx *ctx, void *user) {   // picker poll observer: capture ctrl + confirm
     (void)user;
