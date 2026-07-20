@@ -19,6 +19,7 @@
 pub mod cfg;
 pub mod gamedir;
 pub mod install;
+pub mod launcher_cfg;
 pub mod modconfig;
 pub mod registry;
 pub mod verify;

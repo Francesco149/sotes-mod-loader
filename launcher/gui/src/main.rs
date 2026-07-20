@@ -20,10 +20,27 @@ use eframe::egui;
 use sml_core::cfg::KvFile;
 use sml_core::gamedir::{GameDir, ProxyInstaller, ProxyState};
 use sml_core::install::{self, HttpFetcher, InstalledManifest};
+use sml_core::launcher_cfg::LauncherConfig;
 use sml_core::modconfig::{ConfigField, ConfigValue, FieldKind, ModManifest};
-use sml_core::registry::{FileSpec, Registry};
+use sml_core::registry::{FileSpec, Mod, Registry};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::mpsc;
+
+/// The exe names to probe when auto-detecting a game dir. The unpacked dev exe is tried first (only
+/// the scratch copy has it, and it's the one to launch there); a real Steam install falls through to
+/// `sotes_en.exe`.
+const GAME_EXES: &[&str] = &["sotes-trainer-oss.exe", "sotes_en.exe"];
+
+/// One trusted source's fetched state: its url + the parsed registry (or an error string).
+struct SourceState {
+    url: String,
+    result: Result<Registry, String>,
+}
+
+const OK_GREEN: egui::Color32 = egui::Color32::from_rgb(90, 180, 90);
+const WARN_ORANGE: egui::Color32 = egui::Color32::from_rgb(210, 150, 60);
+const DIM: egui::Color32 = egui::Color32::from_rgb(150, 150, 155);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum View {
@@ -116,11 +133,14 @@ struct App {
     game_exe: String,
     proxy: Option<ProxyState>,
 
-    // browse
-    registry_path: String,
-    registry: Option<Result<Registry, String>>,
+    // sources / browse
+    cfg: LauncherConfig,        // the persisted launcher settings (game dir, exe, trusted sources)
+    new_source: String,         // the "add a source" input
+    catalog: Vec<SourceState>,  // every trusted source's fetched registry
+    fetch_rx: Option<mpsc::Receiver<Vec<SourceState>>>, // in-flight background fetch
     install_prompt: Option<InstallPrompt>,
 
+    booted: bool,               // first-frame bootstrap ran (load config, autodetect, fetch)
     smoke: Option<Smoke>,
     smoke_done: bool,
 }
@@ -129,9 +149,8 @@ impl Default for App {
     fn default() -> Self {
         Self {
             view: View::Installed,
-            status: "select a game dir".to_owned(),
-            // Dev defaults matching the staged test layout / the unpacked EN-SE dev dir.
-            game_path: r"C:\oss-ennse-voice-repro\stock".to_owned(),
+            status: "starting…".to_owned(),
+            game_path: String::new(),
             game: None,
             manifest: InstalledManifest::default(),
             installed: Vec::new(),
@@ -139,13 +158,14 @@ impl Default for App {
             mods_cfg_dirty: false,
             open_config: None,
             loader_dll: "version.dll".to_owned(),
-            game_exe: "sotes-trainer-oss.exe".to_owned(),
+            game_exe: "sotes_en.exe".to_owned(),
             proxy: None,
-            // Ships pointing at the live default source (install over HTTPS out of the box); a
-            // local registry.json path also works (Load auto-detects http(s):// vs a file path).
-            registry_path: "https://raw.githubusercontent.com/Francesco149/sotes-mods/master/registry.json".to_owned(),
-            registry: None,
+            cfg: LauncherConfig::default(),
+            new_source: String::new(),
+            catalog: Vec::new(),
+            fetch_rx: None,
             install_prompt: None,
+            booted: false,
             smoke: None,
             smoke_done: false,
         }
@@ -154,43 +174,76 @@ impl Default for App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if !self.booted {
+            self.booted = true;
+            apply_style(ctx);
+            if self.smoke.is_none() {
+                self.bootstrap();
+            }
+        }
         if self.smoke.is_some() {
             if !self.smoke_done {
                 self.smoke_done = true;
                 self.run_smoke();
             }
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
+
+        // Drive the background source-fetch to completion (repaint while it's in flight).
+        self.poll_fetch();
+        if self.fetch_rx.is_some() {
+            ctx.request_repaint();
         }
 
         egui::TopBottomPanel::top("game").show(ctx, |ui| {
-            ui.add_space(4.0);
+            ui.add_space(6.0);
             ui.horizontal(|ui| {
                 ui.label("Game dir:");
-                ui.add(egui::TextEdit::singleline(&mut self.game_path).desired_width(360.0));
+                // Stretch to fill — the field grows with the window instead of a fixed 360px stub.
+                let resp = ui.add(egui::TextEdit::singleline(&mut self.game_path).desired_width(f32::INFINITY));
+                if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    self.use_game_dir();
+                }
+            });
+            ui.horizontal(|ui| {
                 if ui.button("Use").clicked() {
                     self.use_game_dir();
                 }
+                if ui.button("Auto-detect").clicked() {
+                    self.autodetect_game_dir();
+                }
                 match &self.game {
-                    Some(_) => ui.label(egui::RichText::new("✓ loaded").color(egui::Color32::from_rgb(60, 160, 60))),
-                    None => ui.label(egui::RichText::new("not set").weak()),
+                    Some(_) => ui.colored_label(OK_GREEN, "✓ loaded"),
+                    None => ui.colored_label(DIM, "not set"),
                 };
             });
-            ui.add_space(4.0);
+            ui.add_space(6.0);
         });
 
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
-            ui.add_space(2.0);
-            ui.label(egui::RichText::new(&self.status).small().weak());
+            ui.add_space(3.0);
+            ui.label(egui::RichText::new(&self.status).small().color(DIM));
+            ui.add_space(1.0);
         });
 
-        egui::SidePanel::left("nav").exact_width(140.0).show(ctx, |ui| {
-            ui.add_space(6.0);
-            ui.heading("SotES Loader");
-            ui.separator();
-            ui.selectable_value(&mut self.view, View::Installed, "Installed");
-            ui.selectable_value(&mut self.view, View::Browse, "Browse");
-            ui.selectable_value(&mut self.view, View::Launch, "Launch");
-        });
+        egui::SidePanel::left("nav")
+            .resizable(false)
+            .exact_width(150.0)
+            .show(ctx, |ui| {
+                ui.add_space(8.0);
+                ui.heading("SotES Loader");
+                ui.add_space(2.0);
+                ui.separator();
+                ui.add_space(2.0);
+                for (view, label) in [
+                    (View::Installed, "🗁  Installed"),
+                    (View::Browse, "🔎  Browse"),
+                    (View::Launch, "▶  Launch"),
+                ] {
+                    ui.selectable_value(&mut self.view, view, label);
+                }
+            });
 
         egui::CentralPanel::default().show(ctx, |ui| match self.view {
             View::Installed => self.render_installed(ui),
@@ -203,7 +256,122 @@ impl eframe::App for App {
     }
 }
 
+/// A calm, consistent dark theme — uniform panel/window fills so a window resize shows no seam or
+/// flash of a foreign color, and a touch more spacing so rows breathe.
+fn apply_style(ctx: &egui::Context) {
+    let mut v = egui::Visuals::dark();
+    let bg = egui::Color32::from_rgb(24, 25, 28);
+    v.panel_fill = bg;
+    v.window_fill = bg; // clear_color defaults to window_fill → the resize gap matches the panels
+    v.faint_bg_color = egui::Color32::from_rgb(33, 35, 39);
+    v.extreme_bg_color = egui::Color32::from_rgb(18, 19, 22);
+    let mut style = egui::Style {
+        visuals: v,
+        ..(*ctx.style()).clone()
+    };
+    style.spacing.item_spacing = egui::vec2(8.0, 7.0);
+    style.spacing.button_padding = egui::vec2(9.0, 4.0);
+    ctx.set_style(style);
+}
+
+/// Fetch every source's registry (HTTPS or local path), collecting per-source results.
+fn fetch_all_sources(sources: Vec<String>) -> Vec<SourceState> {
+    let fetcher = HttpFetcher::new();
+    sources
+        .into_iter()
+        .map(|url| {
+            let result = if url.starts_with("http://") || url.starts_with("https://") {
+                install::fetch_registry(&fetcher, &url)
+            } else {
+                Registry::from_path(&url)
+            }
+            .map_err(|e| format!("{e:#}"));
+            SourceState { url, result }
+        })
+        .collect()
+}
+
 impl App {
+    // ── startup / sources ───────────────────────────────────────────────────
+    /// First-frame setup: load the persisted config, auto-detect the game dir if none is saved and
+    /// load it, then kick off the background fetch of every trusted source.
+    fn bootstrap(&mut self) {
+        self.cfg = LauncherConfig::load();
+        self.game_exe = self.cfg.game_exe.clone();
+        self.loader_dll = self.cfg.loader_dll.clone();
+        if self.cfg.game_path.trim().is_empty() {
+            self.autodetect_game_dir();
+        } else {
+            self.game_path = self.cfg.game_path.clone();
+            self.use_game_dir();
+        }
+        self.begin_fetch();
+    }
+
+    fn autodetect_game_dir(&mut self) {
+        match GameDir::autodetect(GAME_EXES) {
+            Some((g, exe)) => {
+                self.game_path = g.root.display().to_string();
+                self.game_exe = exe;
+                self.use_game_dir();
+                self.status = format!("auto-detected game dir: {}", self.game_path);
+            }
+            None => {
+                self.status = "no game dir found — set it above (Steam install, or the scratch copy)".into();
+            }
+        }
+    }
+
+    /// Fetch every trusted source in the background (the UI stays responsive; a repaint is requested
+    /// each frame until the results land).
+    fn begin_fetch(&mut self) {
+        let sources = self.cfg.sources.clone();
+        if sources.is_empty() {
+            self.catalog.clear();
+            self.fetch_rx = None;
+            self.status = "no sources — add one under Browse".into();
+            return;
+        }
+        let n = sources.len();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(fetch_all_sources(sources));
+        });
+        self.fetch_rx = Some(rx);
+        self.status = format!("fetching {n} source(s)…");
+    }
+
+    fn poll_fetch(&mut self) {
+        let Some(rx) = &self.fetch_rx else { return };
+        let Ok(catalog) = rx.try_recv() else { return };
+        let ok = catalog.iter().filter(|s| s.result.is_ok()).count();
+        let mods: usize =
+            catalog.iter().filter_map(|s| s.result.as_ref().ok()).map(|r| r.mods.len()).sum();
+        self.catalog = catalog;
+        self.fetch_rx = None;
+        self.status = format!("{ok}/{} source(s) loaded — {mods} mod(s) available", self.catalog.len());
+    }
+
+    fn add_source(&mut self, url: &str) {
+        if self.cfg.add_source(url) {
+            let _ = self.cfg.save();
+            self.begin_fetch();
+        }
+    }
+    fn remove_source(&mut self, url: &str) {
+        self.cfg.remove_source(url);
+        let _ = self.cfg.save();
+        self.begin_fetch();
+    }
+
+    /// The latest version of `id` offered by any trusted source (for update detection).
+    fn latest_available(&self, id: &str) -> Option<String> {
+        self.catalog
+            .iter()
+            .filter_map(|s| s.result.as_ref().ok())
+            .find_map(|reg| reg.find(id).and_then(|m| m.latest()).map(|v| v.version.clone()))
+    }
+
     // ── game dir ────────────────────────────────────────────────────────────
     fn use_game_dir(&mut self) {
         let g = GameDir::new(PathBuf::from(&self.game_path));
@@ -220,6 +388,10 @@ impl App {
         self.game = Some(g);
         self.refresh_installed();
         self.proxy = self.detect_proxy();
+        // Persist the chosen dir + exe so the next launch opens straight to it.
+        self.cfg.game_path = self.game_path.clone();
+        self.cfg.game_exe = self.game_exe.clone();
+        let _ = self.cfg.save();
         self.status = format!("using {} — {} mod(s) installed", self.game_path, self.installed.len());
     }
 
@@ -284,21 +456,35 @@ impl App {
             return;
         }
 
-        // Snapshot for rendering so we can freely mutate self.mods_cfg / open_config below.
-        let rows: Vec<(String, String, bool, Vec<ConfigField>)> = self
+        // Snapshot for rendering so we can freely mutate self.mods_cfg / open_config below. `update`
+        // is the newer version a trusted source offers (None if up to date / unreleased / no source).
+        let rows: Vec<(String, String, bool, Vec<ConfigField>, Option<String>)> = self
             .installed
             .iter()
-            .map(|e| (e.id.clone(), e.title(), e.has_config(), e.config().to_vec()))
+            .map(|e| {
+                let update = self.latest_available(&e.id).filter(|v| v != &e.version);
+                (e.id.clone(), e.title(), e.has_config(), e.config().to_vec(), update)
+            })
             .collect();
 
         let mut toggle: Option<String> = None;
         let mut remove: Option<String> = None;
+        let mut update_click: Option<String> = None;
 
         egui::ScrollArea::vertical().show(ui, |ui| {
-            for (id, title, has_config, fields) in &rows {
+            for (id, title, has_config, fields, update) in &rows {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(title).strong());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // An Update button appears (rightmost) only when a source has a newer version.
+                        if let Some(v) = update {
+                            if ui
+                                .button(egui::RichText::new(format!("⬆ Update → v{v}")).color(OK_GREEN))
+                                .clicked()
+                            {
+                                update_click = Some(id.clone());
+                            }
+                        }
                         if ui.button("Remove").clicked() {
                             remove = Some(id.clone());
                         }
@@ -340,31 +526,80 @@ impl App {
         if let Some(id) = remove {
             self.remove_mod(&id);
         }
+        if let Some(id) = update_click {
+            self.begin_install(&id); // reuses the Browse install flow (download → verify → place over)
+        }
     }
 
     fn render_browse(&mut self, ui: &mut egui::Ui) {
         ui.heading("Browse");
-        ui.horizontal(|ui| {
-            ui.label("Source (URL or path):");
-            ui.add(egui::TextEdit::singleline(&mut self.registry_path).desired_width(420.0));
-            if ui.button("Load").clicked() {
-                self.load_registry();
-            }
-        });
+        ui.add_space(2.0);
+
+        // ── trusted sources: add / remove / status (persisted; auto-fetched on start) ──
+        let fetching = self.fetch_rx.is_some();
+        egui::CollapsingHeader::new(format!("Sources ({})", self.cfg.sources.len()))
+            .default_open(self.cfg.sources.len() != 1 || self.catalog.iter().any(|s| s.result.is_err()))
+            .show(ui, |ui| {
+                let mut remove: Option<String> = None;
+                for s in &self.catalog {
+                    ui.horizontal(|ui| {
+                        match &s.result {
+                            Ok(r) => { ui.colored_label(OK_GREEN, "●").on_hover_text(format!("{} mod(s)", r.mods.len())); }
+                            Err(e) => { ui.colored_label(WARN_ORANGE, "▲").on_hover_text(e.clone()); }
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("✕").on_hover_text("remove source").clicked() {
+                                remove = Some(s.url.clone());
+                            }
+                            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                ui.label(egui::RichText::new(&s.url).small());
+                            });
+                        });
+                    });
+                }
+                if fetching {
+                    ui.label(egui::RichText::new("fetching…").small().color(DIM));
+                }
+                ui.add_space(4.0);
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.new_source)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("registry.json URL or local path"),
+                );
+                ui.horizontal(|ui| {
+                    if ui.button("Add source").clicked() {
+                        let u = self.new_source.trim().to_owned();
+                        if !u.is_empty() {
+                            self.add_source(&u);
+                            self.new_source.clear();
+                        }
+                    }
+                    if ui.add_enabled(!fetching, egui::Button::new("Refresh all")).clicked() {
+                        self.begin_fetch();
+                    }
+                });
+                if let Some(u) = remove {
+                    self.remove_source(&u);
+                }
+            });
         ui.separator();
 
-        // Snapshot the rows so we can mutate self (install → manifest) inside the render loop.
-        let (header, rows): (String, Vec<BrowseRow>) = match &self.registry {
-            None => {
-                ui.label("Load a source's registry (the default is the sotes-mods URL) to browse its mods.");
-                return;
-            }
-            Some(Err(e)) => {
-                ui.colored_label(egui::Color32::RED, e);
-                return;
-            }
-            Some(Ok(reg)) => {
-                let header = format!("{}  (registry v{})", reg.source.name, reg.registry_version);
+        if self.game.is_none() {
+            ui.colored_label(WARN_ORANGE, "set a game dir above to install mods");
+            ui.add_space(2.0);
+        }
+        if self.catalog.iter().all(|s| s.result.is_err()) {
+            ui.label(egui::RichText::new(if fetching { "fetching sources…" } else { "no mods available" }).color(DIM));
+            return;
+        }
+
+        // Snapshot every source's mod rows (owned) so an Install click can mutate self afterwards.
+        let has_game = self.game.is_some();
+        let sections: Vec<(String, Vec<BrowseRow>)> = self
+            .catalog
+            .iter()
+            .filter_map(|s| {
+                let reg = s.result.as_ref().ok()?;
                 let rows = reg
                     .mods
                     .iter()
@@ -375,41 +610,26 @@ impl App {
                             name: m.name.clone(),
                             description: m.description.clone(),
                             latest: latest.map(|v| v.version.clone()),
-                            needs_user_files: latest
-                                .is_some_and(|v| v.files.iter().any(|f| matches!(f, FileSpec::UserSupplied { .. }))),
+                            needs_user_files: latest.is_some_and(|v| {
+                                v.files.iter().any(|f| matches!(f, FileSpec::UserSupplied { .. }))
+                            }),
                             installed: self.manifest.get(&m.id).map(|im| im.version.clone()),
                         }
                     })
                     .collect();
-                (header, rows)
-            }
-        };
+                Some((reg.source.name.clone(), rows))
+            })
+            .collect();
 
-        ui.label(egui::RichText::new(header).strong());
-        if self.game.is_none() {
-            ui.label(egui::RichText::new("set a game dir above to install").small().weak());
-        }
-        ui.add_space(4.0);
-
-        let has_game = self.game.is_some();
         let mut install_click: Option<String> = None;
         egui::ScrollArea::vertical().show(ui, |ui| {
-            for row in &rows {
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(&row.name).strong());
-                    match &row.latest {
-                        Some(v) => ui.label(egui::RichText::new(format!("v{v}")).weak()),
-                        None => ui.label(egui::RichText::new("no release yet").italics().weak()),
-                    };
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        browse_action(ui, row, has_game, &mut install_click);
-                    });
-                });
-                if !row.description.is_empty() {
-                    ui.label(egui::RichText::new(&row.description).small());
+            for (name, rows) in &sections {
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(name).strong().color(DIM));
+                ui.add_space(2.0);
+                for row in rows {
+                    render_browse_row(ui, row, has_game, &mut install_click);
                 }
-                ui.add_space(6.0);
-                ui.separator();
             }
         });
 
@@ -418,35 +638,22 @@ impl App {
         }
     }
 
-    // ── install (Browse → download + verify + place) ─────────────────────────
-    /// Load `registry_path` as a source: an `http(s)://` value is fetched over HTTPS, anything else
-    /// is read as a local `registry.json`. Either way, downloads are sha256-verified at install —
-    /// the file host stays untrusted; only the registry is (see `docs/REGISTRY.md`).
-    fn load_registry(&mut self) {
-        let src = self.registry_path.trim().to_string();
-        let res = if src.starts_with("http://") || src.starts_with("https://") {
-            install::fetch_registry(&HttpFetcher::new(), &src)
-        } else {
-            Registry::from_path(&src)
-        };
-        self.status = match &res {
-            Ok(r) => format!("loaded {} — {} mod(s)", r.source.name, r.mods.len()),
-            Err(e) => format!("load failed: {e:#}"),
-        };
-        self.registry = Some(res.map_err(|e| format!("{e:#}")));
+    /// The mod `id` and its owning registry, searched across every loaded source (first match wins).
+    fn catalog_find(&self, id: &str) -> Option<(&Registry, &Mod)> {
+        self.catalog
+            .iter()
+            .filter_map(|s| s.result.as_ref().ok())
+            .find_map(|reg| reg.find(id).map(|m| (reg, m)))
     }
 
+    // ── install (Browse → download + verify + place) ─────────────────────────
     /// Clicked Install/Update on a Browse row. If the latest version declares `user_supplied`
     /// files, open the prompt to locate them; otherwise install straight away.
     fn begin_install(&mut self, id: &str) {
-        // Pull owned data out so the `self.registry` borrow ends before we touch self again.
+        // Pull owned data out so the `self.catalog` borrow ends before we touch self again.
         let extracted = {
-            let Some(Ok(reg)) = &self.registry else {
-                self.status = "load a registry first".into();
-                return;
-            };
-            let Some(m) = reg.find(id) else {
-                self.status = format!("{id} is not in the loaded registry");
+            let Some((_, m)) = self.catalog_find(id) else {
+                self.status = format!("{id} is not in any loaded source");
                 return;
             };
             let Some(v) = m.latest() else {
@@ -483,14 +690,10 @@ impl App {
             self.status = "set a game dir before installing".into();
             return;
         };
-        // Clone the mod + version out so the registry borrow ends before we mutate self.manifest.
+        // Clone the mod + version out so the catalog borrow ends before we mutate self.manifest.
         let picked = {
-            let Some(Ok(reg)) = &self.registry else {
-                self.status = "load a registry first".into();
-                return;
-            };
-            let Some(m) = reg.find(id) else {
-                self.status = format!("{id} is not in the loaded registry");
+            let Some((reg, m)) = self.catalog_find(id) else {
+                self.status = format!("{id} is not in any loaded source");
                 return;
             };
             let Some(v) = m.versions.iter().find(|v| v.version == version).or_else(|| m.latest()) else {
@@ -616,23 +819,37 @@ impl App {
         ui.separator();
         ui.horizontal(|ui| {
             ui.label("Game exe:");
-            ui.text_edit_singleline(&mut self.game_exe);
+            ui.add(egui::TextEdit::singleline(&mut self.game_exe).desired_width(f32::INFINITY));
         });
-        if ui.button("▶ Launch game").clicked() {
+        let exe_ok = g.root.join(&self.game_exe).is_file();
+        if !exe_ok {
+            ui.colored_label(WARN_ORANGE, format!("‘{}’ not found in the game dir", self.game_exe));
+        }
+        ui.add_space(6.0);
+        let btn = egui::Button::new(egui::RichText::new("▶  Launch game").size(15.0).strong())
+            .min_size(egui::vec2(150.0, 30.0))
+            .fill(egui::Color32::from_rgb(38, 86, 48));
+        if ui.add_enabled(exe_ok, btn).clicked() {
             self.launch_game(&g);
         }
     }
 
     fn launch_game(&mut self, g: &GameDir) {
-        // Ensure the loader is present, then start the exe detached (spawn + drop = no wait).
+        let exe = g.root.join(&self.game_exe);
+        if !exe.is_file() {
+            self.status = format!("game exe not found: {}", exe.display());
+            return;
+        }
+        // Ensure the loader proxy is present, then start the exe detached (spawn + drop = no wait).
         if let Err(e) = self.proxy_installer().install(g) {
             self.status = format!("could not install proxy before launch: {e:#}");
             return;
         }
         self.proxy = self.detect_proxy();
-        let exe = g.root.join(&self.game_exe);
+        self.cfg.game_exe = self.game_exe.clone();
+        let _ = self.cfg.save();
         match std::process::Command::new(&exe).current_dir(&g.root).spawn() {
-            Ok(_child) => self.status = format!("launched {}", exe.display()),
+            Ok(_child) => self.status = format!("launched {} — proxy {:?}", exe.display(), self.proxy),
             Err(e) => self.status = format!("launch failed ({}): {e}", exe.display()),
         }
     }
@@ -682,9 +899,10 @@ impl App {
         }
 
         if let Some(reg) = &s.registry {
-            self.registry_path = reg.clone();
-            self.load_registry(); // http(s):// or a local path — same as the Browse Load button
-            match &self.registry {
+            // Fetch synchronously into the catalog (headless — no background thread needed).
+            self.cfg.sources = vec![reg.clone()];
+            self.catalog = fetch_all_sources(self.cfg.sources.clone());
+            match self.catalog.first().map(|s| &s.result) {
                 Some(Ok(r)) => {
                     let ids: Vec<&str> = r.mods.iter().map(|m| m.id.as_str()).collect();
                     out += &format!("[smoke] registry OK: {} ({} mods: {})\n", r.source.name, r.mods.len(), ids.join(", "));
@@ -712,6 +930,25 @@ impl App {
         print!("{out}");
         let _ = std::io::stdout().flush();
     }
+}
+
+/// Render one Browse mod row: name + version, the install/update control (right), then description.
+fn render_browse_row(ui: &mut egui::Ui, row: &BrowseRow, has_game: bool, click: &mut Option<String>) {
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(&row.name).strong());
+        match &row.latest {
+            Some(v) => ui.label(egui::RichText::new(format!("v{v}")).color(DIM)),
+            None => ui.label(egui::RichText::new("no release yet").italics().color(DIM)),
+        };
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            browse_action(ui, row, has_game, click);
+        });
+    });
+    if !row.description.is_empty() {
+        ui.label(egui::RichText::new(&row.description).small().color(DIM));
+    }
+    ui.add_space(6.0);
+    ui.separator();
 }
 
 /// The right-aligned install control for one Browse row, keyed on release + installed state. Sets

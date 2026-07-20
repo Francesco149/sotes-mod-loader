@@ -37,6 +37,31 @@ impl GameDir {
         self.root.join(exe_name).is_file()
     }
 
+    /// Search common install locations for a dir containing one of `exes` (tried in order per
+    /// location). Returns the matching dir + the exe name found. Order: the dev scratch copy, then
+    /// every Steam library's `steamapps/common/*`. Used to pre-fill the game dir on first launch.
+    pub fn autodetect(exes: &[&str]) -> Option<(GameDir, String)> {
+        for dir in Self::candidate_dirs() {
+            for exe in exes {
+                if dir.join(exe).is_file() {
+                    return Some((GameDir::new(dir), (*exe).to_owned()));
+                }
+            }
+        }
+        None
+    }
+
+    /// Candidate game dirs to probe, in priority order.
+    fn candidate_dirs() -> Vec<PathBuf> {
+        let mut dirs = vec![PathBuf::from(r"C:\oss-ennse-voice-repro\stock")]; // dev scratch copy
+        for lib in steam_libraries() {
+            if let Ok(rd) = std::fs::read_dir(lib.join("steamapps").join("common")) {
+                dirs.extend(rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()));
+            }
+        }
+        dirs
+    }
+
     pub fn version_dll(&self) -> PathBuf {
         self.root.join("version.dll")
     }
@@ -226,6 +251,41 @@ impl ProxyInstaller {
     }
 }
 
+/// Steam library roots (the default install + any in `libraryfolders.vdf`), de-duplicated.
+fn steam_libraries() -> Vec<PathBuf> {
+    let mut steam_roots: Vec<PathBuf> = ["ProgramFiles(x86)", "ProgramFiles"]
+        .iter()
+        .filter_map(|e| std::env::var_os(e))
+        .map(|pf| PathBuf::from(pf).join("Steam"))
+        .collect();
+    steam_roots.push(PathBuf::from(r"C:\Program Files (x86)\Steam"));
+
+    let mut libs = Vec::new();
+    for steam in steam_roots {
+        if steam.is_dir() {
+            libs.push(steam.clone());
+        }
+        if let Ok(vdf) = std::fs::read_to_string(steam.join("steamapps").join("libraryfolders.vdf")) {
+            libs.extend(parse_vdf_paths(&vdf).into_iter().map(PathBuf::from));
+        }
+    }
+    libs.sort();
+    libs.dedup();
+    libs
+}
+
+/// Extract `"path"` values from a Steam `libraryfolders.vdf` (lines like `"path"  "D:\\SteamLibrary"`).
+/// VDF escapes backslashes as `\\`, unescaped back to `\`.
+fn parse_vdf_paths(vdf: &str) -> Vec<String> {
+    vdf.lines()
+        .filter_map(|line| {
+            let rest = line.trim().strip_prefix("\"path\"")?;
+            let after = &rest[rest.find('"')? + 1..];
+            Some(after[..after.find('"')?].replace("\\\\", "\\"))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -317,6 +377,32 @@ mod tests {
         let (_td, g, _inst) = fixture();
         let bad = ProxyInstaller::new("/nonexistent/version.dll", "/nonexistent/system.dll");
         assert!(bad.install(&g).is_err());
+    }
+
+    #[test]
+    fn parses_steam_library_paths_from_vdf() {
+        let vdf = r#"
+"libraryfolders"
+{
+    "0"
+    {
+        "path"		"C:\\Program Files (x86)\\Steam"
+        "label"		""
+    }
+    "1"
+    {
+        "path"		"D:\\SteamLibrary"
+    }
+}
+"#;
+        assert_eq!(
+            parse_vdf_paths(vdf),
+            vec![
+                r"C:\Program Files (x86)\Steam".to_string(),
+                r"D:\SteamLibrary".to_string()
+            ]
+        );
+        assert!(parse_vdf_paths("no paths here").is_empty());
     }
 
     #[test]

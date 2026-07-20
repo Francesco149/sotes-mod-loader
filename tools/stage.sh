@@ -40,13 +40,15 @@ for m in $MODS; do
   echo ">> staged mod:     $m"
 done
 
-# 3) launcher — copy the built .exe if present (rebuild it yourself; it changes rarely)
+# 3) launcher — copy the built .exe if present (rebuild it yourself; it changes rarely). A running
+# launcher LOCKS the staged exe, so a failed copy is a warning, not a hard stop.
 LX="$ROOT/launcher/target/x86_64-pc-windows-gnu/release/sotes-launcher.exe"
-if [ -f "$LX" ]; then
-  cp -f "$LX" "$STOCK/sotes-launcher.exe"
+if [ ! -f "$LX" ]; then
+  echo ">> launcher: not built — cargo build --manifest-path launcher/Cargo.toml -p sml-gui --release --target x86_64-pc-windows-gnu"
+elif cp -f "$LX" "$STOCK/sotes-launcher.exe" 2>/dev/null; then
   echo ">> staged launcher: sotes-launcher.exe (built $(date -r "$LX" +%Y-%m-%d))"
 else
-  echo ">> launcher: not built — cargo build --manifest-path launcher/Cargo.toml -p sml-gui --release --target x86_64-pc-windows-gnu"
+  echo ">> launcher: NOT staged — $STOCK/sotes-launcher.exe is locked (close the running launcher, then re-stage)"
 fi
 
 echo ">> done. launch:    tools/dev-launch.sh 'C:\\oss-ennse-voice-repro\\stock' sotes-trainer-oss.exe"
