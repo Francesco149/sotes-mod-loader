@@ -102,6 +102,8 @@ struct BrowseRow {
     needs_user_files: bool,
     /// Installed version from the manifest, or `None` if not installed.
     installed: Option<String>,
+    /// The latest version's release notes (shown on hover of the version / Update control; may be empty).
+    notes: String,
 }
 
 /// `--smoke [--game DIR] [--registry URL|PATH] [--install MOD_ID] [--user-file DEST=PATH]...`:
@@ -678,6 +680,7 @@ impl App {
                                 v.files.iter().any(|f| matches!(f, FileSpec::UserSupplied { .. }))
                             }),
                             installed: self.manifest.get(&m.id).map(|im| im.version.clone()),
+                            notes: latest.map(|v| v.notes.clone()).unwrap_or_default(),
                         }
                     })
                     .collect();
@@ -1012,8 +1015,15 @@ fn render_browse_row(ui: &mut egui::Ui, row: &BrowseRow, has_game: bool, click: 
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(&row.name).strong());
         match &row.latest {
-            Some(v) => ui.label(egui::RichText::new(format!("v{v}")).color(DIM)),
-            None => ui.label(egui::RichText::new("no release yet").italics().color(DIM)),
+            Some(v) => {
+                let lbl = ui.label(egui::RichText::new(format!("v{v}")).color(DIM));
+                if !row.notes.is_empty() {
+                    lbl.on_hover_text(&row.notes); // release notes for the latest version
+                }
+            }
+            None => {
+                ui.label(egui::RichText::new("no release yet").italics().color(DIM));
+            }
         };
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             browse_action(ui, row, has_game, click);
@@ -1039,7 +1049,11 @@ fn browse_action(ui: &mut egui::Ui, row: &BrowseRow, has_game: bool, click: &mut
         }
         // Installed at an older/other version — offer update-to-latest (installs over).
         Some(cur) => {
-            if ui.add_enabled(has_game, egui::Button::new(format!("Update → v{latest}"))).clicked() {
+            let mut btn = ui.add_enabled(has_game, egui::Button::new(format!("Update → v{latest}")));
+            if !row.notes.is_empty() {
+                btn = btn.on_hover_text(&row.notes); // what's new — release notes before you update
+            }
+            if btn.clicked() {
                 *click = Some(row.id.clone());
             }
             ui.label(egui::RichText::new(format!("v{cur} installed")).small().weak());
