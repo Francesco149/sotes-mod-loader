@@ -52,6 +52,14 @@ profile=0
 # the overlay.  Re-posts WM_ACTIVATEAPP only (no focus steal).  1 = on (default), 0 = off.
 keepactive=1
 
+# Japanese voice restore (built-in): re-add the Japanese dialogue + deluxe combat voices to the
+# English Special Edition, AND fix the monster-SFX registrar bug (both editions).  Applied in memory
+# during early boot (the exe is never modified).  You supply the voice bank `sotesx_s.dll` beside the
+# exe from your own Japanese copy (it is not shipped).  BOOT-TIME ONLY — the sounds register once at
+# boot, so this can't be toggled while the game runs; set it here (or in the launcher) and relaunch.
+# 0 = off (default), 1 = on.  Wrong edition / missing bank / a build shift fails safe (no patch).
+voice=0
+
 # Auto-loading a save at boot is now the `autoload` MOD (in the sotes-mods repo), not a core flag:
 # install it and set its `slot` in the mod's config (oss_mods.cfg / the launcher).  It drives the
 # menus via the loader's mod.game.save op.  (Reaching gameplay in dev tests = drop that mod in mods\.)

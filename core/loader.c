@@ -23,6 +23,7 @@
 #include "executor.h"
 #include "profile.h"
 #include "config.h"
+#include "voice.h"
 #include "ui.h"
 #include "prof.h"
 
@@ -34,6 +35,13 @@
 char        g_gamedir[MAX_PATH];   // our dir (= game dir), trailing '\'
 static char g_logpath[MAX_PATH];
 static int  g_is_sotes;            // host exe matches the SotES profile (register its bindings)
+
+// ml_log is called from several threads (loader, executor, UI, the voice early-boot waiter).  It
+// re-opens the file per line, so two concurrent opens would collide and Windows drops one (a lost
+// line).  Serialize the whole append behind a critical section, initialized in DllMain before the
+// first log.  (g_log_cs_init guards the pre-init window — there is none today, but it's cheap.)
+static CRITICAL_SECTION g_log_cs;
+static int              g_log_cs_init;
 
 // tiny case-insensitive substring (avoid linking shlwapi for StrStrIA)
 static const char *istr(const char *hay, const char *needle) {
@@ -47,9 +55,13 @@ static const char *istr(const char *hay, const char *needle) {
 }
 
 void ml_log(const char *fmt, ...) {
-    FILE *f = fopen(g_logpath, "a"); if (!f) return;
-    va_list ap; va_start(ap, fmt); vfprintf(f, fmt, ap); va_end(ap);
-    fputc('\n', f); fclose(f);
+    if (g_log_cs_init) EnterCriticalSection(&g_log_cs);
+    FILE *f = fopen(g_logpath, "a");
+    if (f) {
+        va_list ap; va_start(ap, fmt); vfprintf(f, fmt, ap); va_end(ap);
+        fputc('\n', f); fclose(f);
+    }
+    if (g_log_cs_init) LeaveCriticalSection(&g_log_cs);
 }
 
 // Load one native mod DLL from mods\.  It must be a mod written against our C ABI — i.e.
@@ -102,6 +114,15 @@ static DWORD WINAPI loader_thread(void *unused) {
     (void)unused;
 
     config_load(g_gamedir);   // oss_loader.cfg (skip_launcher etc.), before the executor arms
+
+    // Early-boot phase: BEFORE the game's own boot code runs, some patches must land (the built-in
+    // Japanese voice restore seeds the bank + fixes the monster-SFX registrar before the sound-def
+    // registrar runs — normal mod init at the first-frame safepoint is far too late).  Kept minimal
+    // (config is loaded; nothing else yet) so the waiter it spawns beats the registrar, matching the
+    // standalone patch's timing.  A no-op unless `voice=1` (see voice.c).  The general early-boot
+    // ABI for mods (OssModEarlyInit) builds on this next.
+    voice_early_init();
+
     prof_enable(config_get_int("profile", 0));   // opt-in per-frame profiler (dev; profile=1)
 
     // Register the profile's native game bindings BEFORE the Lua game table finalizes,
@@ -164,6 +185,7 @@ static DWORD WINAPI loader_thread(void *unused) {
 BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID reserved) {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(h);
+        InitializeCriticalSection(&g_log_cs); g_log_cs_init = 1;   // before the first ml_log
         // our own path (we sit beside the exe as version.dll) -> the game dir.
         GetModuleFileNameA(h, g_gamedir, MAX_PATH); g_gamedir[MAX_PATH - 1] = 0;
         char *bs = strrchr(g_gamedir, '\\');
