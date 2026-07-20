@@ -461,17 +461,23 @@ impl App {
                 ui.add_space(6.0);
             }
         });
+        // Auto-save to oss_loader.cfg on change — a settings tab shouldn't need an explicit Save (the old
+        // Save button meant a toggle looked applied but wasn't persisted, so e.g. voice stayed on).  Defer
+        // the write until the pointer is released so a slider drag writes ONCE, not once per tick.
+        if self.loader_cfg_dirty && !ui.ctx().input(|i| i.pointer.any_down()) {
+            self.save_loader_cfg(); // clears loader_cfg_dirty
+        }
         ui.separator();
-        ui.horizontal(|ui| {
-            ui.add_enabled_ui(self.loader_cfg_dirty, |ui| {
-                if ui.button("Save").clicked() {
-                    self.save_loader_cfg();
-                }
-            });
-            if self.loader_cfg_dirty {
-                ui.label(egui::RichText::new("unsaved").small().color(egui::Color32::from_rgb(200, 140, 40)));
-            }
-        });
+        ui.label(
+            egui::RichText::new(if self.loader_cfg_dirty { "saving…" } else { "saved to oss_loader.cfg" })
+                .small()
+                .color(DIM),
+        );
+        ui.label(
+            egui::RichText::new("Voice is applied at boot — relaunch the game for a voice change to take effect.")
+                .small()
+                .color(DIM),
+        );
     }
 
     fn save_loader_cfg(&mut self) {
