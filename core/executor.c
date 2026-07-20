@@ -21,6 +21,7 @@
 static lua_State *g_L;
 static int g_armed;
 static uint32_t g_main_tid;   // engine thread id (captured at the first safepoint)
+static HWND g_hwnd;           // the game window (set at bootstrap; used by the safepoint activate-kick + keepactive)
 
 uint32_t exec_main_tid(void) { return g_main_tid; }
 uint32_t *exec_main_tid_ptr(void) { return &g_main_tid; }   // hooks.c bakes this addr into the typed-hook gate
@@ -182,6 +183,28 @@ void exec_on_safepoint(void *ti_mgr) {
     if (InterlockedExchange(&in_sp, 1)) return;   // reentrancy guard
     if (!g_main_tid) g_main_tid = GetCurrentThreadId();   // this IS the engine thread
     g_ti_mgr = (uint32_t)(uintptr_t)ti_mgr;
+
+    // One-shot DirectInput-acquire kick — fixes "the game is uncontrollable on first launch until you
+    // alt-tab out and back in".  On first launch the game is foreground but never gets a clean
+    // WM_ACTIVATE, so its DirectInput device stays UNACQUIRED and the keyboard/pad are dead; an alt-tab
+    // cycle is what finally wakes it.  Post the activation the game acquires on, a few times over the
+    // first ~2s, to do that automatically.  (Our input-ring injection bypasses DInput, which is why
+    // autoload already reaches gameplay while real input is still dead.)
+    {
+        static int kick_done;
+        static DWORD kick_t0, kick_last;
+        HWND h = g_hwnd;
+        if (h && !kick_done) {
+            DWORD now = GetTickCount();
+            if (!kick_t0) kick_t0 = kick_last = now - 500;   // fire on the very first frame, then ~every 500ms
+            if (now - kick_last >= 500) {
+                kick_last = now;
+                PostMessageA(h, WM_ACTIVATEAPP, TRUE, 0);
+                PostMessageA(h, WM_ACTIVATE, WA_ACTIVE, 0);
+            }
+            if (now - kick_t0 >= 2000) kick_done = 1;   // stop after ~2s (acquired by then)
+        }
+    }
     uint64_t t0 = prof_now();                      // profile the loader's per-frame cost (profile=1)
     if (!g_inited) { g_inited = 1; run_deferred(); }   // mods init here — on the main thread
     drain_jobs();
@@ -235,8 +258,7 @@ void exec_push_on_frame(lua_State *L) { lua_pushcfunction(L, l_on_frame); }
 
 // ── bootstrap: subclass the game window -> install the safepoint hook on the main thread ──
 #define WM_OSS_BOOT (WM_APP + 0x5b01)
-static WNDPROC g_orig_wndproc;
-static HWND    g_hwnd;
+static WNDPROC g_orig_wndproc;   // g_hwnd is declared up top (the safepoint activate-kick needs it)
 
 void *exec_game_hwnd(void) { return (void *)g_hwnd; }   // reserved: the future in-game overlay backend hooks/tracks this
 
@@ -288,7 +310,7 @@ static void install_safepoint_hook(void) {   // runs on the MAIN thread (in the 
 static void install_present_hook(void) {
     const oss_profile *p = profile_current();
     if (!p || !p->present_va) return;
-    if (!config_get_int("ddraw", 1)) { ml_log("[exec] present hook off (ddraw=0)"); return; }
+    if (!config_get_bool("ddraw", 1)) { ml_log("[exec] present hook off (ddraw=0)"); return; }
     ddp_set_takeover(config_get_int("ddraw_takeover", 0));   // own the game window (borderless) vs mirror-only
     void *va = (void *)mem_reloc(p->present_va);
     MH_STATUS s = MH_CreateHook(va, (LPVOID)&oss_present_detour, &g_present_orig);
@@ -347,7 +369,7 @@ static BOOL CALLBACK find_launcher(HWND h, LPARAM lp) {
     HWND btn = GetDlgItem(h, p->launch_ctrl_id);
     if (!btn) return TRUE;                                  // not the launcher we expect
     // Pick the display mode before launching (default WINDOWED; windowed=0 -> fullscreen).
-    int win = config_get_int("windowed", 1);
+    int win = config_get_bool("windowed", 1);
     int radio = win ? p->windowed_ctrl_id : p->fullscreen_ctrl_id;
     if (radio) { HWND rb = GetDlgItem(h, radio); if (rb) SendMessageA(rb, BM_CLICK, 0, 0); }
     SendMessageA(btn, BM_CLICK, 0, 0);
@@ -359,7 +381,7 @@ static int dismiss_launcher(void) { int done = 0; EnumWindows(find_launcher, (LP
 int exec_bootstrap(void) {
     if (!profile_current()) { ml_log("[exec] no game profile — executor disabled (fallback)"); return 0; }
     const oss_profile *p = profile_current();
-    int skip = config_get_int("skip_launcher", 1) && p->launcher_class;   // built-in default-on (hands-free boot)
+    int skip = config_get_bool("skip_launcher", 1) && p->launcher_class;   // built-in default-on (hands-free boot)
     // Wait INDEFINITELY for the game window: it will appear as the game boots, and a bounded
     // timeout risks failing to arm on a slow boot (window-scanning is cheap; if the game
     // truly hangs the user kills it).  Optionally auto-dismiss the launcher while we wait.
