@@ -9,7 +9,24 @@ Rolling "where we are / what's next" for a fresh session. Orient: this → `DESI
 > THERE** (`SE_CODE_MAP.md` / `engine-quirks.md`), not only in this repo — loader docs cover the
 > loader, game facts belong to the port so both projects benefit. (README "Related".)
 
-## State: P0–P5 DONE + **DDraw present (borderless + windowed takeover)** + **in-game overlay** + **`mod.config`** + **semantic `mod.game` ops** + **mod API versioning** (2026-07-19). Next = **P8 launcher** (Go/Rust/Zig — TBD) + P6 voice / P7 trainer as mods.
+## State: P0–P5 DONE + **DDraw present (borderless + windowed takeover)** + **in-game overlay** + **`mod.config`** + **semantic `mod.game` ops** + **mod API versioning** + **early-boot phase & the `OssModEarlyInit` ABI** + **built-in JP voice restore** (2026-07-20). Next = **P8 launcher** + P7 trainer as a mod.
+
+### Session 2026-07-20 (early-boot ABI + a live RE pass)
+- **`OssModEarlyInit`** — the general early-boot native ABI (`core/oss_mod_api.h` "EARLY-BOOT ABI"):
+  a mod patches the game DURING its own boot (before the engine inits) with a small vtable —
+  `log`/guarded `mem`/`patch`(RWX code)/`config`/**`when_text_ready`** (the shared decrypt-wait that
+  generalizes the voice restore's SteamStub poll).  Loaded in a new early native pass in `loader.c`;
+  `examples/early_probe` + a host `EARLY_ABI_OK` test; validated in-game.
+- **Live RE (vs save 15)** — recorded in **`../OpenSummoners`**: `docs/findings/save15-live-stats.md`
+  (the character **stat block** — name/HP/MP/the 4 combat stats/levels/exp; the **adventure-stats**
+  struct; the per-char **save record**; and the negative result that SE has **no fixed-index party
+  array**) and `docs/findings/title-menu-state.md` (the title runner + input-ring + injection).
+- **`mod.game.roster`** now exposes the full stats (attack/defense/spirit/resist, combat & adventurer
+  level, `char_level` = their sum, exp/exp_max); `mod.game.input.press(id)` injects UI buttons for
+  **arbitrary menu navigation**.  Auto-load now warns on the Start-default new-game case.
+- **Open follow-up:** the title-menu selection **cursor** is not in the input manager (it's in the
+  title scene object) — needed to fully fix "auto-load starts a new game when the title defaults to
+  Start".  Building block (button injection) is in place.  See `title-menu-state.md`.
 
 The loader now also OWNS THE DISPLAY: it hooks the DirectDraw present, and either mirrors the game in
 the companion window (`ddraw=1`, default) or TAKES OVER the game window with a vsync'd, sharp-bilinear
@@ -40,7 +57,7 @@ companion window (`mod.ui`).
 | P3 | chained hook registry — **Tier-1 observers** (`mod.hook.entry`) **+ Tier-2 typed** (`mod.hook.typed`) | ✅ |
 | P4 | native-mod C ABI: `OssModInit(const OssApi*)`, shared hook + executor registries | ✅ |
 | P5 | ImGui UI: loader-owned companion window — `mod.ui` + a lock-free snapshot pipeline | ✅ (host + in-game) |
-| P6 | voice patch → a Lua mod; exhaustive install/launch test → swap the release | ⬜ |
+| P6 | JP voice restore — landed as a **built-in** (early-boot phase, `core/voice.c`), + the general **`OssModEarlyInit`** ABI it generalizes into | ✅ |
 | P7 | trainer → a mod; coexistence verified | ⬜ |
 | P8 | launcher (package manager: git-repo sources, install/update, Launch) | ⬜ (NEXT) |
 
