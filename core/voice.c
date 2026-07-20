@@ -61,7 +61,7 @@ static const voice_edition ED_EN = { "EN-SE", 1, 0x5d8b10u, 0x5d8b16u, 0x59ccccu
 // JP-SE (sotes.exe): loads the bank natively — needs ONLY the deluxe-skip fix.
 static const voice_edition ED_JP = { "JP-SE", 0, 0,         0,         0x59b2ecu, 0x926170u };
 
-static const voice_edition *g_ed;      // selected edition (set before the waiter spawns)
+static const voice_edition *g_ed;      // selected edition — set by the waiter once .text decrypts
 static uintptr_t            g_delta;   // runtime base - VOICE_ORIG_BASE (ASLR-safe)
 static void               **g_bankg;   // resolved voice-bank global (EN) — seed_once writes it
 
@@ -132,43 +132,44 @@ static void install_seed_hook(void) {
 // registrar runs.  Runs on its own thread so the loader thread never blocks on it.
 static DWORD WINAPI voice_waiter(void *unused) {
     (void)unused;
-    // For EN the decrypt/build gate is the seed-hook prologue `81 EC 10 07 00 00`; for JP it's the
-    // registrar je `0f 84 83 00 00 00` (JP has no seed hook).  Both live in .text.
-    unsigned char *probe = (unsigned char *)VAP(g_ed->is_en ? g_ed->seed_hook : g_ed->reg_je);
+    // SteamStub decrypts .text at the OEP; poll BOTH editions' prologue signatures until one shows —
+    // this BOTH gates on decrypt AND detects the edition by CONTENT, so the on-disk exe NAME no longer
+    // matters (a renamed EN exe like sotes-trainer-oss.exe used to misfile as JP → wrong sig → timeout).
+    // EN gate = the seed-hook prologue `81 EC 10 07 00 00` @ 0x5d8b10; JP gate = the registrar je
+    // `0f 84 83 00 00 00` @ its reg_je (JP has no seed hook).  Both live in .text.
     const unsigned char en_sig[6] = { 0x81, 0xec, 0x10, 0x07, 0x00, 0x00 };
     const unsigned char jp_sig[6] = { 0x0f, 0x84, 0x83, 0x00, 0x00, 0x00 };
-    const unsigned char *sig = g_ed->is_en ? en_sig : jp_sig;
+    unsigned char *en_at = (unsigned char *)VAP(ED_EN.seed_hook);
+    unsigned char *jp_at = (unsigned char *)VAP(ED_JP.reg_je);
 
     int ms = 0;
-    while (memcmp(probe, sig, 6) != 0) {
+    for (;;) {
+        if (memcmp(en_at, en_sig, 6) == 0) { g_ed = &ED_EN; break; }   // EN preferred (primary target)
+        if (memcmp(jp_at, jp_sig, 6) == 0) { g_ed = &ED_JP; break; }
         if ((ms += VOICE_DECRYPT_POLL_MS) > VOICE_DECRYPT_TIMEOUT) {
-            ml_log("[voice] TIMEOUT: %s .text never showed the expected code — no patch (fail safe)", g_ed->name);
+            ml_log("[voice] TIMEOUT: neither EN nor JP .text signature showed — no patch (fail safe)");
             return 0;
         }
         Sleep(VOICE_DECRYPT_POLL_MS);
     }
-    ml_log("[voice] %s .text ready after ~%d ms — arming patches", g_ed->name, ms);
+    g_bankg = (void **)VAP(g_ed->bank_global);
+    ml_log("[voice] %s edition detected by .text signature after ~%d ms — arming (%s)",
+           g_ed->name, ms, g_ed->is_en ? "seed + deluxe-skip fix" : "deluxe-skip fix");
     install_registrar_patch();
     if (g_ed->is_en) install_seed_hook();
     return 0;
 }
 
 void voice_early_init(void) {
-    if (!config_get_int("voice", 0)) return;   // opt-in (default off)
+    if (!config_get_int("voice", 1)) return;   // ON by default; set voice=0 in oss_loader.cfg to disable
 
     char host[MAX_PATH] = "";
     GetModuleFileNameA(NULL, host, MAX_PATH);
     char *slash = strrchr(host, '\\'); const char *hn = slash ? slash + 1 : host;
+    if (!vstr_ci(hn, "sotes")) { ml_log("[voice] host '%s' is not a sotes exe — voice off", hn); return; }
 
-    // Edition by host exe name (like the standalone): sotes_en.exe -> EN (seed + fix); sotes.exe ->
-    // JP (fix only).  NB: a renamed EN exe without "sotes_en" in the name is misfiled as JP.
-    if (vstr_ci(hn, "sotes_en"))      g_ed = &ED_EN;
-    else if (vstr_ci(hn, "sotes"))    g_ed = &ED_JP;
-    else { ml_log("[voice] host '%s' is not a sotes exe — voice off", hn); return; }
-
+    // Edition is detected by .text SIGNATURE in the waiter, NOT the exe name — g_ed is set there.
     g_delta = (uintptr_t)GetModuleHandleA(NULL) - VOICE_ORIG_BASE;
-    g_bankg = (void **)VAP(g_ed->bank_global);
-    ml_log("[voice] enabled — %s edition, delta=%p; waiting for .text decrypt then arming (%s)",
-           g_ed->name, (void *)g_delta, g_ed->is_en ? "seed + deluxe-skip fix" : "deluxe-skip fix");
+    ml_log("[voice] enabled — delta=%p; waiting for .text decrypt to detect edition + arm", (void *)g_delta);
     CreateThread(NULL, 0, voice_waiter, NULL, 0, NULL);
 }
