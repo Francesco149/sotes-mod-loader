@@ -70,7 +70,7 @@ description = "Re-post WM_ACTIVATEAPP so the game doesn't idle its input poll wh
 
 [config.voice]
 type        = "bool"
-default     = false
+default     = true
 label       = "Japanese voice restore (boot-time)"
 description = "Re-add the JP dialogue/combat voices to the English SE (+ fix the monster-SFX bug). Needs sotesx_s.dll beside the exe. Relaunch to apply."
 

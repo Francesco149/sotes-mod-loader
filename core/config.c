@@ -71,6 +71,17 @@ int config_get_int(const char *key, int def) {
     return def;
 }
 
+// A boolean setting: accepts 1/0 AND true/false/on/yes (same tolerance the mod-config `coerce` in
+// lua_host.c uses for oss_mods.cfg).  The launcher's "mod zero" editor writes bools as `true`/`false`
+// (matching mods), so a plain atoi read (atoi("true")==0) would misread every bool ON as OFF.
+int config_get_bool(const char *key, int def) {
+    const char *v = config_get_str(key, NULL);
+    if (!v) return def;
+    if (!strcmp(v, "true") || !strcmp(v, "on") || !strcmp(v, "yes")) return 1;
+    if (!strcmp(v, "false") || !strcmp(v, "off") || !strcmp(v, "no")) return 0;
+    return atoi(v) != 0;
+}
+
 const char *config_get_str(const char *key, const char *def) {
     for (int i = 0; i < g_nkv; i++) if (!strcmp(g_kv[i].key, key)) return g_kv[i].val;
     return def;

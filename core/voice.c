@@ -161,7 +161,7 @@ static DWORD WINAPI voice_waiter(void *unused) {
 }
 
 void voice_early_init(void) {
-    if (!config_get_int("voice", 1)) return;   // ON by default; set voice=0 in oss_loader.cfg to disable
+    if (!config_get_bool("voice", 1)) return;  // ON by default; set voice=0 (or false) in oss_loader.cfg to disable
 
     char host[MAX_PATH] = "";
     GetModuleFileNameA(NULL, host, MAX_PATH);

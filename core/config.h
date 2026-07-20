@@ -11,6 +11,7 @@
 
 void config_load(const char *gamedir);          // read <gamedir>{oss_loader,oss_mods}.cfg (missing = defaults)
 int  config_get_int(const char *key, int def);  // oss_loader.cfg: parsed int, or def if absent/unparseable
+int  config_get_bool(const char *key, int def); // oss_loader.cfg: 1/0 OR true/false/on/yes/off/no, or def
 const char *config_get_str(const char *key, const char *def);  // oss_loader.cfg: raw string, or def
 
 // Per-mod values (oss_mods.cfg).  `nskey` is the namespaced "<modid>.<setting>".

@@ -174,7 +174,7 @@ static DWORD WINAPI loader_thread(void *unused) {
     // safepoint (the Lua-directory scan stays below, after the Lua host is up).
     int nn = scan_native_mods_early();
 
-    prof_enable(config_get_int("profile", 0));   // opt-in per-frame profiler (dev; profile=1)
+    prof_enable(config_get_bool("profile", 0));  // opt-in per-frame profiler (dev; profile=1)
 
     // Register the profile's native game bindings BEFORE the Lua game table finalizes,
     // so mod.game.<id> resolves them (game-agnostic core; SotES knowledge stays in its TU).
@@ -185,7 +185,7 @@ static DWORD WINAPI loader_thread(void *unused) {
     // loses foreground).  DEFAULT-ON built-in: the companion UI window steals foreground when you
     // click it, which would otherwise freeze the game loop + the UI snapshot.  keepactive=0 opts out.
     // (The auto-load-a-save feature is now the `autoload` MOD — mod.game.save.load — not a core flag.)
-    if (config_get_int("keepactive", 1)) exec_keepactive();
+    if (config_get_bool("keepactive", 1)) exec_keepactive();
 
     if (lh_init() != 0) ml_log("[loader] Lua host down — Lua mods skipped, native still load");
 
@@ -218,7 +218,7 @@ static DWORD WINAPI loader_thread(void *unused) {
         // Stand up the ImGui UI host (loader-owned companion window) on its own thread.  It's fed
         // by a lock-free snapshot the executor builds each frame (ui_build), so it never stalls the
         // game.  Opt-out with ui=0; ui_key is the VK toggle (0 = F10); ui_hz the refresh (0 = 30).
-        if (config_get_int("ui", 1)) {
+        if (config_get_bool("ui", 1)) {
             ui_start(config_get_int("ui_key", 0), config_get_int("ui_hz", 0));
             ml_log("[loader] UI host starting — companion window (lock-free snapshot pipeline)");
         } else ml_log("[loader] UI disabled (ui=0)");
