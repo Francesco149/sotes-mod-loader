@@ -20,6 +20,10 @@ pub const OSS_MODS_HEADER: &str = "\
 # oss_mods.cfg — per-mod config values (machine-managed; edit via the launcher or in-game).\n\
 # key = <modid>.<setting>; the settings + defaults are declared in each mod's mod.toml [config].\n";
 
+pub const OSS_LOADER_HEADER: &str = "\
+# oss_loader.cfg — the SotES Mod Loader's own settings (machine-managed; edit via the launcher).\n\
+# Flat key=value; the settings + defaults are declared in loader.toml [config] (\"mod zero\").\n";
+
 /// An ordered flat key=value store. Order is preserved (append-on-new) so rewrites stay stable.
 #[derive(Debug, Default, Clone)]
 pub struct KvFile {
@@ -119,6 +123,25 @@ impl KvFile {
     /// Write `oss_mods.cfg` (byte-identical to the loader's writer).
     pub fn write_oss_mods(&self, path: impl AsRef<Path>) -> std::io::Result<()> {
         std::fs::write(path, self.to_oss_mods_string())
+    }
+
+    /// Serialize as `oss_loader.cfg` — the loader's OWN flat settings.  Same `key = value` lines
+    /// config.c reads (it trims both sides).  A hand-edited file's comments are not preserved (the
+    /// loader treats an absent key as its default, so only the stored keys are written back).
+    pub fn to_oss_loader_string(&self) -> String {
+        let mut s = String::from(OSS_LOADER_HEADER);
+        for (k, v) in &self.entries {
+            s.push_str(k);
+            s.push_str(" = ");
+            s.push_str(v);
+            s.push('\n');
+        }
+        s
+    }
+
+    /// Write `oss_loader.cfg` (the loader's flat settings).
+    pub fn write_oss_loader(&self, path: impl AsRef<Path>) -> std::io::Result<()> {
+        std::fs::write(path, self.to_oss_loader_string())
     }
 }
 

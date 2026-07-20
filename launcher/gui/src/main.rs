@@ -46,6 +46,7 @@ const DIM: egui::Color32 = egui::Color32::from_rgb(150, 150, 155);
 enum View {
     Installed,
     Browse,
+    Loader,
     Launch,
 }
 
@@ -128,6 +129,11 @@ struct App {
     mods_cfg_dirty: bool,
     open_config: Option<String>,
 
+    // the loader's OWN settings ("mod zero"): loader.toml [config] schema -> flat oss_loader.cfg
+    loader_schema: ModManifest,
+    loader_cfg: KvFile,
+    loader_cfg_dirty: bool,
+
     // proxy / launch
     loader_dll: String,
     game_exe: String,
@@ -157,6 +163,10 @@ impl Default for App {
             mods_cfg: KvFile::new(),
             mods_cfg_dirty: false,
             open_config: None,
+            loader_schema: ModManifest::from_toml_str(include_str!("../../../loader.toml"))
+                .expect("bundled loader.toml is a valid schema (unit-tested in sml-core)"),
+            loader_cfg: KvFile::new(),
+            loader_cfg_dirty: false,
             loader_dll: "version.dll".to_owned(),
             game_exe: "sotes_en.exe".to_owned(),
             proxy: None,
@@ -239,6 +249,7 @@ impl eframe::App for App {
                 for (view, label) in [
                     (View::Installed, "🗁  Installed"),
                     (View::Browse, "🔎  Browse"),
+                    (View::Loader, "⚙  Loader"),
                     (View::Launch, "▶  Launch"),
                 ] {
                     ui.selectable_value(&mut self.view, view, label);
@@ -248,6 +259,7 @@ impl eframe::App for App {
         egui::CentralPanel::default().show(ctx, |ui| match self.view {
             View::Installed => self.render_installed(ui),
             View::Browse => self.render_browse(ui),
+            View::Loader => self.render_loader(ui),
             View::Launch => self.render_launch(ui),
         });
 
@@ -384,6 +396,8 @@ impl App {
         self.manifest = InstalledManifest::load(&g).unwrap_or_default();
         self.mods_cfg = KvFile::load(g.oss_mods_cfg()).unwrap_or_default();
         self.mods_cfg_dirty = false;
+        self.loader_cfg = KvFile::load(g.oss_loader_cfg()).unwrap_or_default();
+        self.loader_cfg_dirty = false;
         self.open_config = None;
         self.game = Some(g);
         self.refresh_installed();
@@ -414,6 +428,56 @@ impl App {
             Ok(()) => {
                 self.mods_cfg_dirty = false;
                 self.status = format!("saved {}", g.oss_mods_cfg().display());
+            }
+            Err(e) => self.status = format!("save failed: {e:#}"),
+        }
+    }
+
+    // ── the loader's own settings ("mod zero") — render loader.toml [config] -> oss_loader.cfg ──
+    fn render_loader(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Loader settings");
+        ui.label(
+            egui::RichText::new(
+                "The loader's own oss_loader.cfg (the loader as \"mod zero\"). Voice + launcher settings apply at the next launch.",
+            )
+            .small()
+            .color(DIM),
+        );
+        ui.add_space(6.0);
+        if self.game.is_none() {
+            ui.colored_label(WARN_ORANGE, "set a game dir above to edit the loader settings");
+            return;
+        }
+        // Owned snapshot of the (static) schema so the render loop borrows only loader_cfg from self.
+        let fields = self.loader_schema.config.clone();
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for f in &fields {
+                render_field(ui, f, "", &mut self.loader_cfg, &mut self.loader_cfg_dirty);
+                if let Some(d) = &f.description {
+                    ui.label(egui::RichText::new(d).small().color(DIM));
+                }
+                ui.add_space(6.0);
+            }
+        });
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.add_enabled_ui(self.loader_cfg_dirty, |ui| {
+                if ui.button("Save").clicked() {
+                    self.save_loader_cfg();
+                }
+            });
+            if self.loader_cfg_dirty {
+                ui.label(egui::RichText::new("unsaved").small().color(egui::Color32::from_rgb(200, 140, 40)));
+            }
+        });
+    }
+
+    fn save_loader_cfg(&mut self) {
+        let Some(g) = &self.game else { return };
+        match self.loader_cfg.write_oss_loader(g.oss_loader_cfg()) {
+            Ok(()) => {
+                self.loader_cfg_dirty = false;
+                self.status = format!("saved {}", g.oss_loader_cfg().display());
             }
             Err(e) => self.status = format!("save failed: {e:#}"),
         }

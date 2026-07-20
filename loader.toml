@@ -1,0 +1,81 @@
+# loader.toml — the SotES Mod Loader's OWN settings SCHEMA ("mod zero").
+#
+# This is the [config] schema the launcher renders to edit the loader's flat `oss_loader.cfg`
+# (values live there, byte-compatible with what core/config.c reads).  It's the SAME [config]
+# format a mod's mod.toml uses, so the launcher renders it with the exact same generic editor —
+# the loader is just "mod zero".  The prose defaults/behaviour here mirror `oss_loader.cfg.example`.
+#
+# NOTE: `oss_loader.cfg` keys are FLAT (bare `ddraw=1`), not namespaced like a mod's `<id>.<key>`.
+
+[mod]
+id          = "loader"
+name        = "SotES Mod Loader"
+version     = "0.1.0"
+description = "The loader's own settings (proxy/launcher/UI/present backend)."
+authors     = ["Francesco149"]
+
+[config.skip_launcher]
+type        = "bool"
+default     = true
+label       = "Auto-dismiss the game's launcher dialog"
+description = "Boot hands-free by clicking the game's pre-launch launcher 'Launch' for you."
+
+[config.windowed]
+type        = "bool"
+default     = true
+label       = "Windowed mode (when auto-dismissing)"
+description = "Which mode to pick when auto-dismissing the launcher: on = windowed, off = fullscreen."
+
+[config.ui]
+type        = "bool"
+default     = true
+label       = "In-game UI / overlay (mod.ui panels)"
+description = "The ImGui UI host: mod.ui panels, as an in-game overlay in takeover or a companion window."
+
+[config.ui_key]
+type        = "int"
+default     = 0
+min         = 0
+max         = 255
+label       = "UI toggle key (VK code; 0 = F10)"
+description = "Windows virtual-key code to show/hide the overlay/companion. 0 = default F10. F1..F12 = 112..123."
+
+[config.ui_hz]
+type        = "int"
+default     = 0
+min         = 0
+max         = 240
+label       = "UI refresh rate (Hz; 0 = 30)"
+description = "Engine-side snapshot refresh rate. Higher = snappier live data, more per-frame work. 0 = default 30."
+
+[config.ddraw]
+type        = "bool"
+default     = true
+label       = "DirectDraw present backend"
+description = "Hook the game's per-frame present + re-present via our vsync'd D3D11 swapchain. Powers the mirror + takeover."
+
+[config.ddraw_takeover]
+type        = "int"
+default     = 0
+min         = 0
+max         = 2
+label       = "Window takeover (0 = off, 1 = borderless, 2 = windowed)"
+description = "OWN the game window with a smooth vsync'd present. 0 = off, 1 = borderless-fullscreen, 2 = resizable window. Requires DirectDraw on."
+
+[config.keepactive]
+type        = "bool"
+default     = true
+label       = "Keep running while unfocused"
+description = "Re-post WM_ACTIVATEAPP so the game doesn't idle its input poll when the window loses focus (needed for the companion UI)."
+
+[config.voice]
+type        = "bool"
+default     = false
+label       = "Japanese voice restore (boot-time)"
+description = "Re-add the JP dialogue/combat voices to the English SE (+ fix the monster-SFX bug). Needs sotesx_s.dll beside the exe. Relaunch to apply."
+
+[config.profile]
+type        = "bool"
+default     = false
+label       = "Dev profiler (per-frame timing)"
+description = "Log the loader's per-frame overhead (safepoint drain, UI build, roster scan) avg/max every 5s to oss_modloader.log."

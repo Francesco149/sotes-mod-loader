@@ -160,9 +160,14 @@ impl ConfigField {
     }
 }
 
-/// The `oss_mods.cfg` key for a mod's setting: `<modid>.<key>`.
+/// The cfg key for a setting: `<modid>.<key>` for a mod's `oss_mods.cfg`, or the BARE `<key>` when
+/// `mod_id` is empty — the loader itself ("mod zero") stores flat keys in `oss_loader.cfg`.
 pub fn nskey(mod_id: &str, key: &str) -> String {
-    format!("{mod_id}.{key}")
+    if mod_id.is_empty() {
+        key.to_string()
+    } else {
+        format!("{mod_id}.{key}")
+    }
 }
 
 // ── parse ────────────────────────────────────────────────────────────────────
@@ -444,5 +449,28 @@ max = 20"#,
         speed.store(&mut kv, "config_demo", ConfigValue::Int(99));
         assert_eq!(kv.get("config_demo.speed"), Some("20"));
         assert_eq!(speed.current(&kv, "config_demo"), ConfigValue::Int(20));
+    }
+
+    #[test]
+    fn empty_mod_id_stores_a_bare_flat_key() {
+        // The loader ("mod zero") uses an empty namespace -> FLAT oss_loader.cfg keys.
+        assert_eq!(nskey("", "ddraw"), "ddraw");
+        assert_eq!(nskey("autoload", "slot"), "autoload.slot");
+    }
+
+    #[test]
+    fn loader_schema_parses_and_round_trips_flat() {
+        // loader.toml is the loader's own [config] schema ("mod zero"), rendered like a mod's.
+        let schema = ModManifest::from_toml_str(include_str!("../../../loader.toml")).unwrap();
+        assert_eq!(schema.id, "loader");
+        let takeover = schema.field("ddraw_takeover").expect("ddraw_takeover field");
+        assert_eq!(takeover.kind, FieldKind::Int);
+
+        let mut kv = KvFile::new();
+        assert_eq!(takeover.current(&kv, ""), ConfigValue::Int(0)); // unset -> default
+        takeover.store(&mut kv, "", ConfigValue::Int(2)); // stored under a BARE key
+        assert_eq!(kv.get("ddraw_takeover"), Some("2"));
+        assert_eq!(kv.get("loader.ddraw_takeover"), None); // NOT namespaced
+        assert_eq!(takeover.current(&kv, ""), ConfigValue::Int(2));
     }
 }
