@@ -1,0 +1,11 @@
+[mod]
+id          = "statblock_probe"
+name        = "Stat Block Probe"
+version     = "0.1.0"
+description = "Dev RE probe: dumps each party member's stat_block dwords to oss_modloader.log so stat offsets (spirit/resist/…) can be mapped against the in-game numbers."
+authors     = ["sotes-mod-loader"]
+target_games = ["sotes_en"]
+
+[loader]
+api         = "1.0"
+min_version = "0.1.0"
