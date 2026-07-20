@@ -11,9 +11,12 @@ is [`../docs/REGISTRY.md`](../docs/REGISTRY.md); the *mod format / config / vers
 > byte-compatible `oss_mods.cfg` · gamedir/proxy · install + a ureq/rustls HTTP fetcher) is
 > unit-tested on Linux (34 tests); `sml-gui` (eframe) is a game-dir-centric app — **Installed**
 > (per-mod config, the Config button hidden when a mod has no `[config]`) · **Browse** · **Launch**
-> (proxy install/repair + start the game) — cross-built to a single 64-bit Windows `.exe`. Remaining:
-> wire the Browse view to install over HTTPS (core `fetch_registry` + `install_version` are done),
-> update/downgrade, sources management, and launcher-state persistence.
+> (proxy install/repair + start the game) — cross-built to a single 64-bit Windows `.exe`. **Browse
+> now installs over HTTPS**: per-mod Install/Update drives `fetch_registry` + `install_version`
+> (download → sha256-verify → place → manifest), with a native `rfd` picker for `user_supplied`
+> files and installed/update state per mod — verified end-to-end on Windows (autoload from the live
+> registry; a download + `user_supplied` fixture). Remaining: update/downgrade (clean stale files),
+> sources management, and launcher-state persistence.
 
 ## What already exists to build on
 
@@ -114,9 +117,10 @@ rustflags). Running the GUI on real Windows + the install/proxy/launch modules c
    *(Done: registry parse/validate/merge · sha256 verify · `mod.toml [config]` schema · byte-compatible
    `oss_mods.cfg` · gamedir + `version.dll`↔`realver.dll` proxy · install (download+verify+place,
    user_supplied, installed manifest) + a ureq/rustls HTTP fetcher · the game-dir-centric eframe GUI
-   (Installed w/ per-mod config, Browse, Launch) — all cross-building to a Windows `.exe` and verified
-   running on real Windows via WSL interop. Next: wire Browse to install over HTTPS, then
-   update/downgrade/sources + launcher-state persistence.)*
+   (Installed w/ per-mod config, Browse **that installs over HTTPS** — per-mod Install/Update, native
+   picker for `user_supplied` files, Launch) — all cross-building to a Windows `.exe` and verified
+   running on real Windows via WSL interop. Next: update/downgrade (clean stale files) + sources +
+   launcher-state persistence.)*
 3. **v0.2** — sources/search/updates/deps/compat-surfacing.
 
 ## Open decisions (resolve at the start of P8)
