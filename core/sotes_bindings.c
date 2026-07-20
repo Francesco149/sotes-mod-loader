@@ -457,6 +457,34 @@ static void install_save(lua_State *L) {
     lua_pushcfunction(L, l_save_load); lua_setfield(L, -2, "load");
 }
 
+// ── Lua: mod.game.input — inject a UI button into the captured input manager ──────────────────────
+// The engine polls buttons via a 64-slot record ring on the input manager (mgr+0x0c, slot 63 first-
+// polled); each record is {id@0, now@4, state=1@8} and the poll matches id + state==1 + (poll_now −
+// record_now) <= 0x64.  The executor captures the live input mgr at the safepoint (exec_ti_mgr) and
+// the poll's timestamp (exec_sp_now).  al_inject (used by save.load) publishes one record — expose it
+// as mod.game.input.press(id) so a mod can drive ARBITRARY menu navigation (title, picker, in-game
+// menus), not just the built-in save-load.  Button ids (SotES title): 0x02/0x04 rotate up/down, 0x25
+// confirm, 0x22 abort/back.  Runs on the engine thread (call from mod.main / mod.on_frame).
+static int l_input_press(lua_State *L) {
+    if (!gb_enabled("input")) { lua_pushboolean(L, 0); return 1; }
+    uint32_t id = (uint32_t)luaL_checkinteger(L, 1);
+    uint32_t mgr = lua_isnumber(L, 2) ? (uint32_t)lua_tonumber(L, 2) : exec_ti_mgr();  // default = captured mgr
+    if (!mgr) { lua_pushboolean(L, 0); return 1; }   // no safepoint capture yet (not in a menu/scene)
+    al_inject(mgr, id, exec_sp_now());
+    lua_pushboolean(L, 1);
+    return 1;
+}
+// mod.game.input.mgr() -> the input manager the safepoint captured (0 until the first frame); for RE /
+// reading live menu state.  mod.game.input.now() -> the poll's timestamp (arg to a fresh press()).
+static int l_input_mgr(lua_State *L) { lua_pushnumber(L, (double)exec_ti_mgr()); return 1; }
+static int l_input_now(lua_State *L) { lua_pushnumber(L, (double)exec_sp_now()); return 1; }
+static void install_input(lua_State *L) {
+    lua_newtable(L);
+    lua_pushcfunction(L, l_input_press); lua_setfield(L, -2, "press");
+    lua_pushcfunction(L, l_input_mgr);   lua_setfield(L, -2, "mgr");
+    lua_pushcfunction(L, l_input_now);   lua_setfield(L, -2, "now");
+}
+
 // ── registration ─────────────────────────────────────────────────────────────
 void sotes_bindings_register(void) {
     static const gb_def ROSTER = {
@@ -479,9 +507,14 @@ void sotes_bindings_register(void) {
         "save", "auto-load a save by driving the menus — .load(slot) (<0 = newest)",
         install_save, 1
     };
+    static const gb_def INPUT = {
+        "input", "inject UI buttons for arbitrary menu navigation — .press(id[,mgr]) / .mgr() / .now()",
+        install_input, 1
+    };
     gb_register(&ROSTER);
     gb_register(&COORD);
     gb_register(&MOUSE);
     gb_register(&ATTRACT);
     gb_register(&SAVE);
+    gb_register(&INPUT);
 }

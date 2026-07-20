@@ -74,6 +74,10 @@ mod.game.roster.members()       -> { {code,name,actor,stat_block, char_level,com
 mod.game.coordinates.get([code])/player()/target()   -> {x,y,actor,code}   (centi-px)
 mod.game.mouse.get()            -> {screen_x, screen_y, over, world_x, world_y}
 mod.game.attract.set(on)        -- toggle the attract/demo mode (off keeps the title up)
+mod.game.input.press(id[,mgr])  -- inject a UI button into the captured input mgr's ring (arbitrary
+                                --   menu navigation): SotES title ids 0x25 confirm, 0x22 back, 2/4|1/3
+                                --   rotate.  mgr defaults to the safepoint-captured input mgr.
+mod.game.input.mgr()/now()      -- the captured input manager / the poll timestamp (for RE)
 mod.game.save.load([slot])      -> ok   -- drive the menus into a save (slot < 0 = newest)
 ```
 
