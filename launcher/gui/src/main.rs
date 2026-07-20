@@ -249,8 +249,8 @@ impl eframe::App for App {
                 ui.separator();
                 ui.add_space(2.0);
                 for (view, label) in [
-                    (View::Installed, "🗁  Installed"),
-                    (View::Browse, "🔎  Browse"),
+                    (View::Installed, "▤  Installed"),
+                    (View::Browse, "⚲  Browse"),
                     (View::Loader, "⚙  Loader"),
                     (View::Launch, "▶  Launch"),
                 ] {
@@ -1139,10 +1139,29 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "SotES Mod Loader",
         options,
-        Box::new(move |_cc| {
+        Box::new(move |cc| {
+            install_fonts(&cc.egui_ctx);
             let mut app = App::default();
             app.smoke = smoke;
             Ok(Box::new(app))
         }),
     )
+}
+
+/// Make DejaVu Sans the primary UI font. egui's default (Ubuntu-Light) doesn't render the symbol
+/// glyphs the launcher uses (✓ ⚙ ▶ ✕ ● ▲ …) — they show as tofu — so bundle a font that covers them.
+/// egui's own fonts stay as fallbacks. (DejaVu Sans is a permissively-licensed Bitstream Vera derivative.)
+fn install_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "DejaVuSans".to_owned(),
+        std::sync::Arc::new(egui::FontData::from_static(include_bytes!("../assets/DejaVuSans.ttf"))),
+    );
+    if let Some(fam) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+        fam.insert(0, "DejaVuSans".to_owned()); // primary
+    }
+    if let Some(fam) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
+        fam.push("DejaVuSans".to_owned()); // fallback for symbols in monospace contexts
+    }
+    ctx.set_fonts(fonts);
 }
