@@ -41,7 +41,19 @@
 #define OFF_MP_BASE     0x60
 #define OFF_MP_EQUIP    0x88
 #define OFF_MP_BUFF     0xa0
-#define OFF_COMBAT_LV_MAX 0xe0     // max combat level (the HUD stars' "N")
+// name + the 4 combat stats + levels + exp — all RE'd live vs save 15 (docs/findings/save15-live-stats.md
+// in ../OpenSummoners).  The 4 combat stats are the RAW BASE; the status screen's shown base = this +
+// armor/passive, and the shown total additionally folds in the weapon (so a mod that boosts these
+// changes the character's intrinsic stat).  Character "Level" = combat_level + adventurer_level.
+#define OFF_NAME        0x00       // char[8], NUL-terminated ("Arche"/"Sana"/"Stella")
+#define OFF_ATK         0x64
+#define OFF_DEF         0x68
+#define OFF_SPIRIT      0x6c
+#define OFF_RESIST      0x70
+#define OFF_COMBAT_LV_MAX 0xe0     // max combat level (the HUD stars' "N"; "Combat Level M/N")
+#define OFF_ADV_LEVEL   0xe4       // adventurer level ("Adventurer Level")
+#define OFF_EXP_CUR     0xec       // current EXP
+#define OFF_EXP_MAX     0xf0       // EXP to the next level
 #define OFF_INPUT_CHAIN   0xc7a4   // actor -> input chain; *(*(actor+0xc7a4)) == input mgr iff CONTROLLED
 // camera / view object (render_root + OFF_CAM) — for cursor world-space mapping (trainer SE_CODE_MAP)
 #define OFF_CAM           0x104c   // render_root -> camera/view object POINTER
@@ -197,15 +209,23 @@ static void ensure_roster(void) { uint64_t t = prof_now(); ensure_roster_impl();
 // ── Lua: mod.game.roster ─────────────────────────────────────────────────────
 static void push_member(lua_State *L, int k) {
     uintptr_t a = g_ros[k];
-    uint32_t sb = 0, wx = 0, wy = 0, lvl = 0, hpc = 0, mpc = 0;
+    uint32_t sb = 0, wx = 0, wy = 0, clv = 0, alv = 0, hpc = 0, mpc = 0;
+    uint32_t atk = 0, def = 0, spi = 0, res = 0, expc = 0, expm = 0;
     mem_rd32((void *)(a + OFF_STATBLOCK), &sb);
     mem_rd32((void *)(a + OFF_WORLD_X), &wx);
     mem_rd32((void *)(a + OFF_WORLD_Y), &wy);
     int hpm = 0, mpm = 0;
     if (sb) {
-        mem_rd32((void *)(sb + OFF_COMBAT_LV_MAX), &lvl);
+        mem_rd32((void *)(sb + OFF_COMBAT_LV_MAX), &clv);
+        mem_rd32((void *)(sb + OFF_ADV_LEVEL), &alv);
         mem_rd32((void *)(sb + OFF_HP_CUR), &hpc);
         mem_rd32((void *)(sb + OFF_MP_CUR), &mpc);
+        mem_rd32((void *)(sb + OFF_ATK), &atk);
+        mem_rd32((void *)(sb + OFF_DEF), &def);
+        mem_rd32((void *)(sb + OFF_SPIRIT), &spi);
+        mem_rd32((void *)(sb + OFF_RESIST), &res);
+        mem_rd32((void *)(sb + OFF_EXP_CUR), &expc);
+        mem_rd32((void *)(sb + OFF_EXP_MAX), &expm);
         hpm = stat_max(sb, OFF_HP_BASE, OFF_HP_EQUIP, OFF_HP_BUFF);
         mpm = stat_max(sb, OFF_MP_BASE, OFF_MP_EQUIP, OFF_MP_BUFF);
     }
@@ -214,13 +234,25 @@ static void push_member(lua_State *L, int k) {
     lua_pushstring(L, NAMES[k]);            lua_setfield(L, -2, "name");
     lua_pushnumber(L, (double)a);           lua_setfield(L, -2, "actor");
     lua_pushnumber(L, (double)sb);          lua_setfield(L, -2, "stat_block");
-    lua_pushinteger(L, (int)lvl);           lua_setfield(L, -2, "level");
+    // `level` stays = combat_level for backward-compat, but it IS the combat level (see combat_level
+    // below).  The big character "Level" on the status screen = combat_level + adventurer_level.
+    lua_pushinteger(L, (int)clv);           lua_setfield(L, -2, "level");
+    lua_pushinteger(L, (int)clv);           lua_setfield(L, -2, "combat_level");
+    lua_pushinteger(L, (int)alv);           lua_setfield(L, -2, "adventurer_level");
+    lua_pushinteger(L, (int)(clv + alv));   lua_setfield(L, -2, "char_level");
     lua_pushinteger(L, (int)wx);            lua_setfield(L, -2, "x");
     lua_pushinteger(L, (int)wy);            lua_setfield(L, -2, "y");
     lua_pushinteger(L, (int)hpc);           lua_setfield(L, -2, "hp");
     lua_pushinteger(L, hpm);                lua_setfield(L, -2, "hp_max");
     lua_pushinteger(L, (int)mpc);           lua_setfield(L, -2, "mp");
     lua_pushinteger(L, mpm);                lua_setfield(L, -2, "mp_max");
+    // the 4 combat stats — raw base (docs/findings/save15-live-stats.md in ../OpenSummoners).
+    lua_pushinteger(L, (int)atk);           lua_setfield(L, -2, "attack");
+    lua_pushinteger(L, (int)def);           lua_setfield(L, -2, "defense");
+    lua_pushinteger(L, (int)spi);           lua_setfield(L, -2, "spirit");
+    lua_pushinteger(L, (int)res);           lua_setfield(L, -2, "resist");
+    lua_pushinteger(L, (int)expc);          lua_setfield(L, -2, "exp");
+    lua_pushinteger(L, (int)expm);          lua_setfield(L, -2, "exp_max");
     lua_pushboolean(L, actor_is_active(a)); lua_setfield(L, -2, "active");  // controlled member (needs the executor)
 }
 
@@ -428,7 +460,7 @@ static void install_save(lua_State *L) {
 // ── registration ─────────────────────────────────────────────────────────────
 void sotes_bindings_register(void) {
     static const gb_def ROSTER = {
-        "roster", "party members (code/name/level/coords/hp/mp) [temp heap-scan]",
+        "roster", "party members: name/coords/hp/mp + attack/defense/spirit/resist, combat & adventurer level, exp",
         install_roster, 1
     };
     static const gb_def COORD = {

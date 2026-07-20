@@ -65,7 +65,12 @@ hand.
 mod.game.list()                 -> { {id=, desc=, enabled=}, ... }
 mod.game.enable(id)/disable(id)/enabled(id)     -- live toggle (a stability valve)
 -- SotES bindings (grow as we RE more) — DATA accessors + semantic OPS:
-mod.game.roster.members()       -> { {code,name,actor,level,x,y,hp,hp_max,mp,mp_max,active}, ... }
+mod.game.roster.members()       -> { {code,name,actor,stat_block, char_level,combat_level,adventurer_level,
+                                       x,y, hp,hp_max,mp,mp_max, attack,defense,spirit,resist, exp,exp_max,
+                                       active, level=combat_level(back-compat)}, ... }
+                                   -- char_level = combat+adventurer (the status "Level"); atk/def/spi/res
+                                   -- are RAW base (display adds armor/weapon). RE: ../OpenSummoners
+                                   -- docs/findings/save15-live-stats.md.
 mod.game.coordinates.get([code])/player()/target()   -> {x,y,actor,code}   (centi-px)
 mod.game.mouse.get()            -> {screen_x, screen_y, over, world_x, world_y}
 mod.game.attract.set(on)        -- toggle the attract/demo mode (off keeps the title up)

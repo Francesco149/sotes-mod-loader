@@ -12,7 +12,11 @@ mod.on_frame(function()
   if not ok or not r then mod.log("roster: <error>"); return end
   mod.log(string.format("roster: %d member(s)", #r))
   for _, m in ipairs(r) do
-    mod.log(string.format("  %-7s Lv%d  hp %d/%d  mp %d/%d  (%d,%d)%s",
-      m.name, m.level, m.hp, m.hp_max, m.mp, m.mp_max, m.x, m.y, m.active and "  <-active" or ""))
+    -- char_level = combat_level + adventurer_level (the status screen's big "Level"); attack/defense/
+    -- spirit/resist are the raw base stats (see docs/findings/save15-live-stats.md in ../OpenSummoners).
+    mod.log(string.format("  %-7s Lv%d  hp %d/%d  mp %d/%d  atk %d def %d spi %d res %d  exp %d/%d  (%d,%d)%s",
+      m.name, m.char_level, m.hp, m.hp_max, m.mp, m.mp_max,
+      m.attack, m.defense, m.spirit, m.resist, m.exp, m.exp_max, m.x, m.y,
+      m.active and "  <-active" or ""))
   end
 end)
