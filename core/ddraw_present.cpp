@@ -92,6 +92,13 @@ static int  g_integer = 1;   // config ddraw_integer: present at the largest WHO
 static int  g_snap = 1;      // config ddraw_snap: windowed-takeover resizes snap to whole multiples of 640x480
 static int  g_winscale = 1;  // config ddraw_window_scale: the windowed takeover's starting size (x 640x480)
 extern "C" void ddp_set_takeover(int mode) { g_tk_mode = mode; }
+static int  g_dock_w;        // the docked UI sidebar width on the right of the client (0 = none): the game fits LEFT of it
+static int  g_dock_cfg = 380;  // config ui_dock_width
+static int  g_pend_dock = -1, g_pend_int = -1;   // checkbox requests, applied at the start of the next present
+extern "C" void ddp_set_dock(int on, int width) { if (width > 0) g_dock_cfg = width; g_dock_w = on ? g_dock_cfg : 0; }
+extern "C" int  ddp_dock_width(void) { return (g_tk_mode && g_e_ready) ? g_dock_w : 0; }
+extern "C" int  ddp_integer(void) { return g_integer; }
+extern "C" void ddp_request(int dock, int integer) { if (dock >= 0) g_pend_dock = dock; if (integer >= 0) g_pend_int = integer; }
 extern "C" void ddp_set_scaling(int integer, int snap, int winscale) {
     g_integer = integer; g_snap = snap; g_winscale = winscale < 1 ? 1 : winscale;
 }
@@ -310,7 +317,7 @@ static bool e_create(HWND hwnd) {
         RECT wa = mi.rcWork; int aw = wa.right - wa.left, ah = wa.bottom - wa.top;
         int k = g_winscale, winw, winh;                                    // N x 640x480 client, shrunk to fit
         for (;; k--) {
-            RECT r = { 0, 0, 640 * k, 480 * k }; AdjustWindowRect(&r, wst, FALSE);
+            RECT r = { 0, 0, 640 * k + g_dock_w, 480 * k }; AdjustWindowRect(&r, wst, FALSE);
             winw = r.right - r.left; winh = r.bottom - r.top;
             if (k <= 1 || (winw <= aw && winh <= ah)) break;
         }
@@ -318,7 +325,7 @@ static bool e_create(HWND hwnd) {
         if (winh > ah) winh = ah;
         SetWindowPos(hwnd, HWND_TOP, wa.left + (aw - winw) / 2, wa.top + (ah - winh) / 2, winw, winh, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
         RECT cr; GetClientRect(hwnd, &cr); mw = cr.right - cr.left; mh = cr.bottom - cr.top;
-        if (mw <= 0 || mh <= 0) { mw = 640; mh = 480; }
+        if (mw <= 0 || mh <= 0) { mw = 640 + g_dock_w; mh = 480; }
     } else {
         SetWindowLongA(hwnd, GWL_STYLE, (st & ~(WS_CAPTION|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_SYSMENU|WS_DLGFRAME|WS_BORDER)) | WS_POPUP);
         mw = mi.rcMonitor.right - mi.rcMonitor.left; mh = mi.rcMonitor.bottom - mi.rcMonitor.top;
@@ -386,12 +393,12 @@ static void e_present_frame(HWND hwnd, const Frame *f) {
     g_e_ctx->Unmap(g_e_tex, 0);
 
     // aspect-correct fit within the client (pillarbox); the on-screen image size feeds sharp-bilinear.
-    float vw, vh;
-    fit_view((float)g_e_bbw, (float)g_e_bbh, (float)f->w, (float)f->h, &vw, &vh);
+    float vw, vh, aw = (float)(g_e_bbw - g_dock_w > 1 ? g_e_bbw - g_dock_w : 1);   // the game area = left of the dock
+    fit_view(aw, (float)g_e_bbh, (float)f->w, (float)f->h, &vw, &vh);
     D3D11_MAPPED_SUBRESOURCE cm;
     if (SUCCEEDED(g_e_ctx->Map(g_e_cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &cm))) {
         float *p = (float *)cm.pData; p[0] = (float)f->w; p[1] = (float)f->h; p[2] = vw; p[3] = vh; g_e_ctx->Unmap(g_e_cb, 0); }
-    D3D11_VIEWPORT vp; vp.TopLeftX = ((float)g_e_bbw - vw) * 0.5f; vp.TopLeftY = ((float)g_e_bbh - vh) * 0.5f;
+    D3D11_VIEWPORT vp; vp.TopLeftX = (aw - vw) * 0.5f; vp.TopLeftY = ((float)g_e_bbh - vh) * 0.5f;
     vp.Width = vw; vp.Height = vh; vp.MinDepth = 0; vp.MaxDepth = 1;
 
     const float clr[4] = { 0, 0, 0, 1 };
@@ -407,9 +414,47 @@ static void e_present_frame(HWND hwnd, const Frame *f) {
     g_e_swap->Present(1, 0);
 }
 
+// Apply the UI's checkbox requests (dock on/off, pixel-perfect on/off) between frames — never inside a draw: a window
+// resize re-presents through ddp_on_resize.  Windowed takeover keeps the game's current whole scale and grows /
+// shrinks the window by the sidebar; borderless just re-lays out within the monitor.
+static void apply_requests(HWND hwnd) {
+    int dock = g_pend_dock, integer = g_pend_int;
+    g_pend_dock = g_pend_int = -1;
+    if (integer >= 0) { g_integer = integer; g_snap = integer; }
+    int newdock = dock >= 0 ? (dock ? g_dock_cfg : 0) : g_dock_w;
+    if (g_tk_mode != 2) { g_dock_w = newdock; return; }
+    if (newdock == g_dock_w && !(integer > 0)) return;
+    RECT cr; GetClientRect(hwnd, &cr);
+    int cw = cr.right - cr.left - g_dock_w, ch = cr.bottom - cr.top;
+    int kx = cw / 640, ky = ch / 480, k = kx < ky ? kx : ky;
+    if (k < 1) k = 1;
+    g_dock_w = newdock;
+    int w = 640 * k + g_dock_w, h = 480 * k;
+    if (!g_integer) { w = cw + g_dock_w; h = ch; }   // free scaling: keep the game area as it is
+    LONG st = GetWindowLongA(hwnd, GWL_STYLE);
+    MONITORINFO mi; mi.cbSize = sizeof mi; GetMonitorInfoA(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mi);
+    for (;;) {
+        RECT r = { 0, 0, w, h }; AdjustWindowRect(&r, st, FALSE);
+        int ww = r.right - r.left, wh = r.bottom - r.top;
+        if (k <= 1 || !g_integer || (ww <= mi.rcWork.right - mi.rcWork.left && wh <= mi.rcWork.bottom - mi.rcWork.top)) {
+            RECT wr; GetWindowRect(hwnd, &wr);   // keep it on screen: slide left / up when the new size overhangs
+            int x = wr.left, y = wr.top;
+            if (x + ww > mi.rcWork.right)  x = mi.rcWork.right - ww;
+            if (y + wh > mi.rcWork.bottom) y = mi.rcWork.bottom - wh;
+            if (x < mi.rcWork.left) x = mi.rcWork.left;
+            if (y < mi.rcWork.top)  y = mi.rcWork.top;
+            SetWindowPos(hwnd, NULL, x, y, ww, wh, SWP_NOZORDER | SWP_NOACTIVATE);
+            break;
+        }
+        k--; w = 640 * k + g_dock_w; h = 480 * k;
+    }
+    ui_mark_resized();
+}
+
 static void ddp_engine_present(HWND hwnd, const Frame *f) {
     if (!f || !f->buf || f->w <= 0 || f->h <= 0) return;
     if (!g_e_ready) { if (!e_create(hwnd)) return; g_e_ready = 1; }   // create fail -> stays 0 -> game presents (fallback)
+    if (g_pend_dock >= 0 || g_pend_int >= 0) apply_requests(hwnd);
     g_e_lastframe = *f; g_e_haveframe = 1;   // remember for a windowed-resize re-present (buf stable at 640x480)
     e_present_frame(hwnd, f);
 }
@@ -422,7 +467,7 @@ extern "C" int ddp_on_sizing(int edge, void *rv) {
     RECT *r = (RECT *)rv;
     RECT z = { 0, 0, 0, 0 };
     AdjustWindowRect(&z, (DWORD)GetWindowLongA(g_game_hwnd, GWL_STYLE), FALSE);   // frame thickness (z is negative-left)
-    int fw = z.right - z.left, fh = z.bottom - z.top;
+    int fw = z.right - z.left + g_dock_w, fh = z.bottom - z.top;
     float cw = (float)(r->right - r->left - fw), ch = (float)(r->bottom - r->top - fh);
     int kx = (int)(cw / 640.0f + 0.5f), ky = (int)(ch / 480.0f + 0.5f), k;
     if (edge == WMSZ_LEFT || edge == WMSZ_RIGHT) k = kx;
@@ -430,6 +475,7 @@ extern "C" int ddp_on_sizing(int edge, void *rv) {
     else k = kx > ky ? kx : ky;
     MONITORINFO mi; mi.cbSize = sizeof mi;
     if (GetMonitorInfoA(MonitorFromWindow(g_game_hwnd, MONITOR_DEFAULTTONEAREST), &mi)) {
+        // any multiple that fits the work area; if it overhangs, WM_EXITSIZEMOVE slides the window back (ddp_keep_onscreen)
         int aw = mi.rcWork.right - mi.rcWork.left, ah = mi.rcWork.bottom - mi.rcWork.top;
         while (k > 1 && (640 * k + fw > aw || 480 * k + fh > ah)) k--;
     }
@@ -438,6 +484,21 @@ extern "C" int ddp_on_sizing(int edge, void *rv) {
     if (edge == WMSZ_LEFT || edge == WMSZ_TOPLEFT || edge == WMSZ_BOTTOMLEFT) r->left = r->right - w; else r->right = r->left + w;
     if (edge == WMSZ_TOP || edge == WMSZ_TOPLEFT || edge == WMSZ_TOPRIGHT) r->top = r->bottom - h; else r->bottom = r->top + h;
     return 1;
+}
+
+// Slide the (windowed takeover) window fully onto its monitor's work area — after a drag-resize ends (WM_EXITSIZEMOVE)
+// a snapped size may overhang the screen edge.
+extern "C" void ddp_keep_onscreen(void) {
+    if (g_tk_mode != 2 || !g_e_ready || !g_game_hwnd) return;
+    RECT wr; if (!GetWindowRect(g_game_hwnd, &wr)) return;
+    MONITORINFO mi; mi.cbSize = sizeof mi;
+    if (!GetMonitorInfoA(MonitorFromWindow(g_game_hwnd, MONITOR_DEFAULTTONEAREST), &mi)) return;
+    int ww = wr.right - wr.left, wh = wr.bottom - wr.top, x = wr.left, y = wr.top;
+    if (x + ww > mi.rcWork.right)  x = mi.rcWork.right - ww;
+    if (y + wh > mi.rcWork.bottom) y = mi.rcWork.bottom - wh;
+    if (x < mi.rcWork.left) x = mi.rcWork.left;
+    if (y < mi.rcWork.top)  y = mi.rcWork.top;
+    if (x != wr.left || y != wr.top) SetWindowPos(g_game_hwnd, NULL, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
 // Windowed takeover only: the user resized the game window — resize the swapchain to the new client and
@@ -474,6 +535,7 @@ extern "C" int ddp_cursor_game(float *gx, float *gy) {
     float ox = 0, oy = 0, sx, sy;
     if (g_tk_mode && g_e_ready) {           // takeover: the present's fit within the client (monitor OR window)
         float vw, vh;
+        cw -= (float)g_dock_w; if (cw < 1) cw = 1;
         fit_view(cw, ch, 640.0f, 480.0f, &vw, &vh);
         ox = (cw - vw) * 0.5f; oy = (ch - vh) * 0.5f; sx = vw / 640.0f; sy = vh / 480.0f;
     } else {                                 // windowed: the game BitBlt's 640x480 to the full client

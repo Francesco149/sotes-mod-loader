@@ -82,6 +82,20 @@ type        = "bool"
 default     = true
 label       = "Integer scaling (pixel-exact)"
 description = "Draw the game at the largest whole multiple that fits (black borders, e.g. maximized or fullscreen); off = fill the window keeping the aspect (sharp-bilinear)."
+
+[config.ui_dock]
+type        = "bool"
+default     = false
+label       = "Dock the mod panel beside the game (takeover)"
+description = "The window widens by a sidebar: the game on the left, the loader's panel pinned on the right instead of floating over the game. Also a checkbox in the panel (remembered)."
+
+[config.ui_dock_width]
+type        = "int"
+default     = 380
+min         = 240
+max         = 900
+label       = "Docked panel width (px)"
+description = "Width of the docked sidebar."
 [config.keepactive]
 type        = "bool"
 default     = true

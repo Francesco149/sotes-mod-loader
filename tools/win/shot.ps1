@@ -1,5 +1,5 @@
 # C:\sml-win\shot.ps1 — run in the desktop session by the task sml-win-shot: PrintWindow every visible top-level window of
-# the sotes* processes to C:\sml-win\shot-<n>.png and list them (class / title / window + client size) in shot.txt.
+# the sotes* processes (PrintWindow; C:\\sml-win\\shot.screen present = a screen copy instead) to C:\sml-win\shot-<n>.png and list them (class / title / window + client size) in shot.txt.
 Add-Type -AssemblyName System.Drawing
 Add-Type @"
 using System; using System.Text; using System.Runtime.InteropServices;
@@ -31,7 +31,8 @@ $out = @(); $n = 0
     $script:out += "win $script:n cls='$c' title='$t' window ${w}x${hh} client $($cr.R)x$($cr.B) at $($r.L),$($r.T)"
     if ($w -gt 0 -and $hh -gt 0) {
       $b = New-Object Drawing.Bitmap $w, $hh; $g = [Drawing.Graphics]::FromImage($b)
-      $dc = $g.GetHdc(); [SW]::PrintWindow($h, $dc, 2) | Out-Null; $g.ReleaseHdc($dc)   # the window's OWN content (2 = full, D3D too), not the screen
+      if (Test-Path C:\sml-win\shot.screen) { $g.CopyFromScreen($r.L, $r.T, 0, 0, $b.Size) }   # what is ON SCREEN (the window must be on top)
+      else { $dc = $g.GetHdc(); [SW]::PrintWindow($h, $dc, 2) | Out-Null; $g.ReleaseHdc($dc) }   # the window's OWN content (2 = full, D3D too)
       $b.Save("C:\sml-win\shot-$script:n.png"); $g.Dispose(); $b.Dispose()
     }
     $script:n++

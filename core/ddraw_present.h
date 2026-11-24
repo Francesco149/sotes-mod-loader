@@ -61,6 +61,13 @@ void ddp_on_resize(int w, int h);
 void ddp_set_scaling(int integer, int snap, int winscale);
 // WM_SIZING in the windowed takeover: snap the proposed rect; 1 = adjusted (return TRUE).
 int  ddp_on_sizing(int edge, void *rect);
+// Docked UI sidebar (takeover): on = the game fits LEFT of a `width`-px panel column (set before the first present).
+void ddp_set_dock(int on, int width);
+int  ddp_dock_width(void);   // current sidebar width (0 = not docked / no takeover)
+int  ddp_integer(void);      // pixel-perfect (integer + snap) on
+// From the UI (any time, engine thread): dock / integer on (1) / off (0) / unchanged (-1); applied before the next frame.
+void ddp_request(int dock, int integer);
+void ddp_keep_onscreen(void);   // WM_EXITSIZEMOVE: slide the windowed takeover back onto the work area
 
 // Map the desktop cursor into the game's 640x480 screen space (undoing the borderless pillarbox / the
 // windowed client scale).  Fills gx/gy with the game-screen position; returns 1 if the cursor is over

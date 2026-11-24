@@ -70,12 +70,32 @@ void di_frame(void) {
     else g_active = g_qn > 0;
 }
 
+// Re-acquire: the game's keyboard is DISCL_FOREGROUND and it Acquires only on its activation messages.  If the window
+// came to the front without one it handles (Steam relaunch, the launcher closing, the takeover restyling the window),
+// every read fails NOTACQUIRED until the user Alt-Tabs.  So: a failed read while one of OUR windows is foreground =>
+// Acquire it ourselves (throttled) and read again.
+static DWORD g_reacq_t;
+static int   g_n_reacq;
+static HRESULT reacquire_read(void *self, DWORD cb, void *buf, HRESULT hr) {
+    if (hr != DIERR_NOTACQUIRED && hr != DIERR_INPUTLOST) return hr;
+    HWND fg = GetForegroundWindow(); DWORD pid = 0;
+    if (!fg || (GetWindowThreadProcessId(fg, &pid), pid != GetCurrentProcessId())) return hr;   // not ours: correct to fail
+    DWORD now = GetTickCount();
+    if (now - g_reacq_t < 200) return hr;
+    g_reacq_t = now;
+    IDirectInputDevice7A *dev = (IDirectInputDevice7A *)self;
+    if (FAILED(dev->lpVtbl->Acquire(dev))) return hr;
+    if (g_n_reacq++ < 5) ml_log("[input] keyboard was not acquired while the game is in front — re-acquired (%d)", g_n_reacq);
+    return g_gds_orig(self, cb, buf);
+}
+
 static volatile LONG g_capture;   // the UI owns the keyboard (a focused text field)
 void di_set_capture(int on) { InterlockedExchange(&g_capture, on ? 1 : 0); }
 
 static HRESULT WINAPI gds_hook(void *self, DWORD cb, void *buf) {
     HRESULT hr = g_gds_orig(self, cb, buf);
     if (cb != 256 || !buf) return hr;
+    if (FAILED(hr)) hr = reacquire_read(self, cb, buf, hr);
     g_kbd = self;
     g_n_gds++;
     if (g_capture) { memset(buf, 0, 256); hr = DI_OK; }  // UI typing: no real key levels reach the game
@@ -179,7 +199,8 @@ static int l_stats(lua_State *L) {
     lua_pushnumber(L, g_n_gdd); lua_setfield(L, -2, "gdd");
     lua_pushnumber(L, g_n_inj); lua_setfield(L, -2, "injected");
     lua_pushboolean(L, g_kbd != NULL); lua_setfield(L, -2, "kbd");
-    lua_pushboolean(L, g_capture != 0); lua_setfield(L, -2, "captured");   // a UI text field owns the keyboard
+    lua_pushboolean(L, g_capture != 0); lua_setfield(L, -2, "captured");
+    lua_pushnumber(L, g_n_reacq); lua_setfield(L, -2, "reacquired");   // a UI text field owns the keyboard
     return 1;
 }
 void di_push_lua(lua_State *L) {

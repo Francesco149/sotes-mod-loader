@@ -297,7 +297,11 @@ static void install_safepoint_hook(void) {   // runs on the MAIN thread (in the 
     g_capture_on = config_get_bool("ddraw", 1);   // ctx layout verified on enold + ense-en + ense-jp (sml probe 2026-11-24)
     if (g_capture_on) {
         ddp_set_takeover(config_get_int("ddraw_takeover", 0));
-        ddp_set_scaling(config_get_bool("ddraw_integer", 1), config_get_bool("ddraw_snap", 1), config_get_int("ddraw_window_scale", 1));
+        // The UI's checkboxes persist to oss_mods.cfg ("loader.*", machine-managed) and win over oss_loader.cfg.
+        const char *pi = config_mod_get("loader.ddraw_integer"), *pd = config_mod_get("loader.ui_dock");
+        int integer = pi ? atoi(pi) != 0 : config_get_bool("ddraw_integer", 1);
+        ddp_set_scaling(integer, pi ? integer : config_get_bool("ddraw_snap", 1), config_get_int("ddraw_window_scale", 1));
+        ddp_set_dock(pd ? atoi(pd) != 0 : config_get_bool("ui_dock", 0), config_get_int("ui_dock_width", 380));
     }
     ml_log("[exec] frame hook armed @ %p (flip, %s)%s", va, sym_edition_tag(), g_capture_on ? " — ddraw capture on" : "");
 }
@@ -318,6 +322,7 @@ static LRESULT CALLBACK boot_wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
     }
     // Windowed takeover: track resizes so our swapchain follows the window (no-op in other modes).
     if (m == WM_SIZING && ddp_on_sizing((int)w, (void *)l)) return TRUE;   // snap to whole multiples
+    if (m == WM_EXITSIZEMOVE) ddp_keep_onscreen();                          // a snapped size may overhang: slide back
     if (m == WM_SIZE && w != SIZE_MINIMIZED) ddp_on_resize((int)LOWORD(l), (int)HIWORD(l));
     return CallWindowProcA(g_orig_wndproc, h, m, w, l);
 }

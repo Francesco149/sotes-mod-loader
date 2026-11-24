@@ -160,3 +160,11 @@ the dev server on): +300/+250, +700/+540, bottom +400 → 2x (the monitor caps 3
 client px = PrintWindow px − (8, 31)).  Posted WM_MOUSE* don't work: the Win32 backend re-reads the real cursor while
 the game is foreground.  2026-11-24 combo_search: "org arc" → 1/134 Org Archer; "slime" → 8/134, Enter → 51013 Red
 Slime, Spawn → slot 4; `mod.input.stats().captured` true while the search box has focus, false after.
+
+**Display options (2026-11-24, modded copy, 1920x1080 box):** panel checkboxes "Dock beside the game" (window +380 px
+sidebar, game left at its scale; F10 hides it and shrinks the window) and "Pixel-perfect scaling" (off = free resize,
+aspect-fit smooth scaling), persisted as `loader.*` in oss_mods.cfg.  Checked from screen grabs (`shot.screen` flag +
+`top_on.lua`/`top_off.lua`: PrintWindow AND screen copies both show only the ON-SCREEN part — an "overlay clipped" scare
+was the test window hanging off a 1080p monitor): 2x docked 1660x960 slid back on screen after WM_EXITSIZEMOVE; free
+1484x960 fill; F10 → 1104x960.  Keyboard re-acquire: not reproducible on demand — `mod.input.stats().reacquired` / the
+log line `[input] keyboard was not acquired ... re-acquired` show it firing.

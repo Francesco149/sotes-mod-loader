@@ -47,6 +47,11 @@ ddraw_takeover=0
 ddraw_window_scale=1
 ddraw_snap=1
 ddraw_integer=1
+# Dock the mod panel BESIDE the game instead of over it (takeover): the window widens by a ui_dock_width
+# sidebar.  The panel's own "Dock beside the game" / "Pixel-perfect scaling" checkboxes override these and
+# are remembered in oss_mods.cfg (loader.ui_dock / loader.ddraw_integer).  F10 hides the docked panel too.
+ui_dock=0
+ui_dock_width=380
 
 # Dev profiler: time the loader's per-frame overhead on the engine thread (the safepoint drain, the
 # UI snapshot build, and the roster heap-scan) and log avg/max microseconds every 5s to

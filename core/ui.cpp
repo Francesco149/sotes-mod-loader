@@ -27,7 +27,10 @@
 #include "lua_host.h"          // lh_state (engine thread only)
 #include "executor.h"          // exec_armed / exec_main_tid / exec_ti_mgr
 #include "ddraw_present.h"     // ddp_draw_background — mirror the captured game frame behind the UI
-#include "dinput_inject.h"     // di_set_capture — a focused text field owns the keyboard
+#include "dinput_inject.h"
+extern "C" {
+#include "config.h"
+}     // di_set_capture — a focused text field owns the keyboard
 
 extern "C" {
 #include "lua.h"
@@ -630,16 +633,36 @@ static void reclamp_current_window(void) {
 
 // Draw the whole UI from the latest snapshot (UI thread; no Lua).  Returns true if ImGui is busy
 // (an item active) so the loop keeps rendering for smooth interaction.
+static bool g_in_overlay;     // drawing the in-game overlay (takeover; engine thread) — the display controls live there
+static bool g_dock_pref;      // the user's dock choice (the checkbox; F10 hides the sidebar without changing it)
+static void persist(const char *key, bool on) { config_mod_set(key, on ? "1" : "0"); config_mod_flush(1); }
+
 static bool draw_from_snapshot(const Snapshot &snap) {
     const ImGuiViewport *vp = ImGui::GetMainViewport();
     const float MARGIN = 16.0f, HOST_W = 460.0f, HOST_H = 620.0f;
-    // The loader's host window spawns on the RIGHT edge (mods' own windows tile from the left, below).
-    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x - HOST_W - MARGIN, vp->WorkPos.y + MARGIN), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(HOST_W, HOST_H), ImGuiCond_FirstUseEver);
-    if (ImGui::Begin(OSS_ML_NAME "##host")) {
+    int dock = g_in_overlay ? ddp_dock_width() : 0;
+    ImGuiWindowFlags hf = 0;
+    if (dock > 0) {   // docked: the host window IS the sidebar right of the game
+        ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x - (float)dock, vp->WorkPos.y), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2((float)dock, vp->WorkSize.y), ImGuiCond_Always);
+        hf = ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar;
+    } else {
+        // The loader's host window spawns on the RIGHT edge (mods' own windows tile from the left, below).
+        ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x - HOST_W - MARGIN, vp->WorkPos.y + MARGIN), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(HOST_W, HOST_H), ImGuiCond_FirstUseEver);
+    }
+    if (ImGui::Begin(OSS_ML_NAME "##host", NULL, hf)) {
         ImGui::TextUnformatted(OSS_ML_NAME "  " OSS_ML_VERSION);
         ImGui::TextDisabled("%s   |   panels %d   windows %d",
             snap.status.armed ? "executor armed" : "executor idle", snap.status.npanel, snap.status.nwindow);
+        if (g_in_overlay) {   // display controls (takeover only): persisted to oss_mods.cfg "loader.*"
+            bool d = g_dock_pref;
+            if (ImGui::Checkbox("Dock beside the game", &d)) { g_dock_pref = d; ddp_request(d ? 1 : 0, -1); persist("loader.ui_dock", d); }
+            ImGui::SameLine();
+            bool pp = ddp_integer() != 0;
+            if (ImGui::Checkbox("Pixel-perfect scaling", &pp)) { ddp_request(-1, pp ? 1 : 0); persist("loader.ddraw_integer", pp); }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("on: whole multiples only (1x/2x/3x), resizes snap\noff: any size, smooth scaling");
+        }
         ImGui::Separator();
         for (size_t i = 0; i < snap.surfaces.size(); i++) {
             const Surface &s = snap.surfaces[i];
@@ -697,6 +720,7 @@ static bool overlay_init(void *dev_, void *ctx_, void *hwnd_) {
     { const char *f = "C:\\Windows\\Fonts\\segoeui.ttf";
       if (GetFileAttributesA(f) != INVALID_FILE_ATTRIBUTES) io.Fonts->AddFontFromFileTTF(f, 18.0f, NULL, ui_glyph_ranges()); else io.Fonts->AddFontDefault(); }
     apply_theme();
+    g_dock_pref = ddp_dock_width() > 0;
     if (!ImGui_ImplWin32_Init(hwnd)) { ml_log("[ui] overlay ImGui_ImplWin32_Init failed"); ImGui::DestroyContext(); return false; }
     if (!ImGui_ImplDX11_Init(dev, ctx)) { ml_log("[ui] overlay ImGui_ImplDX11_Init failed"); ImGui_ImplWin32_Shutdown(); ImGui::DestroyContext(); return false; }
     ml_log("[ui] in-game overlay up (engine-thread ImGui on the takeover device; F10 toggles)");
@@ -720,8 +744,10 @@ extern "C" void ui_overlay_present(void *dev, void *ctx, void *hwnd) {
     synth_apply();
     ImGui::NewFrame();
     g_text_focus = false;
+    g_in_overlay = true;
     if (g_ov_have) draw_from_snapshot(g_buf[g_read_ix]);
     else { ImGui::Begin(OSS_ML_NAME "##host"); ImGui::TextDisabled("waiting for the game..."); ImGui::End(); }
+    g_in_overlay = false;
     ImGui::Render();
     di_set_capture(g_text_focus);                          // typing into a field: the game gets no real keys
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());   // draws into the bound RTV (the game back buffer)
@@ -734,7 +760,10 @@ extern "C" int ui_overlay_wndproc(void *hwnd, unsigned msg, uintptr_t wparam, in
     // reaches neither the game nor DefWindowProc (F10 is a system key that would enter menu mode).
     // F10 arrives as WM_SYSKEY*; guard bit 30 (previous-key-state) so auto-repeat doesn't re-toggle.
     if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) && (int)wparam == g_key_toggle) {
-        if (!(lparam & (1 << 30))) g_ov_visible = !g_ov_visible;
+        if (!(lparam & (1 << 30))) {
+            g_ov_visible = !g_ov_visible;
+            if (g_dock_pref) ddp_request(g_ov_visible ? 1 : 0, -1);   // docked: the window loses / regains the sidebar
+        }
         return 1;
     }
     if ((msg == WM_KEYUP || msg == WM_SYSKEYUP) && (int)wparam == g_key_toggle) return 1;
