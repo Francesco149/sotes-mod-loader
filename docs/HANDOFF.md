@@ -47,10 +47,15 @@ v2 so far (commits `10a1efe`, `b5b3b2b`, `6cb69d2`):
   **Gate:** `tools/sml continue R` + `tools/sml test R tests/roster.lua` → PASS on enold / ense-en / ense-jp,
   numbers checked against the HUD (TESTING.md).  `sml up` copies `*.sdt` only (config.dat moves the title / picker
   cursors) and no longer races parallel `up`s for a prefix slot.
+- **Bindings v2, wave 2 (2026-11-24, api 1.1):** `mod.game.camera` / `map` / `flags` (story = the fill table
+  room `+0x40ac`, area = room `+0x8`) / `items` (inventory room `+0x2010` ×16 B, count `+0x4010`; gold `+0x4014`, cap
+  `+0x4020`) — all room offsets equal on SE (fieldxw).  Only SE difference found: the **area table** record is 344 B
+  (enold 336) with its count at `+0x56004` (enold `+0x54004`) — read from SE `area_find` 0x565a20 (layout
+  `area_size` / `area_count`).  Writes refuse off the engine thread.  **Gate:** `tests/world.lua` PASS ×3; HUD-checked
+  (SE gold ×630; `set_gold(4321)` → HUD ×4321).
 - **Still fenced** until rebuilt on symbols: `game.attract/save/input.press` (refuse + log); voice patch never arms
   on the new build (signature-gated, fails safe).
-- **Next:** rest of bindings v2 — camera (view fields done, expose a binding), map / room id (`roominfo` world+0x1038 →
-  SE?), story + object flags (room `+0x8`, count `+0x2008` — same on SE), items / gold (room `+0x4014`), save.load +
+- **Next:** rest of bindings v2 — save.load +
   attract + input.press on symbols (the enold `menu_list_latch` ecx is NOT the menu_ctrl the v1 SE notes describe:
   `+0x174` reads 0 there — re-RE per edition) → more `tests/*.lua` → trainer as a `../sotes-mods` mod + sandbox
   (spawn / flags / warp) → Windows real-device runner (own scheduled task, never `oss-rhost-runner`).  Host tests

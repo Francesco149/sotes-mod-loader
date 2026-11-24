@@ -14,6 +14,7 @@ tools/sml shot R out.png      # LOOK at it: the test's numbers vs the HUD
 
 | suite | proves | ense-en | ense-jp | enold |
 |---|---|---|---|---|
+| `tests/world.lua` | camera view inside the map; area id → area table → map; story flags (list = get, set / clear round trip on a free id); area flags; inventory named; gold ≤ cap + set/restore | PASS (HUD ×630 = 630 CP; set_gold 4321 → HUD ×4321) | PASS (names Shift-JIS) | PASS (day-10b port save: area 210140 map 210) |
 | `tests/roster.lua` | world/room/view via `g_world` + layout; party slots → chars → stat block; one leader; hp/mp ≤ max; level = combat + adventurer; positions inside the map | PASS (HUD-checked: 179/197, 43/43, Lv8, 3/5 stars; Lv15 save: 293/293 …) | PASS (Steam saves) | PASS (port drive save; coords checked vs the frame) |
 
 `continue` caveats: SE's studio intro drops input until ~frame 1000 (one `ent` then skips it); enold has no

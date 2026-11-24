@@ -18,7 +18,7 @@
 // load); MINOR bumps on an ADDITIVE change (older mods still load, newer mods needing the new minor
 // refuse on an older loader).  A mod declares what it needs in mod.toml `[loader] api = "MAJ.MIN"`
 // (absent = assume "1.0").  Native mods have their own OSS_ABI_VERSION (struct-growth) in oss_mod_api.h.
-#define OSS_API_VERSION "1.0"
+#define OSS_API_VERSION "1.1"   // 1.1: mod.game.camera / map / flags / items
 #define OSS_API_MAJOR   1
 #define OSS_API_MINOR   0
 

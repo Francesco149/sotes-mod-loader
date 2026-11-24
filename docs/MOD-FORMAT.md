@@ -77,6 +77,19 @@ mod.game.roster.world()         -> {world, room, view, nflags} raw pointers (nil
 mod.game.roster.layout          -- this edition's struct offsets (core/sotes_layout.h) for mods doing raw reads
 mod.game.coordinates.get([code])/player()/target()   -> {x,y,actor,code}   (centi-px; target = controlled)
 mod.game.mouse.get()            -> {screen_x, screen_y, over, world_x, world_y}
+mod.game.camera.get()           -> {left, top, width, height, map_w, map_h, view}   (world centi-px)     [api 1.1]
+mod.game.map.get()              -> {area, map, record, areas, nareas}   current area id (room +0x4024) + its map
+mod.game.flags.story.get(id)    -> v, v2 | nil      the persistent event flags the scripts use (saved)
+mod.game.flags.story.list()     -> {{id, v, v2}, ...}
+mod.game.flags.story.set(id, v[, v2]) -> true      engine semantics: find-or-add; v = v2 = 0 CLEARS the id
+mod.game.flags.area.get(id) / .list() -> state / {{id, state}, ...}   the room's area state (1 = done)
+mod.game.flags.area.set(id, state)    -> true
+mod.game.items.list()           -> {{index, id, name, count, owner, stored}, ...}  (owner = wearer's party-slot
+                                --   id, 0 = unworn; name in the edition's own encoding — Shift-JIS on ense-jp)
+mod.game.items.gold()           -> cp, cap          (100 CP = 1 GP; the HUD counter shows CP)
+mod.game.items.set_gold(cp)     -> cp (clamped to [0, cap])
+                                -- every WRITE runs only on the engine thread (on_frame / main / dev-server lua);
+                                --   elsewhere it returns nil, "...refused..."
 mod.game.attract.set(on)        -- toggle the attract/demo mode (off keeps the title up)
 mod.game.input.press(id[,mgr])  -- inject a UI button into the captured input mgr's ring (arbitrary
                                 --   menu navigation): SotES title ids 0x25 confirm, 0x22 back, 2/4|1/3

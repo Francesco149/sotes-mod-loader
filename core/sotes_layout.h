@@ -4,7 +4,8 @@
 // tools/fieldxw.py (aligned enold↔SE function pairs, the displacement each SE site uses) + live checks
 // under wine (tests/*.lua via tools/sml).  ense-jp == ense-en for every field below (fieldxw --to ense-jp).
 //
-// Reproduce:  python3 tools/fieldxw.py 0x2784 0x4030 0x9f4 0x9c4 0xa10 0x750 0x200c 0x104c 0xc7a4
+// Reproduce:  python3 tools/fieldxw.py 0x2010 0x4010 0x4014 0x4020 0x4024 0x40ac 0x1800 0x1038 0x103c  (all = on SE)
+//             python3 tools/fieldxw.py 0x2784 0x4030 0x9f4 0x9c4 0xa10 0x750 0x200c 0x104c 0xc7a4
 //             python3 tools/fieldxw.py --fn 0x426fd0 0xd4 0xd8 0xdc 0xe0 0xe8 0xec   (the stat block)
 //   (enold port names: +0xd8 "level_bonus" = combat level, +0xdc "star_count" = its max, +0xe0 "combat_level_max"
 //    = adventurer level — the port's display formula +0xe0 + +0xd8 is the same sum.)
@@ -19,11 +20,21 @@ typedef struct sotes_layout {
     uint16_t world_chars;     // wl_char*[32]          0x1160        0x1160
     uint16_t world_actors;    // wl_entity*[128]       0x11e0        0x11e0
     uint16_t world_room;      // wl_room* (current)    0x2784        0x3788   (SE grew the bands by 0x1004)
+    uint16_t world_rinfo;     // room record*          0x1038        0x1038
+    uint16_t world_areas;     // area table*           0x103c        0x103c   (areas from +4, keyed by +0, map id +4)
+    uint16_t area_size;       // area record bytes     336           344      (area_find 0x561c90 / SE 0x565a20: i*336 vs i*43*8)
+    uint32_t area_count;      // u16 count at          0x54004       0x56004  (1024 records either way)
     // room (wl_room)
     uint16_t room_flags;      // {id,state}[1024]      0x0008        0x0008
     uint16_t room_nflags;     // u16                   0x2008        0x2008
     uint16_t room_leader;     // wl_pslot*             0x200c        0x200c
     uint16_t room_slots;      // wl_pslot*[8]          0x4030        0x4030
+    uint16_t room_items;      // {id,owner,u16 n,u8 stored,-,def*}[512]  0x2010  0x2010
+    uint16_t room_nitems;     // u16                   0x4010        0x4010
+    uint16_t room_gold;       // CP                    0x4014        0x4014
+    uint16_t room_gold_cap;   // CP                    0x4020        0x4020
+    uint16_t room_area;       // current area id       0x4024        0x4024
+    uint16_t room_fill;       // persistent fill table* (story flags {id,v,v2}[512], count +0x1800)  0x40ac  0x40ac
     // party slot (wl_pslot, operator_new(0xeec) on enold)
     uint16_t ps_in;           // input_mgr*            0x000         0x000
     uint16_t ps_code;         // character code        0x004         0x004
