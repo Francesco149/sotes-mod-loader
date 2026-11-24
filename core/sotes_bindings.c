@@ -19,6 +19,7 @@
 #include "prof.h"
 #include "ddraw_present.h"   // ddp_cursor_game — cursor -> game 640x480 screen space (mod.game.mouse)
 #include "loader_internal.h"
+#include "dinput_inject.h"    // di_auto — the dialogue skip holds the game's own skip key
 
 #include <string.h>
 #include <windows.h>
@@ -496,6 +497,33 @@ static void install_map(lua_State *L) {
     lua_pushcfunction(L, l_map_event);       lua_setfield(L, -2, "event");
 }
 
+// ── mod.game.dialogue — skip = retail's OWN message-window skip: the message window (msg_update 0x43b980)
+// sends its last control key 8 (reveal the rest / end) every frame the input manager's held axis 6 (+0x12c) is
+// set, and the keyboard producer (enold 0x46a880, port input_dik.c) sets axis 6 while DIK_TAB (0x0f) is down without
+// Alt (or the configurable skip binding).  skip(on) holds TAB through mod.input's DirectInput layer ONLY while an
+// event script owns the game (map.event()), so free-roam TAB is untouched.  get() -> on, holding_now.
+// Verified ense-en: Dad's first line sat open 1766 idle frames; held TAB closed the event in < 80.
+static int g_dlg_skip, g_dlg_holding;
+static void dialogue_pre_input(void) {
+    int want = g_dlg_skip && gb_enabled("dialogue") && event_running(sotes_layout_get());
+    if (want != g_dlg_holding) { di_auto(0x0f, want); g_dlg_holding = want; }
+}
+static int l_dialogue_skip(lua_State *L) {
+    g_dlg_skip = lua_toboolean(L, 1);
+    lua_pushboolean(L, g_dlg_skip);
+    return 1;
+}
+static int l_dialogue_get(lua_State *L) {
+    lua_pushboolean(L, g_dlg_skip);
+    lua_pushboolean(L, g_dlg_holding);
+    return 2;
+}
+static void install_dialogue(lua_State *L) {
+    lua_newtable(L);
+    lua_pushcfunction(L, l_dialogue_skip); lua_setfield(L, -2, "skip");
+    lua_pushcfunction(L, l_dialogue_get);  lua_setfield(L, -2, "get");
+}
+
 // ── mod.game.flags — two engine tables:
 //   story: the persistent FILL table (room +0x40ac: {id, v, v2}[512], count +0x1800) — what the event scripts
 //          read / write (flag_find 0x4c57f0 / script_flag_set) and the save carries.
@@ -762,7 +790,13 @@ void sotes_bindings_register(void) {
     static const gb_def ITEMS = {
         "items", "party inventory (id/name/count/owner/stored) + money — .list() / .gold() / .set_gold(cp)", install_items, 1
     };
+    static const gb_def DIALOGUE = {
+        "dialogue", "skip dialogue the game's own way (held TAB while an event runs) — .skip(on) / .get()",
+        install_dialogue, 1
+    };
     gb_register(&ROSTER);
+    gb_register(&DIALOGUE);
+    exec_set_pre_input(dialogue_pre_input);
     gb_register(&CAMERA);
     gb_register(&MAP);
     gb_register(&FLAGS);

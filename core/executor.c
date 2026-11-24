@@ -63,8 +63,11 @@ extern void oss_frame_detour(void) asm("oss_frame_detour");
 
 static int g_capture_on;
 static int g_input_on;
+static void (*g_pre_input)(void);
+void exec_set_pre_input(void (*fn)(void)) { g_pre_input = fn; }
 void frame_c(void) {
     g_frames++;
+    if (g_pre_input) g_pre_input();      // profile per-frame work that feeds the input (dialogue skip)
     if (g_input_on) di_frame();          // advance the scripted input before mods run this frame
     exec_on_safepoint((void *)(uintptr_t)g_ti_mgr);
     if (g_capture_on) {

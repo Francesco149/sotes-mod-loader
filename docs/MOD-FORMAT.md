@@ -107,6 +107,11 @@ mod.game.items.give(id[, count]) -> index | nil, why   the engine's room_item_ad
 mod.game.items.catalog()        -> {{id, name}, ...}   every item definition
 mod.game.roster.set(code|nil, {hp=, mp=}) -> true      current hp / mp (nil code = the controlled member)
 mod.game.coordinates.set(code|nil, x, y) -> true       teleport: the member's body box (x sticks, y settles)
+mod.game.dialogue.skip(on) -> on                         [api 1.3]   skip dialogue retail's own way: the message
+                                --   window's skip (held input axis 6 = DIK_TAB) is held through mod.input's DirectInput
+                                --   layer, ONLY while map.event() (free-roam TAB untouched).  Choice lists ignore it (enold
+                                --   grid_nav has no key-8 case).  Engine-thread state; persists until skip(false).
+mod.game.dialogue.get()         -> on, holding_now
 mod.game.attract.set(on) / .get() -- false keeps the title up (idle → no demo); true = retail
 mod.game.save.load([slot])      -> true | nil, err   -- load save `slot` from the title (nil / <0 = the list's
                                 --   default row = last used).  Typed hooks on the title driver (any edition):

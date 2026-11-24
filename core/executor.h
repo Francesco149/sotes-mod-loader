@@ -44,6 +44,7 @@ void exec_keepactive(void);  // keep the game ticking while its window is unfocu
 void *exec_game_hwnd(void);  // the subclassed game window (HWND; void* to keep windows.h out of the header); NULL until bootstrap
 uint32_t exec_ti_mgr(void);  // the captured input manager (safepoint `this`); 0 until the first frame
 uint32_t exec_sp_now(void);  // the safepoint poll's timestamp (arg1); for input-record injection
+void exec_set_pre_input(void (*fn)(void)); // engine thread, each frame BEFORE the scripted input latches (profile hook)
 uint32_t exec_frame(void);
 void *exec_screen_ctx(void);  // the ZDD screen ctx captured at the last flip (ECX), NULL before    // presented frames since the frame hook armed
 uint32_t exec_main_tid(void);// the engine/main thread id (captured at the first safepoint); 0 until then

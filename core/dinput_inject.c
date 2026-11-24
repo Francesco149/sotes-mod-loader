@@ -34,6 +34,7 @@ typedef struct { uint8_t keys[8]; uint8_t nkeys; uint32_t frames; } seg_t;
 static seg_t g_seg[MAXSEG];
 static int g_sh, g_sn;                    // head, count
 static uint8_t g_hold[256];               // persistent holds (input.hold / release)
+static uint8_t g_auto[256];               // loader-owned holds (di_auto: e.g. the dialogue skip) — not cleared by input.clear
 static uint8_t g_level[256], g_prev[256]; // this frame's scripted level, last frame's
 static int g_active;                      // a script or hold is (or was this frame) driving input
 static uint32_t g_seq;
@@ -52,9 +53,8 @@ static void enqueue(DWORD ofs, DWORD data) {
 // ENGINE THREAD, once per frame (the frame hook): advance the script, latch levels, queue edges.
 void di_frame(void) {
     memcpy(g_prev, g_level, 256);
-    memcpy(g_level, g_hold, 256);
     int any = 0;
-    for (int i = 0; i < 256; i++) any |= g_hold[i];
+    for (int i = 0; i < 256; i++) { g_level[i] = g_hold[i] | g_auto[i]; any |= g_level[i]; }
     if (g_sn) {
         seg_t *s = &g_seg[g_sh];
         for (int i = 0; i < s->nkeys; i++) g_level[s->keys[i]] = 0x80;
@@ -130,6 +130,8 @@ int di_install(void) {
     ml_log("[input] keyboard injection armed (dinput GetDeviceState %p / GetDeviceData %p)", gds, gdd);
     return 1;
 }
+
+void di_auto(uint8_t dik, int on) { g_auto[dik] = on ? 0x80 : 0; }
 
 // ── Lua: mod.input ───────────────────────────────────────────────────────────
 // input.push({dik...}, frames)   append a segment (an empty list = hold nothing)

@@ -4,5 +4,6 @@
 struct lua_State;
 int  di_install(void);                 // engine thread, after MH_Initialize; 1 = armed
 void di_frame(void);                   // engine thread, once per frame (frame hook)
+void di_auto(unsigned char dik, int on); // engine thread, before di_frame: a loader-owned hold (separate from scripts / input.hold)
 void di_push_lua(struct lua_State *L); // the C half of mod.input (core/lua/input.lua adds play/keys)
 #endif

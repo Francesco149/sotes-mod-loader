@@ -87,8 +87,20 @@ v2 so far (commits `10a1efe`, `b5b3b2b`, `6cb69d2`):
   dlgskip / fastskip (dialogue), mousefly (continuous), door hijack (superseded by warp).
 - **`tools/sml_mcp.py`** — the agent MCP over sml + the dev server (TESTING.md "For agents"); replaces the old
   trainer MCP for v2 (that one spoke the injected trainer's socket).
-- **Next:** actor spawn (RE `summon_spawn` /
-  a map-actor spawn path) + dialogue skip on symbols → more `tests/*.lua` → voice patch on symbols → Windows real-device runner (own scheduled task, never
+- **Dialogue skip (api 1.3, 2026-11-24)** — `mod.game.dialogue.skip(on)` / `.get()`: retail's OWN skip.  The message
+  window (msg_update 0x43b980) sends its last control key 8 (reveal rest / end) every frame input axis 6 (input_mgr
+  `+0x12c`) is held; the keyboard producer (enold 0x46a880, port `input_dik.c:80-81`) sets axis 6 on DIK_TAB without Alt
+  (or the configurable skip bind).  So skip = hold TAB through the DirectInput layer (`di_auto`, a loader-owned hold
+  layer separate from scripts / `input.hold`; `exec_set_pre_input` runs the gate each frame before the input latches),
+  ONLY while `map.event()` — no VA, no code patch, every edition.  Choice lists: enold `grid_nav` has no key-8 case →
+  untouched (SE unverified; the old trainer's je-NOP at 0x437740 did advance choices, a different path).  **Gate:**
+  `tests/dialogue.sh R` (a `--saves none` run: new game by keys → the intro event (210110) → control: still open 600
+  idle frames → skip → event ends, free roam not holding) PASS ense-en (2833 f) / ense-jp (2532 f) / enold (2793 f; its
+  new-game config opens on Difficulty — the test switches to Up+Enter after 80 tries); `SKIP_ON='trainer.skip_dialogue(true)'` drives the trainer's option.  Trainer: `skip_dialogue` config +
+  panel checkbox + `trainer.skip_dialogue(on)`; MCP: `skip_dialogue`.
+- **Next:** actor spawn (RE: `char_init` 0x41f200 is the activator — 15 args — into a free CHARACTER-pool slot
+  (`render_root+0x11e0`/128); open question = whose sprite banks are loaded (a foe's assets may exist only in rooms
+  that place it → start with "clone a code already in the room"); `summon_spawn` 0x55ce70 is the skill path) → more `tests/*.lua` → voice patch on symbols → Windows real-device runner (own scheduled task, never
   `oss-rhost-runner`).  Host tests (`make -C core tests`) still assume WSL interop — port them to run under wine.
 
 ## State: P0–P5 DONE + **DDraw present (borderless + windowed takeover)** + **in-game overlay** + **`mod.config`** + **semantic `mod.game` ops** + **mod API versioning** + **early-boot phase & the `OssModEarlyInit` ABI** + **built-in JP voice restore** (2026-07-20). Next = **P8 launcher** + P7 trainer as a mod.

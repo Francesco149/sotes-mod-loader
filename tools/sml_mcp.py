@@ -7,7 +7,7 @@ A typed skin over `tools/sml` (runs under wine, own prefix / Xvfb per run) and e
 
   runs      sml (passthrough: up / down / continue / play / wait / log / ls / test ...)
   observe   state · rooms · catalog · flags · shot · lua
-  act       warp · teleport · give · heal · set_stats · gold · set_flag · keys
+  act       warp · teleport · give · heal · set_stats · gold · set_flag · keys · skip_dialogue
 
 Register (.mcp.json):  "sml": {"type": "stdio", "command": "python3",
                                "args": ["/opt/src/sotes-mod-loader/tools/sml_mcp.py"]}
@@ -166,6 +166,10 @@ def t_set_flag(a):
     return L(a["run"], f"return game.flags.story.set({int(a['id'])}, {int(a['v'])}, {int(a.get('v2', 0))})")
 
 
+def t_skip_dialogue(a):
+    return L(a["run"], f"return {{game.dialogue.skip({'true' if a.get('on', True) else 'false'})}}")
+
+
 def t_keys(a):
     return sml_cli(["play", a["run"], a["movie"], "--wait"])
 
@@ -209,6 +213,8 @@ TOOLS = {
     "flags": (t_flags, "Story flags: one {v, v2} by id, or the whole list.", S(run=RUN(), id=INT("flag id"))),
     "set_flag": (t_set_flag, "Set story flag id to (v, v2); 0, 0 clears it.",
                  S(run=RUN(), id=INT("flag id", True), v=INT("value", True), v2=INT("second value"))),
+    "skip_dialogue": (t_skip_dialogue, "Skip dialogue the game's own way (held TAB while an event runs) until "
+                                       "turned off. on (default true).", S(run=RUN(), on={"type": "boolean"})),
     "keys": (t_keys, "Play a keyboard movie (rd syntax: 'R*30 .*10 ent X*2'; U D L R X C Z V F ent esc f1..f6).",
              S(run=RUN(), movie={"type": "string", "req": True})),
     "shot": (t_shot, "The game's exact back buffer (640x480) as an image; x=true for the whole X screen (UI too).",
