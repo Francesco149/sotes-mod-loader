@@ -132,7 +132,7 @@ v2 so far (commits `10a1efe`, `b5b3b2b`, `6cb69d2`):
   (no pslot) and remove cleanly (ense-jp, 120 frames).  **ImGui shows Shift-JIS as `?`** (UTF-8, no CJK font): the
   trainer uses `en` on ense-jp; the Items panel still prints JP item names raw — a `mod.text` CP932→UTF-8 helper + a
   CJK font range would fix both.
-- **Hand-play copy (2026-11-24):** `C:\\sotes-modded` + desktop shortcut "SotES with mods", auto-refreshed on commit (TESTING.md).
+- **Hand-play copy (2026-11-24):** `C:\sotes-modded` + desktop shortcut "SotES with mods", auto-refreshed on commit (TESTING.md).
 - **Next:** more `tests/*.lua` → a fuller Windows runner (`tools/win/` is launch + Lua only: no `--saves` isolation — it uses the real install + Steam saves, backs up / restores `version.dll` by hand) (own scheduled task, never `oss-rhost-runner`).  Host tests (`make -C core tests`) still
   assume WSL interop — port them to run under wine.
 
