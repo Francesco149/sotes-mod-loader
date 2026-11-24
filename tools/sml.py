@@ -6,7 +6,7 @@
   tools/sml lua R 'return mod.edition'   # Lua on the engine thread, JSON result; -f FILE for a file
   tools/sml shot R [OUT.png]             # the X display (what a player sees)
   tools/sml log R [-n 40]                # tail of oss_modloader.log
-  tools/sml continue R                   # title → Continue → newest save; waits for a room + party
+  tools/sml continue R [--slot N]        # title → save N (default: the list's default) via mod.game.save.load
   tools/sml test R tests/roster.lua ...  # Lua suites → PASS / FAIL (exit 1 on any FAIL)
   tools/sml down R | down --all
   tools/sml ls
@@ -354,27 +354,44 @@ IN_SCENE = "local w = mod.game.roster.world() return w ~= nil and w.room ~= 0 an
 
 
 def cmd_continue(a):
-    """FRESH boot → (one ent skips the studio intro) → title → Continue → the picker's default save; waits until a
-    room with a party is up.  Only from a fresh `up`: a second ent on the title would pick Start."""
+    """title → a save, through the loader's own op (mod.game.save.load: typed hooks on the title driver, any
+    edition, no key timing): attract off (so a request made while the title is already up is served at its next
+    idle tick), then wait for 'loaded' + a room with a party.  --slot N (default -1 = the list's default row).
+    Falls back to the old timed key movie (fresh boot only) if the op is unavailable on this build."""
     m = meta(a.run)
     ok, txt = lua(m, IN_SCENE)
     if not (ok and txt == "true"):
-        t0 = time.time()
-        gate, movie = CONTINUE[m["edition"]]
-        while time.time() - t0 < 60 and int(lua(m, "return mod.frame()")[1] or 0) < gate:
-            time.sleep(0.2)
-        lua(m, f"return mod.input.play([[{movie}]])")
-        wait_input(m, 90)
-        for _ in range(3):                  # the picker drops an early confirm: re-press until the room is up
+        ok, r = lua(m, f"mod.game.attract.set(false) return {{mod.game.save.load({a.slot})}}")
+        if ok and r.startswith("[true"):
             t0 = time.time()
-            while time.time() - t0 < a.timeout / 3:
-                ok, txt = lua(m, IN_SCENE)
+            while time.time() - t0 < a.timeout + 120:
+                ok, st = lua(m, "return {mod.game.save.status()}")
+                if ok and st.startswith('["failed"'):
+                    die(f"{a.run}: save.load({a.slot}) failed: {st}", 4)
+                if ok and st.startswith('["loaded"'):
+                    ok, txt = lua(m, IN_SCENE)
+                    if ok and txt == "true":
+                        break
+                time.sleep(0.5)
+        else:
+            print(f"{a.run}: save.load unavailable ({r}) — timed key movie")
+            t0 = time.time()
+            gate, movie = CONTINUE[m["edition"]]
+            while time.time() - t0 < 60 and int(lua(m, "return mod.frame()")[1] or 0) < gate:
+                time.sleep(0.2)
+            lua(m, f"return mod.input.play([[{movie}]])")
+            wait_input(m, 90)
+            for _ in range(3):                  # the picker drops an early confirm: re-press until the room is up
+                t0 = time.time()
+                while time.time() - t0 < a.timeout / 3:
+                    ok, txt = lua(m, IN_SCENE)
+                    if ok and txt == "true":
+                        break
+                    time.sleep(0.5)
                 if ok and txt == "true":
                     break
-                time.sleep(0.5)
-            if ok and txt == "true":
-                break
-            lua(m, "return mod.input.play([[ent .*30]])")
+                lua(m, "return mod.input.play([[ent .*30]])")
+    ok, txt = lua(m, IN_SCENE)
     if ok and txt == "true":
         print(f"{a.run}: in scene (frame {lua(m, 'return mod.frame()')[1]})")
         return
@@ -438,6 +455,7 @@ def main():
     p = sp.add_parser("down"); p.add_argument("run", nargs="?"); p.add_argument("--all", action="store_true"); p.set_defaults(f=cmd_down)
     p = sp.add_parser("ls"); p.set_defaults(f=cmd_ls)
     p = sp.add_parser("continue"); p.add_argument("run"); p.add_argument("--timeout", type=float, default=40)
+    p.add_argument("--slot", type=int, default=-1)
     p.set_defaults(f=cmd_continue)
     p = sp.add_parser("test"); p.add_argument("run"); p.add_argument("files", nargs="+"); p.set_defaults(f=cmd_test)
     a = ap.parse_args()

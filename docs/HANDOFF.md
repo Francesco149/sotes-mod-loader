@@ -53,13 +53,20 @@ v2 so far (commits `10a1efe`, `b5b3b2b`, `6cb69d2`):
   (enold 336) with its count at `+0x56004` (enold `+0x54004`) — read from SE `area_find` 0x565a20 (layout
   `area_size` / `area_count`).  Writes refuse off the engine thread.  **Gate:** `tests/world.lua` PASS ×3; HUD-checked
   (SE gold ×630; `set_gold(4321)` → HUD ×4321).
-- **Still fenced** until rebuilt on symbols: `game.attract/save/input.press` (refuse + log); voice patch never arms
-  on the new build (signature-gated, fails safe).
-- **Next:** rest of bindings v2 — save.load +
-  attract + input.press on symbols (the enold `menu_list_latch` ecx is NOT the menu_ctrl the v1 SE notes describe:
-  `+0x174` reads 0 there — re-RE per edition) → more `tests/*.lua` → trainer as a `../sotes-mods` mod + sandbox
-  (spawn / flags / warp) → Windows real-device runner (own scheduled task, never `oss-rhost-runner`).  Host tests
-  (`make -C core tests`) still assume WSL interop — port them to run under wine.
+- **save.load / attract v2 (2026-11-24):** `core/lua/title.lua` (embedded): Tier-2 typed hooks on the title driver's
+  own functions, symbols in **`tools/symgen_manual.tsv`** (title_menu [+ SE's second variant title_menu_se], save_list,
+  menu_runner — found by aligning `build_title_drive`'s call sequence + jump table per edition: action 28 = save list,
+  12 = load).  Pending load → title menu returns 28 unseen; the list's first frame moves the cursor to the row whose
+  slot matches (`*(ctrl+0x17c)` ×16 {kind 10040, slot}; cursor `*(*(ctrl+0x174)+0x14)`, same on SE via accessors
+  0x5e8ef0/0x5e8f10) and confirms; Quest Selection (post-game) → Main Quest.  SE's list has 80 rows (empty slots
+  too) — the game refuses an empty one → `failed`.  Attract off = title menu's 0 (idle) → 31 (loop to the title).
+  `sml continue --slot N` uses it.  v1 C drive + `mod.game.input` (ring injection) deleted.  **Crosswalk caution:**
+  confidence-1 SE symbols can be wrong — `tm_41c2f0` (SE = a free loop) and `item_kind` (SE = the list row-slot
+  accessor) were; check the disasm before hooking a conf-1 symbol.
+- **Still fenced:** the voice patch never arms on the new build (signature-gated, fails safe).
+- **Next:** trainer as a `../sotes-mods` mod + sandbox (spawn / flags / warp — flags + gold + items + map now have
+  bindings) → more `tests/*.lua` → voice patch on symbols → Windows real-device runner (own scheduled task, never
+  `oss-rhost-runner`).  Host tests (`make -C core tests`) still assume WSL interop — port them to run under wine.
 
 ## State: P0–P5 DONE + **DDraw present (borderless + windowed takeover)** + **in-game overlay** + **`mod.config`** + **semantic `mod.game` ops** + **mod API versioning** + **early-boot phase & the `OssModEarlyInit` ABI** + **built-in JP voice restore** (2026-07-20). Next = **P8 launcher** + P7 trainer as a mod.
 

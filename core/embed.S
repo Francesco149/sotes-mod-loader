@@ -8,3 +8,7 @@ _oss_lua_dev:
 _oss_lua_input:
     .incbin "lua/input.lua"
     .byte 0
+    .globl _oss_lua_title
+_oss_lua_title:
+    .incbin "lua/title.lua"
+    .byte 0

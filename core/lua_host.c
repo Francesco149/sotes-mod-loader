@@ -73,6 +73,29 @@ static void input_lua_init(lua_State *L) {
     if (lua_pcall(L, 1, 1, 0) != 0) { ml_log("[input] input.lua: %s", lua_tostring(L, -1)); lua_pop(L, 1); return; }
     g_input_ref = luaL_ref(L, LUA_REGISTRYINDEX);
 }
+// mod.game.save / attract — core/lua/title.lua (typed hooks on the title driver).  The hooks arm at the first
+// frame (.text is decrypted by then on SteamStub builds) or at the first save.load / attract.set call.
+extern const char oss_lua_title[];
+static int g_title_install_ref = LUA_NOREF;
+static int l_title_log(lua_State *L) { ml_log("%s", luaL_checkstring(L, 1)); return 0; }
+static void title_install_deferred(void) {
+    if (g_title_install_ref == LUA_NOREF) return;
+    lua_rawgeti(g_L, LUA_REGISTRYINDEX, g_title_install_ref);
+    if (lua_pcall(g_L, 0, 2, 0) != 0) { ml_log("[save] title hooks: %s", lua_tostring(g_L, -1)); lua_pop(g_L, 1); return; }
+    if (lua_isnil(g_L, -2)) ml_log("[save] title hooks not armed: %s", lua_tostring(g_L, -1) ? lua_tostring(g_L, -1) : "?");
+    lua_pop(g_L, 2);
+}
+static void title_lua_init(lua_State *L) {
+    if (luaL_loadstring(L, oss_lua_title) != 0) { ml_log("[save] title.lua: %s", lua_tostring(L, -1)); lua_pop(L, 1); return; }
+    hooks_push_table(L);
+    mem_push_lua(L);
+    sym_push_lua(L);
+    lua_pushcfunction(L, l_title_log);
+    gb_push_lua(L);
+    if (lua_pcall(L, 5, 1, 0) != 0) { ml_log("[save] title.lua: %s", lua_tostring(L, -1)); lua_pop(L, 1); return; }
+    g_title_install_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    exec_defer_fn(title_install_deferred);   // runs after the mods' init on the first frame (install is idempotent)
+}
 static int l_frame(lua_State *L) { lua_pushnumber(L, exec_frame()); return 1; }
 static int l_screen_ctx(lua_State *L) { lua_pushnumber(L, (lua_Number)(uintptr_t)exec_screen_ctx()); return 1; }
 // mod.screen.shot(path) — the current frame as a 24-bit BMP (engine thread only; inside mod code that is always so)
@@ -262,6 +285,7 @@ int lh_init(void) {
     hooks_init(g_L);            // the chained hook registry (mod.hook.entry / remove)
     ui_init(g_L);               // the ImGui UI host — builds the shared mod.ui table (P5)
     input_lua_init(g_L);        // mod.input (scripted keyboard through DirectInput)
+    title_lua_init(g_L);        // mod.game.save / attract (core/lua/title.lua)
     config_lua_init(g_L);       // the mod.config factory (mod.toml [config] schema + oss_mods.cfg)
 
     ml_log("[lua] LuaJIT up (%s, JIT off, FFI on)", LUAJIT_VERSION);

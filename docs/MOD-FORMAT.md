@@ -90,12 +90,15 @@ mod.game.items.gold()           -> cp, cap          (100 CP = 1 GP; the HUD coun
 mod.game.items.set_gold(cp)     -> cp (clamped to [0, cap])
                                 -- every WRITE runs only on the engine thread (on_frame / main / dev-server lua);
                                 --   elsewhere it returns nil, "...refused..."
-mod.game.attract.set(on)        -- toggle the attract/demo mode (off keeps the title up)
-mod.game.input.press(id[,mgr])  -- inject a UI button into the captured input mgr's ring (arbitrary
-                                --   menu navigation): SotES title ids 0x25 confirm, 0x22 back, 2/4|1/3
-                                --   rotate.  mgr defaults to the safepoint-captured input mgr.
-mod.game.input.mgr()/now()      -- the captured input manager / the poll timestamp (for RE)
-mod.game.save.load([slot])      -> ok   -- drive the menus into a save (slot < 0 = newest)
+mod.game.attract.set(on) / .get() -- false keeps the title up (idle → no demo); true = retail
+mod.game.save.load([slot])      -> true | nil, err   -- load save `slot` from the title (nil / <0 = the list's
+                                --   default row = last used).  Typed hooks on the title driver (any edition):
+                                --   the title menu answers Continue unseen, the save list's cursor goes to the
+                                --   slot's row and confirms, a post-game save's Quest Selection takes Main Quest;
+                                --   the game itself validates + loads.  Ask at mod init (first frame) — or any
+                                --   time with attract off (served at the title's next idle tick).
+mod.game.save.status()          -> 'idle'|'pending'|'list'|'loaded'|'failed', why   (empty slot → 'failed')
+mod.game.save.cancel()          -- drop a still-pending request
 ```
 
 The **ops** (`attract`, `save`) are the model for core→mod work: known RE (here the menu-drive) is

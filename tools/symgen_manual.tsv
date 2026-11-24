@@ -1,0 +1,15 @@
+# tools/symgen_manual.tsv — loader-RE'd symbols (highest priority in symgen.py).  name kind edition va
+# Found by aligning build_title_drive's call sequence per edition (2026-11-24): the title menu returns the
+# chosen action (28 = Continue), the save list returns 12 with (kind, slot, quest) out-params, the list's
+# per-frame runner returns 11 back / 12 confirm / 13 again.  SE runs one of two title menus (a flag picks).
+title_menu        func enold    0x56aea0
+title_menu        func ense-en  0x584b50
+title_menu        func ense-jp  0x582ef0
+title_menu_se     func ense-en  0x582cd0
+title_menu_se     func ense-jp  0x5811f0
+save_list         func enold    0x56a670
+save_list         func ense-en  0x585d80
+save_list         func ense-jp  0x584100
+menu_runner       func enold    0x565d10
+menu_runner       func ense-en  0x586590
+menu_runner       func ense-jp  0x584910

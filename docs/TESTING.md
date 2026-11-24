@@ -7,13 +7,14 @@ in-game smoke test against the real unpacked SE.
 
 ```
 tools/sml up R --edition enold|ense-en|ense-jp --saves steam|DIR   # own prefix slot + Xvfb; copies *.sdt only
-tools/sml continue R          # fresh boot → title → Continue → the picker's default save; waits for a party
+tools/sml continue R [--slot N]   # title → save N via mod.game.save.load (no key timing); waits for a party
 tools/sml test R tests/*.lua  # each suite returns {pass, fails, info} → PASS/FAIL, exit 1 on a FAIL
 tools/sml shot R out.png      # LOOK at it: the test's numbers vs the HUD
 ```
 
 | suite | proves | ense-en | ense-jp | enold |
 |---|---|---|---|---|
+| `sml continue --slot N` (mod.game.save.load) | title hooks → the requested slot loads (retail's own out-params log `kind 10040 slot N`); empty slot → `failed` + back to the title; a post-game save's Quest Selection → Main Quest | PASS (slots 2 / 7 / default → Lv11 / Lv17 / Lv8 saves; slot 42 refused) | PASS (slot 7) | PASS (slots 22, 3 = post-game) |
 | `tests/world.lua` | camera view inside the map; area id → area table → map; story flags (list = get, set / clear round trip on a free id); area flags; inventory named; gold ≤ cap + set/restore | PASS (HUD ×630 = 630 CP; set_gold 4321 → HUD ×4321) | PASS (names Shift-JIS) | PASS (day-10b port save: area 210140 map 210) |
 | `tests/roster.lua` | world/room/view via `g_world` + layout; party slots → chars → stat block; one leader; hp/mp ≤ max; level = combat + adventurer; positions inside the map | PASS (HUD-checked: 179/197, 43/43, Lv8, 3/5 stars; Lv15 save: 293/293 …) | PASS (Steam saves) | PASS (port drive save; coords checked vs the frame) |
 

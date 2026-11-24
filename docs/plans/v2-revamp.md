@@ -53,6 +53,6 @@ decrypt (`when_text_ready`). Unknown build → (phase 2) hash-signature scan: pe
 | 1 | flip safepoint + dev server + `sml up/lua/down` on ense-en | `sml lua 'return mod.edition'` from a wine run |
 | 2 | symgen + edition detect + hash verify | 3 editions boot, all anchors verified |
 | 3 | DInput injection + `shot` | agent reaches gameplay via keys only, looks at it |
-| 4 | bindings v2 + `sml test` suites | suites PASS on 3 editions — **roster / coordinates / mouse done** (2026-11-24, `tests/roster.lua` PASS ×3); **camera / map / flags / items done** (`tests/world.lua` PASS ×3); save / attract / input.press next |
+| 4 | bindings v2 + `sml test` suites | suites PASS on 3 editions — **roster / coordinates / mouse done** (2026-11-24, `tests/roster.lua` PASS ×3); **camera / map / flags / items done** (`tests/world.lua` PASS ×3); **save.load / attract on symbols done** (`core/lua/title.lua`; `mod.game.input` retired for `mod.input`) |
 | 5 | trainer mod + sandbox + MCP | spawn / flag / warp tests PASS |
 | 6 | Windows real-device runner | same suites on Windows |
