@@ -1087,6 +1087,7 @@ const sym_row SYM_ROWS[] = {
     { "slash_trail", SYM_FUNC, { 0x0044ce20u, 0x00447c60u, 0x00447b80u }, { 0xe6697b6au, 0xe6697b6au, 0xe6697b6au }, { 505, 524, 524 }, { 3, 1, 1 } },
     { "slot_clone", SYM_FUNC, { 0x004179b0u, 0x00411b10u, 0x00411b00u }, { 0x9cadb0a2u, 0x9cadb0a2u, 0x9cadb0a2u }, { 415, 415, 415 }, { 3, 2, 2 } },
     { "slot_entries_free", SYM_FUNC, { 0x00417b50u, 0x00411cb0u, 0x00411ca0u }, { 0x904fbce8u, 0xa9e7666eu, 0xcdc0a9e2u }, { 109, 109, 109 }, { 3, 2, 2 } },
+    { "sound_registrar", SYM_FUNC, { 0x0057b280u, 0x0059b3b0u, 0x00599ab0u }, { 0xf15c9f24u, 0x29cb306fu, 0x99289b9bu }, { 6073, 6230, 6230 }, { 3, 3, 3 } },
     { "sprite_set_free", SYM_FUNC, { 0x00410300u, 0x0040c3e0u, 0x0040c430u }, { 0xdfcf9ae1u, 0xdfcf9ae1u, 0xdfcf9ae1u }, { 196, 196, 196 }, { 3, 2, 2 } },
     { "stat_jitter", SYM_FUNC, { 0x00426e00u, 0x00422040u, 0x00422080u }, { 0xf42114ceu, 0xf42114ceu, 0xf42114ceu }, { 188, 188, 188 }, { 3, 2, 2 } },
     { "stat_row_find", SYM_FUNC, { 0x004090e0u, 0x00406d20u, 0x00406d70u }, { 0x75e5ce95u, 0x7a93ca72u, 0x162dc752u }, { 107, 107, 107 }, { 3, 2, 2 } },

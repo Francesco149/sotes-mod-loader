@@ -19,6 +19,7 @@
 #include "prof.h"
 #include "ddraw_present.h"   // ddp_cursor_game — cursor -> game 640x480 screen space (mod.game.mouse)
 #include "loader_internal.h"
+#include "voice.h"
 #include "dinput_inject.h"    // di_auto — the dialogue skip holds the game's own skip key
 
 #include <string.h>
@@ -524,6 +525,38 @@ static void install_dialogue(lua_State *L) {
     lua_pushcfunction(L, l_dialogue_get);  lua_setfield(L, -2, "get");
 }
 
+// ── mod.game.voice — the early-boot monster-SFX fix (core/voice.c).  status() -> {state, why, wait_ms, registrar,
+// je, bank, rows, shadowed, deluxe0, deluxe0_ok, deluxe, deluxe_ok, deluxe_off}: state "patched" / "unpatched" (voice=0: the
+// registrar as shipped) / "waiting" / "failed" / "off"; the counts walk the sound-def table against the registered
+// slots (deluxe0_ok == deluxe0 ⇔ every monster SFX row registered).
+static int l_voice_status(lua_State *L) {
+    static const char *ST[] = { "off", "waiting", "patched", "unpatched", "failed" };
+    const voice_info *v = voice_get();
+    voice_rows_t r;
+    int have = voice_rows(&r);
+    lua_newtable(L);
+    lua_pushstring(L, ST[v->state]); lua_setfield(L, -2, "state");
+    if (v->why) { lua_pushstring(L, v->why); lua_setfield(L, -2, "why"); }
+    lua_pushinteger(L, v->wait_ms);               lua_setfield(L, -2, "wait_ms");
+    lua_pushinteger(L, (lua_Integer)v->registrar); lua_setfield(L, -2, "registrar");
+    lua_pushinteger(L, (lua_Integer)v->je);        lua_setfield(L, -2, "je");
+    if (have) {
+        lua_pushinteger(L, (lua_Integer)r.bank);  lua_setfield(L, -2, "bank");
+        lua_pushinteger(L, r.rows);       lua_setfield(L, -2, "rows");
+        lua_pushinteger(L, r.shadowed);   lua_setfield(L, -2, "shadowed");
+        lua_pushinteger(L, r.deluxe0);    lua_setfield(L, -2, "deluxe0");
+        lua_pushinteger(L, r.deluxe0_ok); lua_setfield(L, -2, "deluxe0_ok");
+        lua_pushinteger(L, r.deluxe);     lua_setfield(L, -2, "deluxe");
+        lua_pushinteger(L, r.deluxe_ok);  lua_setfield(L, -2, "deluxe_ok");
+        lua_pushboolean(L, r.deluxe_off); lua_setfield(L, -2, "deluxe_off");
+    }
+    return 1;
+}
+static void install_voice(lua_State *L) {
+    lua_newtable(L);
+    lua_pushcfunction(L, l_voice_status); lua_setfield(L, -2, "status");
+}
+
 // ── mod.game.flags — two engine tables:
 //   story: the persistent FILL table (room +0x40ac: {id, v, v2}[512], count +0x1800) — what the event scripts
 //          read / write (flag_find 0x4c57f0 / script_flag_set) and the save carries.
@@ -991,7 +1024,12 @@ void sotes_bindings_register(void) {
         "actors", "the room's characters — .list() / .codes() / .valid(code) / .spawn(code[, {x,y}|{dx,dy}]) / .remove(slot)",
         install_actors, 1
     };
+    static const gb_def VOICE = {
+        "voice", "the boot-time monster-SFX fix for the SE voice bank — .status() (state + registered-row counts)",
+        install_voice, 1
+    };
     gb_register(&ROSTER);
+    gb_register(&VOICE);
     gb_register(&ACTORS);
     gb_register(&DIALOGUE);
     exec_set_pre_input(dialogue_pre_input);

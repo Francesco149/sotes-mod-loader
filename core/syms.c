@@ -102,6 +102,12 @@ uintptr_t sym_va(const char *name) {
     int r = find_row(name);
     return (r >= 0 && g_ok[r]) ? mem_reloc(SYM_ROWS[r].va[g_ed]) : 0;
 }
+uintptr_t sym_va_early(const char *name, int ed, uint32_t *size) {
+    int r = name && ed >= 0 && ed < SYM_NED ? find_row(name) : -1;
+    if (r < 0 || SYM_ROWS[r].kind != SYM_FUNC || !row_hash_ok(&SYM_ROWS[r], ed)) return 0;
+    if (size) *size = SYM_ROWS[r].size[ed];
+    return mem_reloc(SYM_ROWS[r].va[ed]);
+}
 uintptr_t sym_va_req(const char *name) {
     uintptr_t v = sym_va(name);
     if (!v) ml_log("[sym] required symbol '%s' unavailable on %s", name, sym_edition_tag());

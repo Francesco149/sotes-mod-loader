@@ -79,7 +79,18 @@ v2 so far (commits `10a1efe`, `b5b3b2b`, `6cb69d2`):
   **Port-repo findings owed** (not written there — a port session runs in parallel; add to OpenSummoners
   `engine-quirks.md` / `SE_CODE_MAP.md` when it's free): the map-less rooms, the dropped warp return in events, the
   SE W-map path (`+0x148`), SE room_item_add / item tables / map_module VAs, SE warp-request offsets.
-- **Still fenced:** the voice patch never arms on the new build (signature-gated, fails safe).
+- **Voice v2 (2026-11-24, api 1.5)** — the 2026-08 SE builds load `sotesx_s.dll` THEMSELVES on EN too (boot loader ense-en
+  0x5d7a47 → bank global 0x92b220; JP 0x926390), so v1's EN "seed" is gone; the registrar bug is still shipped on both:
+  `sound_registrar` (new symbol: ense-en 0x59b3b0 / ense-jp 0x599ab0 / enold 0x57b280 = port al_57b280) skips every
+  `deluxe_id == 0` row (`0f 84` at +0x17ac) once the bank is loaded and `settings+0x254` (a new deluxe-off option?) is 0.
+  `core/voice.c` waits for the registrar's hash (`sym_va_early`), matches the whole bank/settings/deluxe-id block by bytes
+  inside it (operands wild, both short jumps must agree) and points the je at the non-deluxe path; derives the table /
+  slot array / bank from the operands.  `mod.game.voice.status()` + **`tests/voice.lua`**: shipped 0/58 no-variant rows
+  registered → patched 58/58, deluxe 200/200 from the bank, both SE editions; enold off.  **Untested: the packed Steam
+  exe's decrypt race** (sml runs the unpacked exes → wait 0 ms; v1's 1 ms poll beat the registrar there).  Not listened
+  to (headless); same redirect v1 had USER-confirmed by ear.  The port's `tools/ennse_voice` still has the OLD build's
+  VAs (fails safe → no-op) — owed there with the findings below.  `../sotes-mods` registry `ennse_voice` (unreleased)
+  still says "supply sotesx_s.dll" — stale: the SE install ships it and EN loads it; that entry = this built-in now.
 - **Trainer v2 = `../sotes-mods/mods/trainer`** (0.1.0, unreleased; registry id `sotes_trainer` → `trainer`): god /
   heal / gold / F7 teleport-to-cursor / warp browser (exits + every loadable room by map; force on by default) / item
   giver, panels in the loader UI, `_G.trainer` for agents (dev-server `lua`).  Verified on ense-en (`sml up --mods
@@ -118,7 +129,7 @@ v2 so far (commits `10a1efe`, `b5b3b2b`, `6cb69d2`):
   (no pslot) and remove cleanly (ense-jp, 120 frames).  **ImGui shows Shift-JIS as `?`** (UTF-8, no CJK font): the
   trainer uses `en` on ense-jp; the Items panel still prints JP item names raw — a `mod.text` CP932→UTF-8 helper + a
   CJK font range would fix both.
-- **Next:** more `tests/*.lua` → voice patch on symbols → Windows real-device runner (own scheduled task, never `oss-rhost-runner`).  Host tests (`make -C core tests`) still
+- **Next:** packed-exe voice check on the real Steam install (Windows) → more `tests/*.lua` → Windows real-device runner (own scheduled task, never `oss-rhost-runner`).  Host tests (`make -C core tests`) still
   assume WSL interop — port them to run under wine.
 
 ## State: P0–P5 DONE + **DDraw present (borderless + windowed takeover)** + **in-game overlay** + **`mod.config`** + **semantic `mod.game` ops** + **mod API versioning** + **early-boot phase & the `OssModEarlyInit` ABI** + **built-in JP voice restore** (2026-07-20). Next = **P8 launcher** + P7 trainer as a mod.

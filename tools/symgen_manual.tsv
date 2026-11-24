@@ -36,3 +36,8 @@ map_module        data ense-jp  0x9263a0
 stat_table        data enold    0x67ac58
 stat_table        data ense-en  0x65e3a8
 stat_table        data ense-jp  0x65c3a8
+# Boot sound-def registrar (stdcall zdd, group, settings; port al_57b280).  SE: with the voice bank loaded it skips
+# deluxe_id == 0 rows (core/voice.c patches that je, found by pattern inside this function).
+sound_registrar   func enold    0x57b280
+sound_registrar   func ense-en  0x59b3b0
+sound_registrar   func ense-jp  0x599ab0

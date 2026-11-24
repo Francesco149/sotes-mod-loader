@@ -29,6 +29,9 @@ const char *sym_edition_tag(void);      // "enold" / "ense-en" / "ense-jp" / "un
 // VA of a symbol in the running build (ASLR-relocated), or 0 if unknown / unverified / absent.
 uintptr_t sym_va(const char *name);
 uintptr_t sym_va_req(const char *name); // same, but logs once when missing (for bindings)
+// Before sym_init (early boot): the VA of NAME in edition ED iff its code hash already matches (i.e. .text is
+// decrypted and the build is the one we know); *size = its function size.  No state is changed.
+uintptr_t sym_va_early(const char *name, int ed, uint32_t *size);
 const char *sym_name_at(uintptr_t va);  // reverse lookup (exact VA), NULL if none
 int  sym_count(int *nverified, int *nbad);
 struct lua_State;

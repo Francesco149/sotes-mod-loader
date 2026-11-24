@@ -137,6 +137,12 @@ mod.game.save.load([slot])      -> true | nil, err   -- load save `slot` from th
                                 --   time with attract off (served at the title's next idle tick).
 mod.game.save.status()          -> 'idle'|'pending'|'list'|'loaded'|'failed', why   (empty slot → 'failed')
 mod.game.save.cancel()          -- drop a still-pending request
+mod.game.voice.status()         -> {state, why, wait_ms, registrar, je, bank, rows, shadowed, deluxe0, deluxe0_ok,
+                                --   deluxe, deluxe_ok, deluxe_off}   [api 1.5]   the built-in boot-time monster-SFX fix
+                                --   (SE only; oss_loader.cfg voice, default on): state patched / unpatched (voice=0:
+                                --   the shipped registrar) / waiting / failed / off; the counts = the sound-def table vs
+                                --   the registered slots (deluxe0_ok == deluxe0 ⇔ every no-variant row, i.e. monster
+                                --   SFX, registered)
 ```
 
 The **ops** (`attract`, `save`) are the model for core→mod work: known RE (here the menu-drive) is
