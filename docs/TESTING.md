@@ -125,3 +125,17 @@ companion window (log: `[ui] in-game overlay mode (takeover) — companion windo
 Confirmed on the real EN-SE (2026-07-19): overlay up on the engine-thread ImGui over the game frame,
 gameplay reached via autoload, F10 toggles, button clicks logged, keyboard still moved the character —
 no crash.
+
+## Windows (real Steam exes) — `tools/win/`
+
+The packed SteamStub exes on the real install (`steamapps\common\sotes`, app 1381770), on the desktop via the
+interactive task **`sml-win-launch`** (`install-task.ps1`; NOT `oss-rhost-runner`).  Copy `tools/win/*` + the tests to
+`C:\sml-win\`, back up the install's `version.dll` to `C:\sml-win\backup\`, drop `build/version.dll` + an
+`oss_loader.cfg` (`skip_launcher=1`, `windowed=1`, `voice=1`, `devserver=47811`) in, then over ssh (`win-wifi`; never
+`timeout`/kill an ssh to that box): game dir + exe → `C:\sml-win\launch.txt`; `Start-ScheduledTask sml-win-launch`;
+`continue.ps1 47811 -1`; `lua.ps1 47811 C:\sml-win\<suite>.lua`.  Kill by the exact pid.  Launching `sotes.exe` (JP) makes
+SteamStub restart through Steam, which starts the app's EN exe — put `steam_appid.txt` (1381770) in the dir for the run.
+Restore `version.dll`, remove `oss_loader.cfg` + `steam_appid.txt` after.
+
+2026-11-24: voice PASS (EN 58/58 wait 40–50 ms, JP 58/58 43 ms, EN voice=0 0/58); roster / world / sandbox / actors PASS
+on both (Steam save: Lv15 party, area 410210).

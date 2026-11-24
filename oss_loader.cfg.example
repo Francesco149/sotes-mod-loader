@@ -53,7 +53,7 @@ profile=0
 keepactive=1
 
 # Monster-SFX fix (built-in, Special Edition EN + JP): with the Japanese voice bank sotesx_s.dll loaded
-# (both SE builds load it), the game's boot sound registrar skips every sound that has no "deluxe"
+# (both SE builds load it when it is in the game folder), the game's boot sound registrar skips every sound that has no "deluxe"
 # variant — every monster goes silent.  This redirects that one jump in memory during early boot
 # (the exe is never modified).  BOOT-TIME ONLY — the sounds register once at boot; set it here (or in
 # the launcher) and relaunch.  1 = on (default), 0 = off.  Unknown build fails safe (no patch).
