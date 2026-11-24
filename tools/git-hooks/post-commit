@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# post-commit (sotes-mod-loader; ../sotes-mods' .git/hooks/post-commit calls this too): refresh the isolated modded
+# game copy on the Windows box when a commit touches what it ships.  Background, log .git/deploy-modded.log.
+# Opt out per commit: DEPLOY_MODDED=0 git commit ...
+[ "${DEPLOY_MODDED:-1}" = 0 ] && exit 0
+LOADER="$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)"
+TOP="$(git rev-parse --show-toplevel)"
+git diff-tree --no-commit-id --name-only -r HEAD | grep -qE '^(core/|mods/|loader\.toml|tools/win/deploy)' || exit 0
+nohup "$LOADER/tools/win/deploy-modded.sh" >> "$TOP/.git/deploy-modded.log" 2>&1 < /dev/null &
+exit 0

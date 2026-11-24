@@ -139,3 +139,13 @@ Restore `version.dll`, remove `oss_loader.cfg` + `steam_appid.txt` after.
 
 2026-11-24: voice PASS (EN 58/58 wait 40–50 ms, JP 58/58 43 ms, EN voice=0 0/58); roster / world / sandbox / actors PASS
 on both (Steam save: Lv15 party, area 410210).
+
+## The modded copy for hand play — `C:\sotes-modded` ("SotES with mods" on the desktop)
+
+An isolated copy of the SE install (own saves, `steam_appid.txt` so SteamStub runs it in place; the Steam install and
+rhost's `C:\oss-rhost` are never touched) with the loader + `../sotes-mods` trainer + dashboard.  `tools/win/deploy-modded.sh`
+builds the loader and refreshes it (`tools/win/deploy.ps1` on the box: first run copies the game + makes the shortcut;
+a running game's `version.dll` is renamed aside, the new one applies next launch).  **Auto:** the post-commit hook
+(`tools/git-hooks`, `core.hooksPath`; `../sotes-mods/.git/hooks/post-commit` execs the same, local only) runs it in the
+background when a commit touches `core/` / `mods/` / `loader.toml` / the deploy scripts; log `.git/deploy-modded.log`;
+opt out `DEPLOY_MODDED=0`.  `MODS="trainer dashboard autoload"` to ship more.
