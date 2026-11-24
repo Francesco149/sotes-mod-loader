@@ -118,6 +118,9 @@ mod.game.actors.list()          -> {{slot, code, origin, party, leader, spawned,
                                 --   facing 1 right / 3 left
 mod.game.actors.codes()         -> {code, ...}   every code this edition's char_init takes (its own dispatch,
                                 --   tools/charcodes.py: 122 enold / 134 SE)
+mod.game.actors.catalog()       -> {{code, name, en}, ...}   every code + its stat-table names (name = the edition's
+                                --   encoding, Shift-JIS on ense-jp; en = English); nil for codes without a row
+                                --   (most townsfolk)
 mod.game.actors.valid(code)     -> bool
 mod.game.actors.spawn(code[, {x=, y=} | {dx=, dy=}, facing=]) -> slot | nil, why   retail's summon_spawn (the
                                 --   summoning skills' path: next free pool slot + char_init, AI live).  x, y = the

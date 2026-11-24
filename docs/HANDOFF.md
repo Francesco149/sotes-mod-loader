@@ -111,9 +111,10 @@ v2 so far (commits `10a1efe`, `b5b3b2b`, `6cb69d2`):
   exactly; SE 134 (JP == EN): drops 100164–100169 + 100187, adds 100181 + 100190–100207.  remove = `char_unload` (0x41e360, the story
   scripts' removal).  Spawned with no dramatist handle → the code's default look (50300 = a green witch, not the
   room's named one).  **Gate:** `tests/actors.lua` PASS ×3.  MCP: `actors` / `spawn` / `despawn`.
-- **Next:** trainer spawn panel (code list + names?  names live in the stat block / per-type init — find where the
-  HUD's target name ("Org Archer") comes from) → more `tests/*.lua` → voice patch on symbols → Windows
-  real-device runner (own scheduled task, never `oss-rhost-runner`).  Host tests (`make -C core tests`) still
+- **Names:** `actors.catalog()` from the **`stat_table`** data symbol (= the port's base-stat table DAT_0067ac58;
+  SE 0x65e3a8 / JP 0x65c3a8, 0xdc rows: +0 code, +0x3a display name, +0x8a English) — 73 / 85 of the codes named.
+- **Next:** trainer spawn panel (`../sotes-mods/mods/trainer`: catalog list + spawn by the leader + despawn) → more
+  `tests/*.lua` → voice patch on symbols → Windows real-device runner (own scheduled task, never `oss-rhost-runner`).  Host tests (`make -C core tests`) still
   assume WSL interop — port them to run under wine.
 
 ## State: P0–P5 DONE + **DDraw present (borderless + windowed takeover)** + **in-game overlay** + **`mod.config`** + **semantic `mod.game` ops** + **mod API versioning** + **early-boot phase & the `OssModEarlyInit` ABI** + **built-in JP voice restore** (2026-07-20). Next = **P8 launcher** + P7 trainer as a mod.

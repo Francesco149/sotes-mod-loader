@@ -832,6 +832,40 @@ static int l_actors_codes(lua_State *L) {
         for (int32_t c = t[i].lo; c <= t[i].hi; c++) { lua_pushinteger(L, c); lua_rawseti(L, -2, ++k); }
     return 1;
 }
+// stat_table rows (0xdc B): +0 code, +0x3a display name (the edition's encoding), +0x8a English name
+static uintptr_t stat_row(int32_t code) {
+    uintptr_t t = sym_va("stat_table");
+    for (int i = 0; t && i < 1024; i++) {
+        uintptr_t r = t + 0xdc * (uintptr_t)i;
+        int32_t c = rdi(r);
+        if (!c) break;
+        if (c == code) return r;
+    }
+    return 0;
+}
+static void push_name(lua_State *L, uintptr_t a) {
+    char nm[0x50] = { 0 };
+    if (a && mem_readable((void *)a, sizeof nm - 1)) memcpy(nm, (void *)a, sizeof nm - 1);
+    if (nm[0]) lua_pushstring(L, nm); else lua_pushnil(L);
+}
+// mod.game.actors.catalog() -> {{code, name, en}, ...} every valid code; name / en from the stat table (nil for a
+// code without a row — most townsfolk: their names come from the dramatist table when a map places them)
+static int l_actors_catalog(lua_State *L) {
+    if (!gb_enabled("actors")) { lua_pushnil(L); return 1; }
+    int n = 0, k = 0;
+    const charcode_iv *t = charcodes_get(sym_edition(), &n);
+    lua_newtable(L);
+    for (int i = 0; i < n; i++)
+        for (int32_t c = t[i].lo; c <= t[i].hi; c++) {
+            uintptr_t r = stat_row(c);
+            lua_newtable(L);
+            lua_pushinteger(L, c); lua_setfield(L, -2, "code");
+            push_name(L, r ? r + 0x3a : 0); lua_setfield(L, -2, "name");
+            push_name(L, r ? r + 0x8a : 0); lua_setfield(L, -2, "en");
+            lua_rawseti(L, -2, ++k);
+        }
+    return 1;
+}
 static int l_actors_valid(lua_State *L) {
     lua_pushboolean(L, gb_enabled("actors") && code_valid((int32_t)luaL_checkinteger(L, 1)));
     return 1;
@@ -904,6 +938,7 @@ static void install_actors(lua_State *L) {
     lua_pushcfunction(L, l_actors_list);   lua_setfield(L, -2, "list");
     lua_pushcfunction(L, l_actors_codes);  lua_setfield(L, -2, "codes");
     lua_pushcfunction(L, l_actors_valid);  lua_setfield(L, -2, "valid");
+    lua_pushcfunction(L, l_actors_catalog); lua_setfield(L, -2, "catalog");
     lua_pushcfunction(L, l_actors_spawn);  lua_setfield(L, -2, "spawn");
     lua_pushcfunction(L, l_actors_remove); lua_setfield(L, -2, "remove");
 }

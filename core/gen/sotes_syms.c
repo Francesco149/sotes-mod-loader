@@ -1091,6 +1091,7 @@ const sym_row SYM_ROWS[] = {
     { "stat_jitter", SYM_FUNC, { 0x00426e00u, 0x00422040u, 0x00422080u }, { 0xf42114ceu, 0xf42114ceu, 0xf42114ceu }, { 188, 188, 188 }, { 3, 2, 2 } },
     { "stat_row_find", SYM_FUNC, { 0x004090e0u, 0x00406d20u, 0x00406d70u }, { 0x75e5ce95u, 0x7a93ca72u, 0x162dc752u }, { 107, 107, 107 }, { 3, 2, 2 } },
     { "stat_row_set", SYM_FUNC, { 0x00418c90u, 0x00000000u, 0x00000000u }, { 0x6757a6dau, 0x00000000u, 0x00000000u }, { 547, 0, 0 }, { 3, 0, 0 } },
+    { "stat_table", SYM_DATA, { 0x0067ac58u, 0x0065e3a8u, 0x0065c3a8u }, { 0x00000000u, 0x00000000u, 0x00000000u }, { 0, 0, 0 }, { 3, 3, 3 } },
     { "stats_mp_ratio", SYM_FUNC, { 0x00496970u, 0x00496990u, 0x004968d0u }, { 0x953f9472u, 0x953f9472u, 0x953f9472u }, { 54, 54, 54 }, { 3, 2, 2 } },
     { "stats_recompute", SYM_FUNC, { 0x004066d0u, 0x00403bb0u, 0x00403c00u }, { 0x57d90b46u, 0x938b2648u, 0x938b2648u }, { 989, 1049, 1049 }, { 3, 1, 1 } },
     { "storage_deposit", SYM_FUNC, { 0x00413130u, 0x0040d850u, 0x0040d910u }, { 0x4e488792u, 0xc87bebafu, 0x5863fae6u }, { 920, 955, 955 }, { 3, 1, 1 } },

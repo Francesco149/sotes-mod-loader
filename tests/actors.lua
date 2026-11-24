@@ -20,6 +20,14 @@ local codes = A.codes()
 check(#codes == (mod.edition == "enold" and 122 or 134), "codes() size for " .. mod.edition .. ": " .. #codes)
 check(A.valid(50300) and A.valid(51110) and not A.valid(0) and not A.valid(424242), "valid()")
 for _, a in ipairs(pool) do check(A.valid(a.code), "live code " .. a.code .. " is in codes()") end
+-- catalog: one entry per code; names from the stat table (Org Archer / Yellow Slime have rows on every edition)
+local cat, cn = A.catalog(), {}
+check(#cat == #codes, "catalog() has every code")
+for _, c in ipairs(cat) do cn[c.code] = c end
+check(cn[51110] and cn[51110].en == "Org Archer" and cn[51012].en == "Yellow Slime", "catalog English names")
+local named = 0
+for _, c in ipairs(cat) do if c.name then named = named + 1 end end
+info[#info + 1] = ("catalog %d codes, %d named; 51110 = %s"):format(#cat, named, tostring(cn[51110] and cn[51110].name))
 local s, why = A.spawn(424242)
 check(s == nil and why and why:find("not a character"), "spawn(unknown) refused")
 check(#A.list() == #pool, "refused spawn adds nothing")

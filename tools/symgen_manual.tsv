@@ -30,3 +30,9 @@ item_table_ext    data ense-jp  0x926380
 map_module        data enold    0x8a6e7c
 map_module        data ense-en  0x92b230
 map_module        data ense-jp  0x9263a0
+# stat_table = the character base-stat table (port: base_stat_table.h, DAT_0067ac58): 0xdc-byte rows {+0 code, +4
+# level, +8 hp, +0xc mp, ..., +0x3a display name (the edition's encoding: Japanese on ense-jp), +0x8a English name},
+# 0-code row ends; row 0 = {1, 1}.  Found by the names ("Org Archer" row = code 51110); 30 .text references each edition.
+stat_table        data enold    0x67ac58
+stat_table        data ense-en  0x65e3a8
+stat_table        data ense-jp  0x65c3a8
