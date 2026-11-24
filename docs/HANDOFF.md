@@ -85,7 +85,9 @@ v2 so far (commits `10a1efe`, `b5b3b2b`, `6cb69d2`):
   giver, panels in the loader UI, `_G.trainer` for agents (dev-server `lua`).  Verified on ense-en (`sml up --mods
   trainer`, `--cfg ui=1` + `sml shot --x` shows the companion window).  Not yet ported from the old trainer: autoskip /
   dlgskip / fastskip (dialogue), mousefly (continuous), door hijack (superseded by warp).
-- **Next:** the MCP over the dev server (agent tools = mod.game ops + `_G.trainer`) → actor spawn (RE `summon_spawn` /
+- **`tools/sml_mcp.py`** — the agent MCP over sml + the dev server (TESTING.md "For agents"); replaces the old
+  trainer MCP for v2 (that one spoke the injected trainer's socket).
+- **Next:** actor spawn (RE `summon_spawn` /
   a map-actor spawn path) + dialogue skip on symbols → more `tests/*.lua` → voice patch on symbols → Windows real-device runner (own scheduled task, never
   `oss-rhost-runner`).  Host tests (`make -C core tests`) still assume WSL interop — port them to run under wine.
 

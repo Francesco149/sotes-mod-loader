@@ -25,6 +25,14 @@ intro.  The title + picker cursors start where `config.dat` left them, so `up` c
 `--keep-config`.  Parallel `up`s are safe (display / port / prefix slot claimed under one lock).
 Saves for enold: OpenSummoners `tests/scenarios/*/_saves/*/` (copy the `.sdt` files; read-only there).
 
+### For agents: `tools/sml_mcp.py` (MCP, stdio, stdlib only)
+
+The same runs as typed tools: `sml` (passthrough: up / continue / down / play / wait / test …), `lua`, `state`,
+`rooms`, `catalog`, `warp` (waits for the arrival), `teleport`, `give`, `heal`, `set_stats`, `gold`, `flags`,
+`set_flag`, `keys`, `shot` (returns the PNG).  Register: `"sml": {"type": "stdio", "command": "python3", "args":
+["/opt/src/sotes-mod-loader/tools/sml_mcp.py"]}`; CLI: `tools/sml_mcp.py state run=R`, `--selftest`.  Verified over
+JSON-RPC (initialize → tools/list → warp 440220 → 210110 → give refusal → shot) on ense-en.
+
 ## Host-side (no game)
 
 `nix develop --command make -C core tests` builds + runs the harness exes below via
