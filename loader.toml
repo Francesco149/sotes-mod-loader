@@ -71,8 +71,8 @@ description = "Re-post WM_ACTIVATEAPP so the game doesn't idle its input poll wh
 [config.voice]
 type        = "bool"
 default     = true
-label       = "Japanese voice restore (boot-time)"
-description = "Re-add the JP dialogue/combat voices to the English SE (+ fix the monster-SFX bug). Needs sotesx_s.dll beside the exe. Relaunch to apply."
+label       = "Monster-SFX fix for the voice bank (boot-time)"
+description = "Special Edition: with the Japanese voice bank sotesx_s.dll in the game folder, the game silences every sound without a deluxe variant (all monsters). This fixes that in memory. Relaunch to apply."
 
 [config.profile]
 type        = "bool"
