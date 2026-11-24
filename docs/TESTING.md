@@ -154,3 +154,9 @@ starting at 1x, resizes snapping to whole multiples, integer-scaled present.  Lo
 (`shot.ps1`, PrintWindow of each sotes window → `C:\sml-win\shot-N.png` + sizes in `shot.txt`; a screen grab would
 capture whatever covers the game).  Snap checked from inside the game via LuaJIT ffi (`SendMessageA(WM_SIZING)` with
 the dev server on): +300/+250, +700/+540, bottom +400 → 2x (the monitor caps 3x); a 1084x721 client → a centred 1x image.
+
+**Driving the overlay** (a panel, a dropdown) on the modded copy: add `devserver=47811` to its `oss_loader.cfg`, then
+`ui.ps1 47811 "x=387,y=154"` / `"click=true"` / `"text=[[slime]]"` / `"key=[[enter]]"` [`SHOTNAME`] (`mod.ui.synth`;
+client px = PrintWindow px − (8, 31)).  Posted WM_MOUSE* don't work: the Win32 backend re-reads the real cursor while
+the game is foreground.  2026-11-24 combo_search: "org arc" → 1/134 Org Archer; "slime" → 8/134, Enter → 51013 Red
+Slime, Spawn → slot 4; `mod.input.stats().captured` true while the search box has focus, false after.

@@ -216,6 +216,14 @@ mod.ui.checkbox(label, value)           -> new_value, changed
 mod.ui.slider_int(label, v, min, max)   -> new_v, changed
 mod.ui.slider_float(label, v, min, max) -> new_v, changed
 mod.ui.progress(frac [,text])
+mod.ui.combo_search(label, {item, ...}, index) -> new_index, changed   [api 1.6]   a dropdown with a search box:
+                                -- typing filters the items (case-insensitive; every word must match, as a substring or
+                                -- scattered letters; best matches first), Enter takes the top hit.  1-based (0 = none).
+                                -- While the box has focus the game gets no real keys (DirectInput is masked).
+mod.ui.synth{x=, y= | click=true | text="..." | key="enter"|"escape"|"backspace"|"down"|"up" | release=true}
+                                -- -> queued   synthetic UI input for agents / tests: fed straight into ImGui one action
+                                --   per frame (no OS mouse / keyboard); the mouse stays at the synth position until
+                                --   release.  tools/win/ui.ps1 drives it over the dev server.
 ```
 
 Widgets return their *new* state (plus a `changed` flag where useful) — the immediate-mode idiom:

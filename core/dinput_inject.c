@@ -70,11 +70,15 @@ void di_frame(void) {
     else g_active = g_qn > 0;
 }
 
+static volatile LONG g_capture;   // the UI owns the keyboard (a focused text field)
+void di_set_capture(int on) { InterlockedExchange(&g_capture, on ? 1 : 0); }
+
 static HRESULT WINAPI gds_hook(void *self, DWORD cb, void *buf) {
     HRESULT hr = g_gds_orig(self, cb, buf);
     if (cb != 256 || !buf) return hr;
     g_kbd = self;
     g_n_gds++;
+    if (g_capture) { memset(buf, 0, 256); hr = DI_OK; }  // UI typing: no real key levels reach the game
     if (!g_active) return hr;
     if (FAILED(hr)) memset(buf, 0, 256);                 // unacquired: scripted input alone
     uint8_t *st = (uint8_t *)buf;
@@ -88,6 +92,12 @@ static HRESULT WINAPI gdd_hook(void *self, DWORD cbobj, void *rg, DWORD *inout, 
     DWORD cap = *inout;
     HRESULT hr = g_gdd_orig(self, cbobj, rg, inout, flags);
     g_n_gdd++;
+    if (g_capture && SUCCEEDED(hr)) {                    // UI typing: drop the real buffered events
+        if (!(flags & DIGDD_PEEK) && rg && *inout == cap && cap) {   // drain the rest so none surface later
+            DWORD n; do { n = cap; if (FAILED(g_gdd_orig(self, cbobj, rg, &n, flags))) break; } while (n == cap);
+        }
+        *inout = 0;
+    }
     if (!g_active && !g_qn) return hr;
     DWORD have = SUCCEEDED(hr) ? *inout : 0;
     int peek = (flags & DIGDD_PEEK) != 0;
@@ -169,6 +179,7 @@ static int l_stats(lua_State *L) {
     lua_pushnumber(L, g_n_gdd); lua_setfield(L, -2, "gdd");
     lua_pushnumber(L, g_n_inj); lua_setfield(L, -2, "injected");
     lua_pushboolean(L, g_kbd != NULL); lua_setfield(L, -2, "kbd");
+    lua_pushboolean(L, g_capture != 0); lua_setfield(L, -2, "captured");   // a UI text field owns the keyboard
     return 1;
 }
 void di_push_lua(lua_State *L) {

@@ -27,6 +27,7 @@
 #include "lua_host.h"          // lh_state (engine thread only)
 #include "executor.h"          // exec_armed / exec_main_tid / exec_ti_mgr
 #include "ddraw_present.h"     // ddp_draw_background — mirror the captured game frame behind the UI
+#include "dinput_inject.h"     // di_set_capture — a focused text field owns the keyboard
 
 extern "C" {
 #include "lua.h"
@@ -41,6 +42,8 @@ extern "C" {
 #include <atomic>
 #include <vector>
 #include <string>
+#include <algorithm>
+#include <ctype.h>
 
 #include "imgui.h"
 #include "backends/imgui_impl_win32.h"
@@ -53,13 +56,14 @@ extern "C" int config_get_int(const char *key, int def);   // oss_loader.cfg rea
 enum CmdType {
     C_TEXT, C_DISABLED, C_WRAPPED, C_COLORED, C_BULLET,
     C_SEP, C_SPACING, C_SAMELINE,
-    C_BUTTON, C_SMALLBUTTON, C_CHECKBOX, C_SLIDER_INT, C_SLIDER_FLOAT, C_PROGRESS,
+    C_BUTTON, C_SMALLBUTTON, C_CHECKBOX, C_SLIDER_INT, C_SLIDER_FLOAT, C_PROGRESS, C_COMBO_SEARCH,
 };
 struct Cmd {
     CmdType t;
     std::string s;         // label / text
     float a, b, c, d;      // value/min/max  or  r,g,b,a
     int   ix;              // interactive-widget index within the surface (-1 = non-interactive)
+    std::vector<std::string> items;   // combo_search: the choices
 };
 struct Surface {
     std::string name;
@@ -141,7 +145,10 @@ static uint64_t snap_hash(const Snapshot &s) {   // FNV-1a over the visible cont
     MIX(&s.status, sizeof s.status);
     for (const Surface &sf : s.surfaces) {
         MIX(sf.name.data(), sf.name.size()); MIX(&sf.is_window, sizeof sf.is_window); MIX(&sf.collapsed, sizeof sf.collapsed);
-        for (const Cmd &c : sf.cmds) { MIX(&c.t, sizeof c.t); MIX(c.s.data(), c.s.size()); MIX(&c.a, 4*sizeof(float)); MIX(&c.ix, sizeof c.ix); }
+        for (const Cmd &c : sf.cmds) {
+            MIX(&c.t, sizeof c.t); MIX(c.s.data(), c.s.size()); MIX(&c.a, 4*sizeof(float)); MIX(&c.ix, sizeof c.ix);
+            for (const std::string &it : c.items) { MIX(it.data(), it.size()); MIX("\n", 1); }
+        }
     }
     #undef MIX
     return h;
@@ -295,6 +302,93 @@ static int l_ui_slider_float(lua_State *L) { // (label, v, min, max) -> new_v, c
     lua_pushnumber(L, v); lua_pushboolean(L, changed); return 2;
 }
 
+static int l_ui_combo_search(lua_State *L) {   // (label, {item, ...}, index) -> new_index, changed  (1-based; 0 = none)
+    const char *s = luaL_optstring(L,1,"combo");
+    int v = (int)luaL_optinteger(L,3,0);
+    bool changed = false;
+    if (g_building) {
+        int wix = g_cur_wix++;
+        uint64_t r = input_take(g_cur_surf, wix);
+        if (r & IN_CHANGED) { v = (int)(uint32_t)(r & 0xffffffffu); changed = true; }
+        Cmd c = mk(C_COMBO_SEARCH); c.s = s; c.a = (float)v; c.ix = wix;
+        if (lua_istable(L, 2)) {
+            int n = (int)lua_objlen(L, 2);
+            c.items.reserve((size_t)n);
+            for (int i = 1; i <= n; i++) {
+                lua_rawgeti(L, 2, i);
+                size_t len = 0; const char *t = lua_type(L, -1) == LUA_TSTRING || lua_type(L, -1) == LUA_TNUMBER ? lua_tolstring(L, -1, &len) : NULL;
+                if (t) c.items.emplace_back(t, len); else c.items.emplace_back("?");
+                lua_pop(L, 1);
+            }
+        }
+        emit(c);
+    }
+    lua_pushinteger(L, v); lua_pushboolean(L, changed); return 2;
+}
+
+// ── mod.ui.synth — synthetic UI input for agents / tests (no OS mouse or keyboard involved).  The Win32 backend
+// re-reads the REAL cursor every frame while the game window is foreground, so posted mouse messages can't drive
+// the overlay; this queue is applied after the backend's NewFrame (so it wins), one action per frame (ImGui needs
+// press and release on different frames).  While synthetic mode is on the mouse stays at the last synth position.
+//   mod.ui.synth{x=, y=}            move (client px) — enters synthetic mode
+//   mod.ui.synth{click=true}        press + release at the current position
+//   mod.ui.synth{text="abc"}        characters        mod.ui.synth{key="enter"|"escape"|"backspace"|"down"|"up"}
+//   mod.ui.synth{release=true}      leave synthetic mode (the real mouse again)       -> queued actions count
+enum SynthKind { SY_MOVE, SY_DOWN, SY_UP, SY_CHAR, SY_KEY, SY_RELEASE };
+struct SynthEv { SynthKind k; float x, y; unsigned ch; int key; };
+static CRITICAL_SECTION g_sy_cs;
+static bool g_sy_cs_init;
+static std::vector<SynthEv> g_sy_q;
+static bool  g_sy_on;          // UI-side: synthetic mode
+static float g_sy_x, g_sy_y;   // UI-side: synthetic position
+static void sy_push(const SynthEv &e) { EnterCriticalSection(&g_sy_cs); g_sy_q.push_back(e); LeaveCriticalSection(&g_sy_cs); }
+static void synth_apply(void) {   // the UI context's thread, between the backend NewFrame and ImGui::NewFrame
+    if (!g_sy_cs_init) return;
+    ImGuiIO &io = ImGui::GetIO();
+    SynthEv e; bool have = false;
+    EnterCriticalSection(&g_sy_cs);
+    if (!g_sy_q.empty()) { e = g_sy_q.front(); g_sy_q.erase(g_sy_q.begin()); have = true; }
+    LeaveCriticalSection(&g_sy_cs);
+    if (have && e.k == SY_MOVE) { g_sy_on = true; g_sy_x = e.x; g_sy_y = e.y; }
+    if (g_sy_on) io.AddMousePosEvent(g_sy_x, g_sy_y);   // BEFORE the action: the backend queued the real cursor first
+    if (have) switch (e.k) {
+        case SY_MOVE:    break;
+        case SY_DOWN:    io.AddMouseButtonEvent(0, true); break;
+        case SY_UP:      io.AddMouseButtonEvent(0, false); break;
+        case SY_CHAR:    io.AddInputCharacter(e.ch); break;
+        case SY_KEY:     io.AddKeyEvent((ImGuiKey)e.key, true); io.AddKeyEvent((ImGuiKey)e.key, false); break;
+        case SY_RELEASE: g_sy_on = false; break;
+    }
+}
+static int l_ui_synth(lua_State *L) {
+    if (!g_sy_cs_init) { InitializeCriticalSection(&g_sy_cs); g_sy_cs_init = true; }
+    luaL_checktype(L, 1, LUA_TTABLE);
+    SynthEv e; memset(&e, 0, sizeof e);
+    lua_getfield(L, 1, "x"); lua_getfield(L, 1, "y");
+    if (lua_isnumber(L, -2) && lua_isnumber(L, -1)) { e.k = SY_MOVE; e.x = (float)lua_tonumber(L, -2); e.y = (float)lua_tonumber(L, -1); sy_push(e); }
+    lua_pop(L, 2);
+    lua_getfield(L, 1, "click");
+    if (lua_toboolean(L, -1)) { e.k = SY_DOWN; sy_push(e); e.k = SY_UP; sy_push(e); }
+    lua_pop(L, 1);
+    lua_getfield(L, 1, "text");
+    if (lua_isstring(L, -1)) { for (const char *p = lua_tostring(L, -1); *p; p++) { e.k = SY_CHAR; e.ch = (unsigned char)*p; sy_push(e); } }
+    lua_pop(L, 1);
+    lua_getfield(L, 1, "key");
+    if (lua_isstring(L, -1)) {
+        const char *k = lua_tostring(L, -1); int key = ImGuiKey_None;
+        if (!strcmp(k, "enter")) key = ImGuiKey_Enter; else if (!strcmp(k, "escape")) key = ImGuiKey_Escape;
+        else if (!strcmp(k, "backspace")) key = ImGuiKey_Backspace; else if (!strcmp(k, "down")) key = ImGuiKey_DownArrow;
+        else if (!strcmp(k, "up")) key = ImGuiKey_UpArrow;
+        if (key != ImGuiKey_None) { e.k = SY_KEY; e.key = key; sy_push(e); }
+    }
+    lua_pop(L, 1);
+    lua_getfield(L, 1, "release");
+    if (lua_toboolean(L, -1)) { e.k = SY_RELEASE; sy_push(e); }
+    lua_pop(L, 1);
+    EnterCriticalSection(&g_sy_cs); int n = (int)g_sy_q.size(); LeaveCriticalSection(&g_sy_cs);
+    lua_pushinteger(L, n); return 1;
+}
+
 static int g_ui_ref = LUA_NOREF;
 extern "C" void ui_init(lua_State *L) {
     lua_newtable(L);
@@ -307,6 +401,7 @@ extern "C" void ui_init(lua_State *L) {
     FN("button", l_ui_button);        FN("small_button", l_ui_small_button);
     FN("checkbox", l_ui_checkbox);    FN("slider_int", l_ui_slider_int);
     FN("slider_float", l_ui_slider_float); FN("progress", l_ui_progress);
+    FN("combo_search", l_ui_combo_search); FN("synth", l_ui_synth);
     #undef FN
     g_ui_ref = luaL_ref(L, LUA_REGISTRYINDEX);
     ml_log("[ui] mod.ui table built");
@@ -397,6 +492,76 @@ static void apply_theme(void) {
 }
 
 // Replay one surface's recorded cmds into ImGui, routing interactions back to the atomic slots.
+// Fuzzy match for combo_search: every space-separated word of the query must occur in the item as a case-insensitive
+// subsequence.  Score (higher = better): a whole-word substring beats a prefix-of-item beats a substring beats a
+// scattered subsequence; tighter subsequences score higher.  -1 = no match.
+static int fuzzy_word(const char *hay, size_t hn, const char *w, size_t wn) {
+    if (!wn) return 0;
+    for (size_t i = 0; i + wn <= hn; i++) {                       // substring
+        size_t k = 0;
+        while (k < wn && tolower((unsigned char)hay[i + k]) == tolower((unsigned char)w[k])) k++;
+        if (k == wn) {
+            bool start = i == 0 || !isalnum((unsigned char)hay[i - 1]);
+            return (i == 0 ? 3000 : start ? 2000 : 1000) - (int)i;
+        }
+    }
+    size_t k = 0, first = 0, last = 0;                             // subsequence
+    for (size_t i = 0; i < hn && k < wn; i++)
+        if (tolower((unsigned char)hay[i]) == tolower((unsigned char)w[k])) { if (!k) first = i; last = i; k++; }
+    return k == wn ? 500 - (int)(last - first) : -1;
+}
+static int fuzzy_score(const std::string &item, const char *q) {
+    int total = 0;
+    while (*q) {
+        while (*q == ' ') q++;
+        const char *e = q; while (*e && *e != ' ') e++;
+        if (e > q) { int sc = fuzzy_word(item.data(), item.size(), q, (size_t)(e - q)); if (sc < 0) return -1; total += sc; }
+        q = e;
+    }
+    return total;
+}
+struct ComboUi { char query[128]; bool focus; };
+static ComboUi g_combo[N_SLOTS];   // per-widget search text (UI side)
+static bool g_text_focus;          // some text field has keyboard focus this frame (-> di_set_capture)
+
+static void replay_combo_search(int surf, const Cmd &c) {
+    int id = slot_id(surf, c.ix); Live &lv = g_live[id >= 0 ? id : 0]; ComboUi &cu = g_combo[id >= 0 ? id : 0];
+    if (!lv.init || (c.a != lv.seed && !lv.active)) { lv.val = c.a; lv.init = true; }
+    lv.seed = c.a;
+    int cur = (int)lv.val, n = (int)c.items.size();
+    const char *preview = (cur >= 1 && cur <= n) ? c.items[cur - 1].c_str() : "";
+    lv.active = false;
+    if (ImGui::BeginCombo(c.s.c_str(), preview, ImGuiComboFlags_HeightLargest)) {
+        lv.active = true;
+        if (!cu.focus) { ImGui::SetKeyboardFocusHere(); cu.focus = true; }
+        bool enter = ImGui::InputTextWithHint("##q", "type to search (name / id)", cu.query, sizeof cu.query,
+                                              ImGuiInputTextFlags_EnterReturnsTrue);
+        if (ImGui::IsItemActive()) g_text_focus = true;
+        std::vector<std::pair<int, int>> hits;   // (-score, index) — best first, then table order
+        hits.reserve((size_t)n);
+        for (int i = 0; i < n; i++) { int sc = cu.query[0] ? fuzzy_score(c.items[i], cu.query) : 0; if (sc >= 0) hits.push_back({ -sc, i }); }
+        std::stable_sort(hits.begin(), hits.end(), [](const std::pair<int,int> &x, const std::pair<int,int> &y) { return x.first < y.first; });
+        int pick = -1;
+        if (enter && !hits.empty()) pick = hits[0].second;
+        ImGui::TextDisabled("%d / %d", (int)hits.size(), n);
+        if (ImGui::BeginChild("##list", ImVec2(0, ImGui::GetTextLineHeightWithSpacing() * 14), false)) {
+            ImGuiListClipper clip; clip.Begin((int)hits.size());
+            while (clip.Step())
+                for (int r = clip.DisplayStart; r < clip.DisplayEnd; r++) {
+                    int i = hits[(size_t)r].second;
+                    ImGui::PushID(i);
+                    if (ImGui::Selectable(c.items[(size_t)i].c_str(), i + 1 == cur)) pick = i;
+                    ImGui::PopID();
+                }
+        }
+        ImGui::EndChild();
+        if (pick >= 0) { lv.val = (float)(pick + 1); input_value(surf, c.ix, (uint32_t)(pick + 1)); ImGui::CloseCurrentPopup(); }
+        ImGui::EndCombo();
+    } else {
+        cu.focus = false;   // re-focus the search box on the next open (the query is kept)
+    }
+}
+
 static void replay_cmds(int surf, const std::vector<Cmd> &cmds) {
     for (const Cmd &c : cmds) {
         switch (c.t) {
@@ -435,6 +600,7 @@ static void replay_cmds(int surf, const std::vector<Cmd> &cmds) {
             if (ImGui::SliderFloat(c.s.c_str(), &v, c.b, c.c)) { lv.val = v; uint32_t bits; memcpy(&bits,&v,4); input_value(surf, c.ix, bits); }
             lv.active = ImGui::IsItemActive();
             break; }
+        case C_COMBO_SEARCH: replay_combo_search(surf, c); break;
         }
     }
 }
@@ -545,16 +711,19 @@ extern "C" void ui_overlay_present(void *dev, void *ctx, void *hwnd) {
         if (!overlay_init(dev, ctx, hwnd)) { g_ov_failed = true; return; }
         g_ov_started = true;
     }
-    if (!g_ov_visible) return;   // hidden (toggled in ui_overlay_wndproc) — game frame only, no overlay
+    if (!g_ov_visible) { di_set_capture(0); return; }   // hidden (F10) — game frame only, no overlay
 
     if (snap_fetch()) g_ov_have = true;    // adopt the freshest snapshot (same-thread producer/consumer)
 
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
+    synth_apply();
     ImGui::NewFrame();
+    g_text_focus = false;
     if (g_ov_have) draw_from_snapshot(g_buf[g_read_ix]);
     else { ImGui::Begin(OSS_ML_NAME "##host"); ImGui::TextDisabled("waiting for the game..."); ImGui::End(); }
     ImGui::Render();
+    di_set_capture(g_text_focus);                          // typing into a field: the game gets no real keys
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());   // draws into the bound RTV (the game back buffer)
 }
 
@@ -572,7 +741,9 @@ extern "C" int ui_overlay_wndproc(void *hwnd, unsigned msg, uintptr_t wparam, in
     if (!g_ov_visible) return 0;                           // hidden: MOUSE + keyboard both go to the game
     // Visible: feed ImGui.  It records mouse/keyboard into io but only CONSUMES WM_SETCURSOR (returns
     // 1), so gameplay keys still fall through to the game — mouse drives the overlay, keyboard the game.
-    return ImGui_ImplWin32_WndProcHandler((HWND)hwnd, msg, (WPARAM)wparam, (LPARAM)lparam) ? 1 : 0;
+    int eaten = ImGui_ImplWin32_WndProcHandler((HWND)hwnd, msg, (WPARAM)wparam, (LPARAM)lparam) ? 1 : 0;
+    if (g_text_focus && (msg == WM_KEYDOWN || msg == WM_KEYUP || msg == WM_CHAR)) eaten = 1;   // typing: not the game's
+    return eaten;
 }
 
 static bool g_have_snap = false;
@@ -580,10 +751,13 @@ static bool render_frame(void) {   // returns busy
     if (!g_rtv) return false;
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
+    synth_apply();
     ImGui::NewFrame();
     bool busy = false;
+    g_text_focus = false;
     if (g_have_snap) busy = draw_from_snapshot(g_buf[g_read_ix]);
     else { ImGui::Begin(OSS_ML_NAME "##host"); ImGui::TextDisabled("waiting for the game..."); ImGui::End(); }
+    di_set_capture(g_text_focus);   // companion window: same rule (DirectInput reads the keyboard regardless of focus)
     ImGui::Render();
     const float clr[4] = { 0.09f, 0.10f, 0.12f, 1.0f };
     g_devctx->OMSetRenderTargets(1, &g_rtv, NULL);
