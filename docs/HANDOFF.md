@@ -98,10 +98,23 @@ v2 so far (commits `10a1efe`, `b5b3b2b`, `6cb69d2`):
   idle frames → skip → event ends, free roam not holding) PASS ense-en (2833 f) / ense-jp (2532 f) / enold (2793 f; its
   new-game config opens on Difficulty — the test switches to Up+Enter after 80 tries); `SKIP_ON='trainer.skip_dialogue(true)'` drives the trainer's option.  Trainer: `skip_dialogue` config +
   panel checkbox + `trainer.skip_dialogue(on)`; MCP: `skip_dialogue`.
-- **Next:** actor spawn (RE: `char_init` 0x41f200 is the activator — 15 args — into a free CHARACTER-pool slot
-  (`render_root+0x11e0`/128); open question = whose sprite banks are loaded (a foe's assets may exist only in rooms
-  that place it → start with "clone a code already in the room"); `summon_spawn` 0x55ce70 is the skill path) → more `tests/*.lua` → voice patch on symbols → Windows real-device runner (own scheduled task, never
-  `oss-rhost-runner`).  Host tests (`make -C core tests`) still assume WSL interop — port them to run under wine.
+- **Actors (api 1.4, 2026-11-24)** — `mod.game.actors.list/codes/valid/spawn/remove`.  spawn = retail's
+  `summon_spawn` (enold 0x55ce70 / SE 0x57b910 / JP 0x579c40; stdcall code, anchor body, dx, dy, mode, 0, facing,
+  char_init anchor, a13): its own round-robin free slot + `char_init` with origin 4.  Absolute placement = a zeroed
+  fake body + mode 0 (summon_spawn adds nothing); by the leader = mode 4 on the leader's body (centre-x, bottom; dx
+  mirrored when it faces left); char_init anchor 5 = centre-x / feet.  **Open question closed: sprite banks need no
+  preparation** — 51110 (Org Archer) + 50360, never placed in the test room, draw and act (ense-en + enold, looked).
+  **The real hazard = unknown codes**: char_init's default arm = "Unknown Object Type Character." + exit(0).  So
+  **`tools/charcodes.py`** walks char_init's code dispatch statically (capstone, interval arithmetic through cmp/jcc,
+  sub/dec flags, lea, byte index + dword jump tables; the default = the body pushing that string) →
+  `core/gen/sotes_charcodes.c` (numbers only).  enold 122 codes == the port's hand-ported `char_init.c` case list
+  exactly; SE 134 (JP == EN): drops 100164–100169 + 100187, adds 100181 + 100190–100207.  remove = `char_unload` (0x41e360, the story
+  scripts' removal).  Spawned with no dramatist handle → the code's default look (50300 = a green witch, not the
+  room's named one).  **Gate:** `tests/actors.lua` PASS ×3.  MCP: `actors` / `spawn` / `despawn`.
+- **Next:** trainer spawn panel (code list + names?  names live in the stat block / per-type init — find where the
+  HUD's target name ("Org Archer") comes from) → more `tests/*.lua` → voice patch on symbols → Windows
+  real-device runner (own scheduled task, never `oss-rhost-runner`).  Host tests (`make -C core tests`) still
+  assume WSL interop — port them to run under wine.
 
 ## State: P0–P5 DONE + **DDraw present (borderless + windowed takeover)** + **in-game overlay** + **`mod.config`** + **semantic `mod.game` ops** + **mod API versioning** + **early-boot phase & the `OssModEarlyInit` ABI** + **built-in JP voice restore** (2026-07-20). Next = **P8 launcher** + P7 trainer as a mod.
 

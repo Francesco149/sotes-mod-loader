@@ -750,6 +750,164 @@ static void install_items(lua_State *L) {
     lua_pushcfunction(L, l_items_set_gold); lua_setfield(L, -2, "set_gold");
 }
 
+// ══════════════ mod.game.actors (api 1.4) — the room's character pool + spawn / remove ══════════════
+// The 32 full characters at world +0x1160 (identical on SE): +0x1d0 alive, +0x1d4 code, +0x1f8 origin (1 = placed
+// by the map record, 2 = party, 4 = spawned by a skill / summon_spawn), body +0x40 → {x +4, y +8, w +0xc, h +0x10,
+// facing +0x2c: 1 right, 3 left}.
+// spawn = retail's summon_spawn (enold 0x55ce70; stdcall code, anchor body, dx, dy, mode, 0, facing, char_init
+// anchor, a13): the next free pool slot (round robin, the room loop's own cursor) + char_init — the path a
+// summoning skill takes.  Codes are checked against the edition's char_init dispatch first (sotes_charcodes.h):
+// an unknown one is retail's fatal "Unknown Object Type Character." + exit.  Sprite banks need no preparation —
+// a code the room never placed draws (ense-en, live).  remove = char_unload (enold 0x41e360): a story script's
+// character removal (char_release + its voice lines stopped).
+#include "sotes_charcodes.h"
+#define NCHARS      32
+#define ENT_ALIVE   0x1d0
+#define CH_ORIGIN   0x1f8
+#define BODY_W      0x0c
+#define BODY_H      0x10
+#define BODY_FACE   0x2c
+typedef uintptr_t (__attribute__((stdcall)) *summon_spawn_t)(int32_t code, const int32_t *body, int32_t dx, int32_t dy,
+                                                              int32_t mode, int32_t a6, int32_t facing, int32_t anchor,
+                                                              int32_t a9);
+typedef void (__attribute__((stdcall)) *char_unload_t)(uintptr_t ch);
+
+static int code_valid(int32_t code) {
+    int n = 0;
+    const charcode_iv *t = charcodes_get(sym_edition(), &n);
+    for (int i = 0; i < n; i++) if (code >= t[i].lo && code <= t[i].hi) return 1;
+    return 0;
+}
+static uintptr_t pool_char(uintptr_t w, int i) { return rd(w + 0x1160 + 4 * (uintptr_t)i); }
+static int is_party_char(const sotes_layout *l, uintptr_t room, uintptr_t ch) {
+    for (int i = 0; i < NSLOTS; i++) {
+        uintptr_t s = rd(room + l->room_slots + 4 * i);
+        if (s && rd(s + l->ps_ch) == ch) return 1;
+    }
+    return 0;
+}
+static uintptr_t leader_char(const sotes_layout *l, uintptr_t room) {
+    uintptr_t s = rd(room + l->room_leader);
+    return s ? rd(s + l->ps_ch) : 0;
+}
+static uintptr_t g_spawned[NCHARS];   // the chars this API spawned (cleared when the slot is dead or reused)
+
+// mod.game.actors.list() -> {{slot, code, origin, party, leader, spawned, x, y, w, h, facing}, ...} the live pool
+static int l_actors_list(lua_State *L) {
+    if (!gb_enabled("actors")) { lua_pushnil(L); return 1; }
+    const sotes_layout *l;
+    uintptr_t room = cur_room_any(&l), w = world_ptr();
+    if (!room) { lua_pushnil(L); return 1; }
+    uintptr_t lead = leader_char(l, room);
+    lua_newtable(L);
+    int k = 0;
+    for (int i = 0; i < NCHARS; i++) {
+        uintptr_t c = pool_char(w, i);
+        if (!c || rd(c + ENT_ALIVE) == 0) { g_spawned[i] = 0; continue; }
+        uintptr_t b = rd(c + l->ent_body);
+        if (!b) continue;
+        lua_newtable(L);
+        lua_pushinteger(L, i);                         lua_setfield(L, -2, "slot");
+        lua_pushinteger(L, rdi(c + l->ent_code));      lua_setfield(L, -2, "code");
+        lua_pushinteger(L, rdi(c + CH_ORIGIN));        lua_setfield(L, -2, "origin");
+        lua_pushboolean(L, is_party_char(l, room, c)); lua_setfield(L, -2, "party");
+        lua_pushboolean(L, c == lead);                 lua_setfield(L, -2, "leader");
+        lua_pushboolean(L, g_spawned[i] == c);         lua_setfield(L, -2, "spawned");
+        lua_pushinteger(L, rdi(b + BODY_X));           lua_setfield(L, -2, "x");
+        lua_pushinteger(L, rdi(b + BODY_Y));           lua_setfield(L, -2, "y");
+        lua_pushinteger(L, rdi(b + BODY_W));           lua_setfield(L, -2, "w");
+        lua_pushinteger(L, rdi(b + BODY_H));           lua_setfield(L, -2, "h");
+        lua_pushinteger(L, rdi(b + BODY_FACE));        lua_setfield(L, -2, "facing");
+        lua_rawseti(L, -2, ++k);
+    }
+    return 1;
+}
+// mod.game.actors.codes() -> {code, ...} every code this edition's char_init takes
+static int l_actors_codes(lua_State *L) {
+    if (!gb_enabled("actors")) { lua_pushnil(L); return 1; }
+    int n = 0, k = 0;
+    const charcode_iv *t = charcodes_get(sym_edition(), &n);
+    lua_newtable(L);
+    for (int i = 0; i < n; i++)
+        for (int32_t c = t[i].lo; c <= t[i].hi; c++) { lua_pushinteger(L, c); lua_rawseti(L, -2, ++k); }
+    return 1;
+}
+static int l_actors_valid(lua_State *L) {
+    lua_pushboolean(L, gb_enabled("actors") && code_valid((int32_t)luaL_checkinteger(L, 1)));
+    return 1;
+}
+static int opt_field(lua_State *L, int t, const char *k, int *out) {
+    if (lua_type(L, t) != LUA_TTABLE) return 0;
+    lua_getfield(L, t, k);
+    int ok = lua_isnumber(L, -1);
+    if (ok) *out = (int)lua_tointeger(L, -1);
+    lua_pop(L, 1);
+    return ok;
+}
+// mod.game.actors.spawn(code[, {x=, y=} | {dx=, dy=}][, facing via {facing=1|3}]) -> slot | nil, why
+//   x / y: the new character's feet (horizontal centre, bottom) in world centi-px.  Without them: the leader's
+//   feet + dx (ahead of the leader: mirrored when it faces left; default 6000 = 60 px) + dy (default 0).
+//   facing defaults to the leader's.
+static int l_actors_spawn(lua_State *L) {
+    if (!gb_enabled("actors")) { lua_pushnil(L); return 1; }
+    int32_t code = (int32_t)luaL_checkinteger(L, 1);
+    const sotes_layout *l;
+    uintptr_t room = cur_room_any(&l), w = world_ptr(), fn = sym_va("summon_spawn");
+    if (!room || !fn || !on_engine()) return refuse_write(L, "actors.spawn");
+    if (!code_valid(code)) {
+        lua_pushnil(L);
+        lua_pushfstring(L, "actors.spawn: code %d is not a character on %s (retail would exit: Unknown Object Type)",
+                        (int)code, sym_edition_tag());
+        return 2;
+    }
+    int free_slot = -1;
+    for (int i = 0; i < NCHARS && free_slot < 0; i++) { uintptr_t c = pool_char(w, i); if (c && !rd(c + ENT_ALIVE)) free_slot = i; }
+    if (free_slot < 0) { lua_pushnil(L); lua_pushstring(L, "actors.spawn: no free character slot (32 in use)"); return 2; }
+    uintptr_t lead = leader_char(l, room), lb = lead ? rd(lead + l->ent_body) : 0;
+    int x, y, dx = 6000, dy = 0, facing = lb ? rdi(lb + BODY_FACE) : 1;
+    opt_field(L, 2, "facing", &facing);
+    if (facing != 1 && facing != 3) facing = 1;
+    int32_t fake[12] = { 0 };   // a body for mode 0: summon_spawn then places at (dx, dy) as given (fake[11] = 0)
+    uintptr_t c;
+    if (opt_field(L, 2, "x", &x) && opt_field(L, 2, "y", &y)) {
+        c = ((summon_spawn_t)fn)(code, fake, x, y, 0, 0, facing, 5, 0);
+    } else {
+        if (!lb) { lua_pushnil(L); lua_pushstring(L, "actors.spawn: no leader to place by (give x, y)"); return 2; }
+        opt_field(L, 2, "dx", &dx);
+        opt_field(L, 2, "dy", &dy);
+        c = ((summon_spawn_t)fn)(code, (const int32_t *)lb, dx, dy, 4, 0, facing, 5, 0);   // mode 4: centre-x, bottom
+    }
+    int slot = -1;
+    for (int i = 0; i < NCHARS; i++) if (c && pool_char(w, i) == c) slot = i;
+    if (slot < 0) { lua_pushnil(L); lua_pushstring(L, "actors.spawn: the game found no free slot"); return 2; }
+    g_spawned[slot] = c;
+    lua_pushinteger(L, slot);
+    return 1;
+}
+// mod.game.actors.remove(slot) -> true | nil, why   (party members refused)
+static int l_actors_remove(lua_State *L) {
+    if (!gb_enabled("actors")) { lua_pushnil(L); return 1; }
+    int slot = (int)luaL_checkinteger(L, 1);
+    const sotes_layout *l;
+    uintptr_t room = cur_room_any(&l), w = world_ptr(), fn = sym_va("char_unload");
+    if (!room || !fn || !on_engine()) return refuse_write(L, "actors.remove");
+    uintptr_t c = (slot >= 0 && slot < NCHARS) ? pool_char(w, slot) : 0;
+    if (!c || !rd(c + ENT_ALIVE)) { lua_pushnil(L); lua_pushfstring(L, "actors.remove: slot %d is empty", slot); return 2; }
+    if (is_party_char(l, room, c)) { lua_pushnil(L); lua_pushstring(L, "actors.remove: a party member"); return 2; }
+    ((char_unload_t)fn)(c);
+    g_spawned[slot] = 0;
+    lua_pushboolean(L, 1);
+    return 1;
+}
+static void install_actors(lua_State *L) {
+    lua_newtable(L);
+    lua_pushcfunction(L, l_actors_list);   lua_setfield(L, -2, "list");
+    lua_pushcfunction(L, l_actors_codes);  lua_setfield(L, -2, "codes");
+    lua_pushcfunction(L, l_actors_valid);  lua_setfield(L, -2, "valid");
+    lua_pushcfunction(L, l_actors_spawn);  lua_setfield(L, -2, "spawn");
+    lua_pushcfunction(L, l_actors_remove); lua_setfield(L, -2, "remove");
+}
+
 // ══════════════ semantic loader ops — save.load / attract.set ══════════════
 // Implemented in core/lua/title.lua (typed hooks on the title driver's own functions, every edition);
 // lua_host.c fills these tables once the hook layer is up.  Empty here so the toggle registry knows them.
@@ -794,7 +952,12 @@ void sotes_bindings_register(void) {
         "dialogue", "skip dialogue the game's own way (held TAB while an event runs) — .skip(on) / .get()",
         install_dialogue, 1
     };
+    static const gb_def ACTORS = {
+        "actors", "the room's characters — .list() / .codes() / .valid(code) / .spawn(code[, {x,y}|{dx,dy}]) / .remove(slot)",
+        install_actors, 1
+    };
     gb_register(&ROSTER);
+    gb_register(&ACTORS);
     gb_register(&DIALOGUE);
     exec_set_pre_input(dialogue_pre_input);
     gb_register(&CAMERA);

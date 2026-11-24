@@ -6,8 +6,8 @@ A typed skin over `tools/sml` (runs under wine, own prefix / Xvfb per run) and e
 (the warp item's request, room_item_add, ...), every edition (enold / ense-en / ense-jp).
 
   runs      sml (passthrough: up / down / continue / play / wait / log / ls / test ...)
-  observe   state · rooms · catalog · flags · shot · lua
-  act       warp · teleport · give · heal · set_stats · gold · set_flag · keys · skip_dialogue
+  observe   state · rooms · catalog · flags · actors · shot · lua
+  act       warp · teleport · give · heal · set_stats · gold · set_flag · keys · skip_dialogue · spawn · despawn
 
 Register (.mcp.json):  "sml": {"type": "stdio", "command": "python3",
                                "args": ["/opt/src/sotes-mod-loader/tools/sml_mcp.py"]}
@@ -170,6 +170,25 @@ def t_skip_dialogue(a):
     return L(a["run"], f"return {{game.dialogue.skip({'true' if a.get('on', True) else 'false'})}}")
 
 
+def t_actors(a):
+    return L(a["run"], "return game.actors.list()")
+
+
+def t_spawn(a):
+    o = ", ".join(f"{k} = {int(a[k])}" for k in ("x", "y", "dx", "dy", "facing") if a.get(k) is not None)
+    r = L(a["run"], f"return {{game.actors.spawn({int(a['code'])}, {{ {o} }})}}")
+    if not (isinstance(r, list) and r and isinstance(r[0], int)):
+        raise ToolError(f"spawn refused: {r}")
+    return {"slot": r[0]}
+
+
+def t_despawn(a):
+    r = L(a["run"], f"return {{game.actors.remove({int(a['slot'])})}}")
+    if not (isinstance(r, list) and r and r[0] is True):
+        raise ToolError(f"despawn refused: {r}")
+    return True
+
+
 def t_keys(a):
     return sml_cli(["play", a["run"], a["movie"], "--wait"])
 
@@ -215,6 +234,15 @@ TOOLS = {
                  S(run=RUN(), id=INT("flag id", True), v=INT("value", True), v2=INT("second value"))),
     "skip_dialogue": (t_skip_dialogue, "Skip dialogue the game's own way (held TAB while an event runs) until "
                                        "turned off. on (default true).", S(run=RUN(), on={"type": "boolean"})),
+    "actors": (t_actors, "The room's live characters: slot, code, origin (1 map / 2 party / 4 spawned), party, leader, "
+                         "spawned, body x/y/w/h (centi-px), facing (1 right / 3 left).", S(run=RUN())),
+    "spawn": (t_spawn, "Spawn a character by code through retail's summon_spawn (codes the edition's char_init takes "
+                       "only: lua game.actors.codes()). Feet at x, y; else by the leader + dx (ahead, default 6000) / dy.",
+              S(run=RUN(), code=INT("character code (51110 Org Archer, 51012 slime, 50300 witch, ...)", True),
+                x=INT("feet x (centi-px)"), y=INT("feet y (centi-px)"), dx=INT("ahead of the leader"),
+                dy=INT("below the leader's feet"), facing=INT("1 right / 3 left (default: the leader's)"))),
+    "despawn": (t_despawn, "Remove a non-party character (slot from actors) via retail's char_unload.",
+                S(run=RUN(), slot=INT("pool slot", True))),
     "keys": (t_keys, "Play a keyboard movie (rd syntax: 'R*30 .*10 ent X*2'; U D L R X C Z V F ent esc f1..f6).",
              S(run=RUN(), movie={"type": "string", "req": True})),
     "shot": (t_shot, "The game's exact back buffer (640x480) as an image; x=true for the whole X screen (UI too).",

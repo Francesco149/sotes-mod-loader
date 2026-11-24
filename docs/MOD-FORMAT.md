@@ -112,6 +112,19 @@ mod.game.dialogue.skip(on) -> on                         [api 1.3]   skip dialog
                                 --   layer, ONLY while map.event() (free-roam TAB untouched).  Choice lists ignore it (enold
                                 --   grid_nav has no key-8 case).  Engine-thread state; persists until skip(false).
 mod.game.dialogue.get()         -> on, holding_now
+mod.game.actors.list()          -> {{slot, code, origin, party, leader, spawned, x, y, w, h, facing}, ...}   [api 1.4]
+                                --   the room's live characters (the 32-slot pool); origin 1 = placed by the map,
+                                --   2 = party, 4 = spawned (skill / this API); x, y = body top-left (centi-px);
+                                --   facing 1 right / 3 left
+mod.game.actors.codes()         -> {code, ...}   every code this edition's char_init takes (its own dispatch,
+                                --   tools/charcodes.py: 122 enold / 134 SE)
+mod.game.actors.valid(code)     -> bool
+mod.game.actors.spawn(code[, {x=, y=} | {dx=, dy=}, facing=]) -> slot | nil, why   retail's summon_spawn (the
+                                --   summoning skills' path: next free pool slot + char_init, AI live).  x, y = the
+                                --   feet (centre x, bottom y); else the leader's feet + dx (ahead; default 6000) + dy.
+                                --   Refused: a code char_init lacks (retail would exit "Unknown Object Type"),
+                                --   pool full.  Any code draws — sprite banks need no preparation.
+mod.game.actors.remove(slot)    -> true | nil, why   retail's char_unload (a script's removal); party refused
 mod.game.attract.set(on) / .get() -- false keeps the title up (idle → no demo); true = retail
 mod.game.save.load([slot])      -> true | nil, err   -- load save `slot` from the title (nil / <0 = the list's
                                 --   default row = last used).  Typed hooks on the title driver (any edition):

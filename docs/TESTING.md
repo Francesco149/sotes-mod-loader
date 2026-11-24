@@ -18,6 +18,7 @@ tools/sml shot R out.png      # LOOK at it: the test's numbers vs the HUD
 | `tests/world.lua` | camera view inside the map; area id → area table → map; story flags (list = get, set / clear round trip on a free id); area flags; inventory named; gold ≤ cap + set/restore | PASS (HUD ×630 = 630 CP; set_gold 4321 → HUD ×4321) | PASS (names Shift-JIS) | PASS (day-10b port save: area 210140 map 210) |
 | `tests/sandbox.lua` | map.rooms / room (loadable, exits resolve); warp refusals (unknown room, map-less room); items.catalog names == inventory names; items.give through room_item_add (+1 record, unknown id refused); roster.set hp round trip; coordinates.set ±1 px | PASS (428 rooms / 408 loadable; catalog 306) | PASS | PASS (417 / 397; catalog 215) |
 | `tests/warp.sh R` (shell; spans frames) | Enter through a load-time event (map.event()), forced warp to a neighbour → arrival (room, party, idle), back via retail's warp where allowed else forced | PASS (+ retail path by hand: 980110 → 210165, sparkle-out + dissolve, status requested → warping → idle; town refused) | PASS | PASS (the save loads into a recap + a school event) |
+| `tests/actors.lua` | actors.list (one leader; party == roster); codes() = char_init's dispatch (122 enold / 134 SE), live codes inside it, unknown refused; spawn by the leader (centre x = leader + 60 px, facing) + absolute (feet exact) via summon_spawn; remove via char_unload; party / empty refused | PASS (looked: Org Archer 51110 + slime + NPC drawn — none placed by the room; the slime fights) | PASS | PASS (looked: slime hits Arche 179→168, 180 frames on) |
 | `tests/roster.lua` | world/room/view via `g_world` + layout; party slots → chars → stat block; one leader; hp/mp ≤ max; level = combat + adventurer; positions inside the map | PASS (HUD-checked: 179/197, 43/43, Lv8, 3/5 stars; Lv15 save: 293/293 …) | PASS (Steam saves) | PASS (port drive save; coords checked vs the frame) |
 
 `continue` caveats: SE's studio intro drops input until ~frame 1000 (one `ent` then skips it); enold has no
@@ -29,7 +30,7 @@ Saves for enold: OpenSummoners `tests/scenarios/*/_saves/*/` (copy the `.sdt` fi
 
 The same runs as typed tools: `sml` (passthrough: up / continue / down / play / wait / test …), `lua`, `state`,
 `rooms`, `catalog`, `warp` (waits for the arrival), `teleport`, `give`, `heal`, `set_stats`, `gold`, `flags`,
-`set_flag`, `keys`, `shot` (returns the PNG).  Register: `"sml": {"type": "stdio", "command": "python3", "args":
+`set_flag`, `actors`, `spawn`, `despawn`, `keys`, `shot` (returns the PNG).  Register: `"sml": {"type": "stdio", "command": "python3", "args":
 ["/opt/src/sotes-mod-loader/tools/sml_mcp.py"]}`; CLI: `tools/sml_mcp.py state run=R`, `--selftest`.  Verified over
 JSON-RPC (initialize → tools/list → warp 440220 → 210110 → give refusal → shot) on ense-en.
 
