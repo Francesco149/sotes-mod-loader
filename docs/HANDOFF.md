@@ -80,8 +80,13 @@ v2 so far (commits `10a1efe`, `b5b3b2b`, `6cb69d2`):
   `engine-quirks.md` / `SE_CODE_MAP.md` when it's free): the map-less rooms, the dropped warp return in events, the
   SE W-map path (`+0x148`), SE room_item_add / item tables / map_module VAs, SE warp-request offsets.
 - **Still fenced:** the voice patch never arms on the new build (signature-gated, fails safe).
-- **Next:** trainer as a `../sotes-mods` mod over the sandbox ops (+ actor spawn, still to RE) + its MCP over the dev
-  server → more `tests/*.lua` → voice patch on symbols → Windows real-device runner (own scheduled task, never
+- **Trainer v2 = `../sotes-mods/mods/trainer`** (0.1.0, unreleased; registry id `sotes_trainer` → `trainer`): god /
+  heal / gold / F7 teleport-to-cursor / warp browser (exits + every loadable room by map; force on by default) / item
+  giver, panels in the loader UI, `_G.trainer` for agents (dev-server `lua`).  Verified on ense-en (`sml up --mods
+  trainer`, `--cfg ui=1` + `sml shot --x` shows the companion window).  Not yet ported from the old trainer: autoskip /
+  dlgskip / fastskip (dialogue), mousefly (continuous), door hijack (superseded by warp).
+- **Next:** the MCP over the dev server (agent tools = mod.game ops + `_G.trainer`) → actor spawn (RE `summon_spawn` /
+  a map-actor spawn path) + dialogue skip on symbols → more `tests/*.lua` → voice patch on symbols → Windows real-device runner (own scheduled task, never
   `oss-rhost-runner`).  Host tests (`make -C core tests`) still assume WSL interop — port them to run under wine.
 
 ## State: P0–P5 DONE + **DDraw present (borderless + windowed takeover)** + **in-game overlay** + **`mod.config`** + **semantic `mod.game` ops** + **mod API versioning** + **early-boot phase & the `OssModEarlyInit` ABI** + **built-in JP voice restore** (2026-07-20). Next = **P8 launcher** + P7 trainer as a mod.

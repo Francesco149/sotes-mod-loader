@@ -18,8 +18,8 @@ fn parses_the_real_sotes_mods_registry() {
     }
     let reg = sml_core::registry::Registry::from_path(&path).expect("real registry should parse");
     assert_eq!(reg.source.name, "sotes-mods");
-    // The three mods are listed for discoverability before their first loader release.
-    for id in ["autoload", "ennse_voice", "sotes_trainer"] {
+    // Every mod is listed, released or not (discoverability before a first loader release).
+    for id in ["autoload", "dashboard", "ennse_voice", "trainer"] {
         assert!(reg.find(id).is_some(), "missing mod {id}");
     }
 }
