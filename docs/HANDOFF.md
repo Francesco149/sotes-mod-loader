@@ -9,6 +9,39 @@ Rolling "where we are / what's next" for a fresh session. Orient: this → `DESI
 > THERE** (`SE_CODE_MAP.md` / `engine-quirks.md`), not only in this repo — loader docs cover the
 > loader, game facts belong to the port so both projects benefit. (README "Related".)
 
+## v2 REVAMP IN PROGRESS (2026-11-24) — read `docs/plans/v2-revamp.md` first
+
+**v1 was broken on the current Steam build** (SE update 2026-08-09: `0x437c70` is no longer a function
+start, so the safepoint hooked garbage and mods never initialized; v1's `present_va`, save/attract/input
+patch sites, the roster `render_root` pointer and the voice patch signatures are all from the old build).
+v2 so far (commits `10a1efe`, `b5b3b2b`, `6cb69d2`):
+
+- **Edition layer** (`core/syms.{c,h}`, generated `core/gen/sotes_syms.c` by `tools/symgen.py` from
+  OpenSummoners' local RE data + the user's exes): enold / ense-en / ense-jp detected from the PE header,
+  confirmed by anchor code hashes; every function symbol hash-verified (mismatch → that symbol off).
+  `mod.sym.{va,info,find,name_at}`, `mod.edition`.  Regenerate: `python3 tools/symgen.py`.
+- **Frame hook = `flip`** (all states, all editions) — replaces the v1 safepoint + present hooks; ddraw
+  capture rides it (screen-ctx layout verified on all 3).  `mod.frame()`, `mod.screen.{shot,ctx}`.
+- **`mod.input`** — scripted keyboard via dinput's own GetDeviceState/GetDeviceData (no game VAs).
+- **Dev server** (`devserver=PORT` / `OSS_DEVSERVER`) + **`tools/sml`** — real exe under wine, own prefix
+  per run under `/mnt/ephemeral/sotes-mod-loader/`:
+  ```
+  tools/sml up R --edition ense-en|ense-jp|enold [--mods a,b] [--saves steam|DIR|none] [--cfg k=v]
+  tools/sml lua R 'return mod.sym.info("flip")'     # engine thread, JSON
+  tools/sml play R "ent*2 .*30 R*2 X*2" --wait     # rd movie syntax
+  tools/sml shot R out.png                          # exact back buffer — LOOK at it
+  tools/sml wait R 'EXPR' ; tools/sml log R ; tools/sml down R|--all
+  ```
+  Verified: all three editions boot side by side (enold 1303 / ense-en 1212 / ense-jp 1201 symbols, 0
+  disabled); keys-only title → save picker → gameplay → walking on ense-en.
+- **Fenced off** until rebuilt on symbols: `game.attract/save/input` (refuse + log); `game.roster` returns
+  `[]` (stale pointer); voice patch never arms on the new build (signature-gated, fails safe).
+- **Next:** bindings v2 (roster / camera / map / flags / items / save) on symbols + per-edition layouts
+  (OpenSummoners `src/*.h` = enold; SE layouts differ, e.g. world stackref 0x27ac vs 0x37b0) → `sml test`
+  suites → trainer as a `../sotes-mods` mod + sandbox (spawn / flags / warp) → Windows real-device runner
+  (own scheduled task, never `oss-rhost-runner`).  Host tests (`make -C core tests`) still assume WSL
+  interop — port them to run under wine.
+
 ## State: P0–P5 DONE + **DDraw present (borderless + windowed takeover)** + **in-game overlay** + **`mod.config`** + **semantic `mod.game` ops** + **mod API versioning** + **early-boot phase & the `OssModEarlyInit` ABI** + **built-in JP voice restore** (2026-07-20). Next = **P8 launcher** + P7 trainer as a mod.
 
 ### Session 2026-07-20 (early-boot ABI + a live RE pass)
