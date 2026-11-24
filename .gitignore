@@ -13,3 +13,4 @@ oss_modloader.log
 # editor / OS cruft
 .DS_Store
 *.swp
+__pycache__/

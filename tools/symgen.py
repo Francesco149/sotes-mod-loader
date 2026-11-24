@@ -126,13 +126,14 @@ def globals_gen_knowledge(oss):
 
 
 RHOST_FIELDS = ["flip", "easer", "srand", "rand", "rng_seed", "state_ptr", "active", "dlgproc", "launch",
-                "cfg_screen", "cfg_sound", "zdd", "wndproc", "hwnd_slot"]
+                "cfg_screen", "cfg_sound", "zdd", "wndproc", "hwnd_slot", "pump_wait_off", "world_ptr"]
 RHOST_KIND = {"rng_seed": "data", "state_ptr": "data", "active": "data", "launch": "data", "cfg_screen": "data",
-              "cfg_sound": "data", "zdd": "data", "hwnd_slot": "data"}
+              "cfg_sound": "data", "zdd": "data", "hwnd_slot": "data", "world_ptr": "data"}
 RHOST_NAME = {"flip": "flip", "easer": "camera_follow_step", "srand": "crt_srand", "rand": "rand_draw",
               "rng_seed": "g_rand_seed", "state_ptr": "g_app_state", "active": "g_app_active",
               "dlgproc": "launcher_dlgproc", "launch": "g_launcher_ok", "cfg_screen": "g_cfg_screen",
-              "cfg_sound": "g_cfg_sound", "zdd": "g_zdd", "wndproc": "game_wndproc", "hwnd_slot": "g_hwnd"}
+              "cfg_sound": "g_cfg_sound", "zdd": "g_zdd", "wndproc": "game_wndproc", "hwnd_slot": "g_hwnd",
+              "world_ptr": "g_world"}
 
 
 def rhost_editions(oss):
@@ -219,6 +220,8 @@ def main():
     # 2. rhost EDITIONS (both editions given explicitly)
     for ed, row in rhost_editions(a.oss).items():
         for f, va in row.items():
+            if f not in RHOST_NAME:
+                continue          # pump_wait_off: an offset, not a VA
             put(RHOST_NAME[f], RHOST_KIND.get(f, "func"), ed, va)
     # 3. engine singletons + curated names (enold)
     for va, n in globals_gen_knowledge(a.oss).items():
