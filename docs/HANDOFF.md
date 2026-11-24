@@ -34,13 +34,27 @@ v2 so far (commits `10a1efe`, `b5b3b2b`, `6cb69d2`):
   ```
   Verified: all three editions boot side by side (enold 1303 / ense-en 1212 / ense-jp 1201 symbols, 0
   disabled); keys-only title → save picker → gameplay → walking on ense-en.
-- **Fenced off** until rebuilt on symbols: `game.attract/save/input` (refuse + log); `game.roster` returns
-  `[]` (stale pointer); voice patch never arms on the new build (signature-gated, fails safe).
-- **Next:** bindings v2 (roster / camera / map / flags / items / save) on symbols + per-edition layouts
-  (OpenSummoners `src/*.h` = enold; SE layouts differ, e.g. world stackref 0x27ac vs 0x37b0) → `sml test`
-  suites → trainer as a `../sotes-mods` mod + sandbox (spawn / flags / warp) → Windows real-device runner
-  (own scheduled task, never `oss-rhost-runner`).  Host tests (`make -C core tests`) still assume WSL
-  interop — port them to run under wine.
+- **Bindings v2, first wave (2026-11-24):** `core/sotes_layout.{h,c}` = per-edition struct offsets (enold from
+  OpenSummoners `src/world_layout.h`; SE via **`tools/fieldxw.py`** — aligns crosswalked enold↔SE function pairs with
+  capstone and votes on the displacement each SE site uses; ense-jp == ense-en everywhere checked).  `g_world` symbol
+  (symgen now reads rhost's `world_ptr`).  **`mod.game.roster` / `coordinates` / `mouse` rebuilt** on world → room
+  (`+0x2784` / SE `+0x3788`) → `slots[8]` (`+0x4030`) → pslot (active `+0x9c4`/`+0x9e4`, char `+0x9f4`/`+0xa14`) →
+  char (stats `+0x750`/`+0x760`, body `+0x40` → x/y `+4/+8`); controlled = `room->leader` (`+0x200c`).  No heap scan,
+  no executor dependency.  Stat block: SE = enold +4 from `0xd4` on; **level fix**: HUD "Lv" = combat level (SE `0xdc`)
+  + adventurer (`0xe4`); `0xe0` = combat max (stars) — v1 summed max + adventurer (wrong whenever M < N).  The port's
+  enold `party.h` names those three fields differently (`level_bonus` / `star_count` / `combat_level_max`) — same
+  sum; worth a rename there (not done: port session owns that repo).
+  **Gate:** `tools/sml continue R` + `tools/sml test R tests/roster.lua` → PASS on enold / ense-en / ense-jp,
+  numbers checked against the HUD (TESTING.md).  `sml up` copies `*.sdt` only (config.dat moves the title / picker
+  cursors) and no longer races parallel `up`s for a prefix slot.
+- **Still fenced** until rebuilt on symbols: `game.attract/save/input.press` (refuse + log); voice patch never arms
+  on the new build (signature-gated, fails safe).
+- **Next:** rest of bindings v2 — camera (view fields done, expose a binding), map / room id (`roominfo` world+0x1038 →
+  SE?), story + object flags (room `+0x8`, count `+0x2008` — same on SE), items / gold (room `+0x4014`), save.load +
+  attract + input.press on symbols (the enold `menu_list_latch` ecx is NOT the menu_ctrl the v1 SE notes describe:
+  `+0x174` reads 0 there — re-RE per edition) → more `tests/*.lua` → trainer as a `../sotes-mods` mod + sandbox
+  (spawn / flags / warp) → Windows real-device runner (own scheduled task, never `oss-rhost-runner`).  Host tests
+  (`make -C core tests`) still assume WSL interop — port them to run under wine.
 
 ## State: P0–P5 DONE + **DDraw present (borderless + windowed takeover)** + **in-game overlay** + **`mod.config`** + **semantic `mod.game` ops** + **mod API versioning** + **early-boot phase & the `OssModEarlyInit` ABI** + **built-in JP voice restore** (2026-07-20). Next = **P8 launcher** + P7 trainer as a mod.
 

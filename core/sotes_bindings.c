@@ -1,340 +1,218 @@
-// core/sotes_bindings.c — SotES (sotes_en) game-knowledge bindings.  See sotes_bindings.h.
+// core/sotes_bindings.c — SotES game-knowledge bindings (mod.game.*).  See sotes_bindings.h.
 //
-// The first two RE'd subsystems exposed to mods as mod.game.roster + mod.game.coordinates,
-// lifted from the proven sotes_trainer.  Offsets are for the unpacked EN-SE (ImageBase
-// 0x400000); the party actors are located by their entity code (Arche 0xc35a / Sana 0xc35b
-// / Stella 0xc35c) at actor+0x1d4.
-//
-// PORT-DEBT(sotes-roster-heapscan): finding actors is a THROTTLED FULL-HEAP SCAN (walk all
-// committed private RW regions for the code word, validate).  Robust (base-independent) but
-// fragile + costly, and it can momentarily see a stale "ghost" actor after a cross-region
-// warp.  Temporary — replace with a DIRECT roster/party-manager pointer once RE'd (candidate:
-// the render_root CHARACTER band at render_root+0x11e0, 128 slots; render_root = *(0x92dd38)).
-// Until then this mirrors the trainer's known-good behavior (cache + revalidate + ~8x/s throttle).
+// v2 (2026-11-24): every read goes through the edition layer — the world singleton by symbol
+// (sym_va("g_world")) and struct offsets from sotes_layout.h (enold = the port's retail-layout headers,
+// SE = tools/fieldxw.py + live checks).  The party comes from the engine's own structures:
+//   world = *g_world → room = world->room → room->slots[8] (wl_pslot) → active? → pslot->ch (wl_char)
+//   ch->code (+0x1d4), ch->body->{x +4, y +8}, ch->stats (wl_party: name, hp, mp, combat stats, levels)
+//   room->leader = the slot the player controls.
+// No heap scan, no hard-coded VA: an unknown build → no layout → every binding here returns nil.
 
 #include "sotes_bindings.h"
+#include "sotes_layout.h"
+#include "syms.h"
 #include "game_bindings.h"
 #include "mem.h"
 #include "executor.h"
-#include "hooks.h"            // hooks_entry_c — the picker-poll observer (mod.game.save)
+#include "hooks.h"            // hooks_entry_c — the picker-poll observer (mod.game.save, fenced)
 #include "oss_mod_api.h"      // OssHookCtx
 #include "prof.h"
 #include "ddraw_present.h"   // ddp_cursor_game — cursor -> game 640x480 screen space (mod.game.mouse)
 #include "loader_internal.h"
 
+#include <string.h>
+
 #include "lua.h"
 #include "lauxlib.h"
 
-// ── EN-SE offsets (from sotes_trainer / SE_CODE_MAP.md) ──────────────────────
-#define OFF_CODE        0x1d4      // actor -> entity code (0xc35a/b/c for the party)
-#define OFF_STATBLOCK   0x760      // actor -> stat_block ptr
-#define OFF_WORLD_X     0xc76c     // actor -> world_x (centi-px, derived snapshot)
-#define OFF_WORLD_Y     0xc770     // actor -> world_y (centi-px)
-#define OFF_BOX         0x40       // actor -> collision AABB ptr (authoritative pos)
-#define BOX_X           0x04       // box   -> left X (== world_x while live)
-// stat_block offsets
+// stat block (wl_party) offsets identical on every edition (< 0xd4; the edition-specific ones are in the layout)
+#define OFF_NAME        0x00       // char[8] ("Arche"/"Sana"/"Stella")
 #define OFF_HP_CUR      0x54
 #define OFF_HP_BASE     0x58
-#define OFF_HP_EQUIP    0x84
-#define OFF_HP_BUFF     0x9c
 #define OFF_MP_CUR      0x5c
 #define OFF_MP_BASE     0x60
-#define OFF_MP_EQUIP    0x88
-#define OFF_MP_BUFF     0xa0
-// name + the 4 combat stats + levels + exp — all RE'd live vs save 15 (docs/findings/save15-live-stats.md
-// in ../OpenSummoners).  The 4 combat stats are the RAW BASE; the status screen's shown base = this +
-// armor/passive, and the shown total additionally folds in the weapon (so a mod that boosts these
-// changes the character's intrinsic stat).  Character "Level" = combat_level + adventurer_level.
-#define OFF_NAME        0x00       // char[8], NUL-terminated ("Arche"/"Sana"/"Stella")
 #define OFF_ATK         0x64       // combat stats: RAW value (before growth/equipment)
 #define OFF_DEF         0x68
 #define OFF_SPIRIT      0x6c
 #define OFF_RESIST      0x70
-// combat-stat modifiers (RE'd live vs Stella's sheet 2026-07-20, all 4 stats exact): the status
-// screen shows "effective/base" where base = raw + growth and effective = raw + growth + equipment.
-// Same 3-cluster layout as HP/MP (equip 0x84/0x88, buff 0x9c/0xa0 sit after the atk/def/spi/res ones).
-#define OFF_ATK_EQUIP   0x74       // equipment bonus (weapon WP / armor AP) — the +N in "eff/base"
+#define OFF_ATK_EQUIP   0x74       // equipment bonus — the +N in the status screen's "eff/base"
 #define OFF_DEF_EQUIP   0x78
 #define OFF_SPI_EQUIP   0x7c
 #define OFF_RES_EQUIP   0x80
+#define OFF_HP_EQUIP    0x84
+#define OFF_MP_EQUIP    0x88
 #define OFF_ATK_GROWTH  0x8c       // level/innate growth — folded into the displayed base
 #define OFF_DEF_GROWTH  0x90
 #define OFF_SPI_GROWTH  0x94
 #define OFF_RES_GROWTH  0x98
-#define OFF_COMBAT_LV_MAX 0xe0     // max combat level (the HUD stars' "N"; "Combat Level M/N")
-#define OFF_ADV_LEVEL   0xe4       // adventurer level ("Adventurer Level")
-#define OFF_EXP_CUR     0xec       // current EXP
-#define OFF_EXP_MAX     0xf0       // EXP to the next level
-#define OFF_INPUT_CHAIN   0xc7a4   // actor -> input chain; *(*(actor+0xc7a4)) == input mgr iff CONTROLLED
-// camera / view object (render_root + OFF_CAM) — for cursor world-space mapping (trainer SE_CODE_MAP)
-#define OFF_CAM           0x104c   // render_root -> camera/view object POINTER
-#define CAM_VIEW_TOP      0x5c     // camera -> eased scroll top  (world centi-px) = view top edge
-#define CAM_VIEW_LEFT     0x60     // camera -> eased scroll left (world centi-px) = view left edge
-#define CAM_VP_W          0x64     // camera -> viewport width  (centi-px; 64000 = 640 px)
-#define CAM_VP_H          0x68     // camera -> viewport height (centi-px; 48000 = 480 px)
+#define OFF_HP_BUFF     0x9c
+#define OFF_MP_BUFF     0xa0
+#define BODY_X          0x04       // body -> x (world centi-px, box top-left)
+#define BODY_Y          0x08
+// camera_view (world->view): identical on every edition (camera_follow.h; SE verified by the v1 mouse mapping)
+#define CAM_VIEW_TOP    0x5c       // eased scroll top  (world centi-px)
+#define CAM_VIEW_LEFT   0x60       // eased scroll left
+#define CAM_VP_W        0x64       // viewport width  (centi-px; 64000 = 640 px)
+#define CAM_VP_H        0x68       // viewport height
+#define NSLOTS          8
 
-static const uint32_t CODES[3] = { 0xc35a, 0xc35b, 0xc35c };
-static const char    *NAMES[3] = { "Arche", "Sana", "Stella" };
-
-static int code_index(uint32_t c) { return (c >= 0xc35a && c <= 0xc35c) ? (int)(c - 0xc35a) : -1; }
-
-static int stat_max(uintptr_t sb, int base_off, int equip_off, int buff_off) {
-    uint32_t b = 0, e = 0, f = 0;
-    mem_rd32((void *)(sb + base_off), &b);
-    mem_rd32((void *)(sb + equip_off), &e);
-    mem_rd32((void *)(sb + buff_off), &f);
-    int m = (int)b + (int)e + (int)f;
-    return m < 0 ? 0 : m;
-}
-// Two-term stat sum (raw + growth) — the combat-stat "base" (2nd) number, effective minus equipment.
-static int stat_sum2(uintptr_t sb, int off_a, int off_b) {
-    uint32_t a = 0, b = 0;
-    mem_rd32((void *)(sb + off_a), &a);
-    mem_rd32((void *)(sb + off_b), &b);
-    int m = (int)a + (int)b;
-    return m < 0 ? 0 : m;
+static const char *code_name(uint32_t c) {
+    switch (c) { case 0xc35a: return "Arche"; case 0xc35b: return "Sana"; case 0xc35c: return "Stella"; case 0xc35d: return "Chiffon"; }
+    return NULL;
 }
 
-// Validate a party-member actor: code == want + a mutually-sane stat block + coords
-// (the code word appears in many non-actor places, so cross-check).  Lifted verbatim
-// from the trainer's actor_valid.
-static int actor_valid(uintptr_t base, uint32_t want) {
-    uint32_t code, sb, lvl, hpc, mpc, wx, wy;
-    if (!mem_rd32((void *)(base + OFF_CODE), &code) || code != want) return 0;
-    if (!mem_rd32((void *)(base + OFF_STATBLOCK), &sb) || !mem_readable((void *)sb, 0x200)) return 0;
-    if (!mem_rd32((void *)(sb + OFF_COMBAT_LV_MAX), &lvl) || lvl < 1 || lvl > 99) return 0;
-    int hpmax = stat_max(sb, OFF_HP_BASE, OFF_HP_EQUIP, OFF_HP_BUFF);
-    int mpmax = stat_max(sb, OFF_MP_BASE, OFF_MP_EQUIP, OFF_MP_BUFF);
-    if (hpmax < 1 || hpmax > 99999) return 0;
-    if (mpmax < 0 || mpmax > 9999) return 0;
-    if (!mem_rd32((void *)(sb + OFF_HP_CUR), &hpc) || (int)hpc < 0 || (int)hpc > 999999) return 0;
-    if (!mem_rd32((void *)(sb + OFF_MP_CUR), &mpc) || (int)mpc < 0 || (int)mpc > 999999) return 0;
-    if (!mem_rd32((void *)(base + OFF_WORLD_X), &wx) || !mem_rd32((void *)(base + OFF_WORLD_Y), &wy)) return 0;
-    if (abs((int)wx) > 50000000 || abs((int)wy) > 50000000) return 0;
-    // reject a stale roster GHOST: its garbage phys-box makes box[+4] read a pointer (>> any coord).
-    uint32_t box = 0, bx4 = 0;
-    if (mem_rd32((void *)(base + OFF_BOX), &box) && box > 0x10000 && mem_readable((void *)(uintptr_t)box, 0x14)
-        && mem_rd32((void *)((uintptr_t)box + BOX_X), &bx4) && abs((int)bx4) > 50000000) return 0;
+static uint32_t rd(uintptr_t a) { uint32_t v = 0; return a > 0x10000 && mem_rd32((void *)a, &v) ? v : 0; }
+static int rdi(uintptr_t a) { return (int)rd(a); }
+static int sum3(uintptr_t sb, int a, int b, int c) { int m = rdi(sb + a) + rdi(sb + b) + rdi(sb + c); return m < 0 ? 0 : m; }
+static int sum2(uintptr_t sb, int a, int b) { int m = rdi(sb + a) + rdi(sb + b); return m < 0 ? 0 : m; }
+
+static uintptr_t world_ptr(void) {
+    uintptr_t g = sym_va("g_world");
+    return g ? rd(g) : 0;
+}
+static uintptr_t cur_room(const sotes_layout *l) {
+    uintptr_t w = world_ptr();
+    return w ? rd(w + l->world_room) : 0;
+}
+
+typedef struct { uintptr_t slot, ch, stats; uint32_t code; int leader; } member_t;
+
+// The live party: active room slots with a character.  Returns the count (<= NSLOTS).
+static int party_members(member_t out[NSLOTS]) {
+    const sotes_layout *l = sotes_layout_get();
+    if (!l) return 0;
+    uintptr_t room = cur_room(l);
+    if (!room) return 0;
+    uintptr_t leader = rd(room + l->room_leader);
+    int n = 0;
+    for (int i = 0; i < NSLOTS; i++) {
+        uintptr_t s = rd(room + l->room_slots + 4 * i);
+        if (!s || rd(s + l->ps_active) != 1) continue;
+        uintptr_t ch = rd(s + l->ps_ch);
+        if (!ch) continue;
+        out[n].slot = s; out[n].ch = ch;
+        out[n].stats = rd(ch + l->ch_stats);
+        out[n].code = rd(ch + l->ent_code);
+        out[n].leader = (s == leader);
+        n++;
+    }
+    return n;
+}
+static int member_xy(const sotes_layout *l, uintptr_t ch, int *x, int *y) {
+    uintptr_t body = rd(ch + l->ent_body);
+    if (!body) return 0;
+    *x = rdi(body + BODY_X); *y = rdi(body + BODY_Y);
     return 1;
 }
-// The LIVE actor's phys-box mirrors world_x (box[+4] == world_x); a stale duplicate's does not —
-// used ONLY as a cold-scan preference to pick the live actor over a ghost (never in actor_valid,
-// which would tear while moving).  Lifted from the trainer's actor_box_tracks.
-static int actor_box_tracks(uintptr_t base) {
-    uint32_t box = 0, bx4 = 0, wx = 0;
-    if (!mem_rd32((void *)(base + OFF_BOX), &box) || box <= 0x10000 ||
-        !mem_readable((void *)(uintptr_t)box, 0x14)) return 0;
-    return mem_rd32((void *)((uintptr_t)box + BOX_X), &bx4) &&
-           mem_rd32((void *)(base + OFF_WORLD_X), &wx) && bx4 == wx;
-}
-// Is `actor` the CONTROLLED (player-driven) member? Its input chain resolves to the live
-// input manager — captured by the executor's safepoint hook (exec_ti_mgr).  Until the
-// executor is armed exec_ti_mgr()==0, so this reports 0 (unknown) rather than guessing.
-static int actor_is_active(uintptr_t actor) {
-    uint32_t p = 0, mgr = 0, tm = exec_ti_mgr();
-    if (!tm) return 0;
-    if (!mem_rd32((void *)(actor + OFF_INPUT_CHAIN), &p) || p <= 0x10000) return 0;
-    if (!mem_rd32((void *)(uintptr_t)p, &mgr)) return 0;
-    return mgr == tm;
-}
-
-// ── the roster cache (g_ros[k] = actor for CODES[k]) ─────────────────────────
-static uintptr_t g_ros[3];
-
-// ── render-root band scan (a bounded, RE-informed alternative to the full heap walk) ──
-// render_root = *(0x92dd38) (0 at title/menu).  OpenSummoners RE (findings/door-gate.md:41,52-54)
-// confirms two SE render bands, each an ARRAY of entity pointers off render_root: EFFECT (+0x1160,
-// 32) and CHARACTER (+0x11e0, 128).  We scan those ~160 slots for a party code (entity+0x1d4) —
-// microseconds vs the full-heap word scan.  NOTE: the base-game map_obj+0x4030 party array (the
-// "canonical" roster) does NOT reach the SE party via any render_root+off single/double indirection
-// we could pin live, so this band scan is the pragmatic fast path; the heap walk stays as the
-// ultimate fallback for anything the bands miss.  See PORT-DEBT(sotes-roster-heapscan).
-#define VA_RENDER_ROOT 0x92dd38
-#define BAND_EFFECT    0x1160      // 32 entity-ptr slots
-#define BAND_CHARACTER 0x11e0      // 128 entity-ptr slots
-
-// Scan the two render bands for the party; fill g_ros for any found.  Returns 1 if any resolved.
-static int roster_bands(uint32_t root) {
-    static const struct { uint32_t off; int n; } BANDS[2] = { { BAND_EFFECT, 32 }, { BAND_CHARACTER, 128 } };
-    uintptr_t found[3] = { 0, 0, 0 };
-    for (int b = 0; b < 2; b++) {
-        for (int i = 0; i < BANDS[b].n; i++) {
-            uint32_t e = 0, code = 0;
-            if (!mem_rd32((void *)(root + BANDS[b].off + i * 4), &e) || e <= 0x10000) continue;
-            if (!mem_rd32((void *)(uintptr_t)(e + OFF_CODE), &code)) continue;
-            int k = code_index(code & 0xffff);
-            if (k >= 0 && !found[k] && actor_valid(e, CODES[k])) found[k] = e;
-        }
-    }
-    int any = 0;
-    for (int k = 0; k < 3; k++) if (found[k]) { g_ros[k] = found[k]; any = 1; }
-    return any;
-}
-
-// Refresh the roster.  Fast path: no scene -> empty (no scan); in-scene -> the direct party array.
-// The full-heap walk is now only a throttled FALLBACK for a scene the direct chain can't resolve.
-static void ensure_roster_impl(void) {
-    int need_walk = 0;
-    for (int k = 0; k < 3; k++) {
-        if (g_ros[k] && !actor_valid(g_ros[k], CODES[k])) g_ros[k] = 0;
-        if (!g_ros[k]) need_walk = 1;
-    }
-
-    // No scene loaded (title/menu) -> no party -> clear + do NOTHING (kills the ~65ms menu walk that
-    // used to churn hunting for actors that don't exist yet).
-    uint32_t root = 0;
-    if (!mem_rd32((void *)mem_reloc(VA_RENDER_ROOT), &root) || root == 0) { g_ros[0] = g_ros[1] = g_ros[2] = 0; return; }
-    if (!need_walk) return;                              // all present + valid
-
-    // Bounded band scan (~160 reads) — the common-case fast path in place of the heap walk.
-    if (roster_bands(root)) return;
-
-    // Fallback: the throttled full-heap walk, only if the bands didn't resolve the party — a safety
-    // net (and the bootstrap on scenes the bands miss).
-    static DWORD last_walk;
-    DWORD now = GetTickCount();
-    if (last_walk && (now - last_walk) < 120) return;   // ~8x/sec cold-scan cap
-    last_walk = now;
-    ml_log("[sotes] roster: direct chain miss — heap-scan fallback");
-
-    uintptr_t best[3] = { 0, 0, 0 }, fallback[3] = { 0, 0, 0 };
-    uint8_t *addr = 0;
-    MEMORY_BASIC_INFORMATION mbi;
-    while (VirtualQuery(addr, &mbi, sizeof mbi)) {
-        uint8_t *next = (uint8_t *)mbi.BaseAddress + mbi.RegionSize;
-        if (mbi.State == MEM_COMMIT && mbi.Type == MEM_PRIVATE &&
-            (mbi.Protect & PAGE_READWRITE) && !(mbi.Protect & PAGE_GUARD) &&
-            mbi.RegionSize <= 0x4000000) {
-            uint32_t *p = (uint32_t *)mbi.BaseAddress, *e = (uint32_t *)(next - 4);
-            for (; p <= e; ++p) {
-                int k = code_index(*p);
-                if (k < 0) continue;
-                uintptr_t base = (uintptr_t)p - OFF_CODE;
-                if (!actor_valid(base, CODES[k])) continue;
-                if (actor_box_tracks(base)) best[k] = base;
-                else if (!fallback[k]) fallback[k] = base;
-            }
-        }
-        if (next <= addr) break;
-        addr = next;
-    }
-    for (int k = 0; k < 3; k++)
-        if (!g_ros[k]) g_ros[k] = best[k] ? best[k] : fallback[k];
-}
-// Timed wrapper — the roster refresh is the suspected per-frame spike (the full-heap walk when a
-// slot goes empty, e.g. after a scene change); prof_add captures it under `profile=1`.
-static void ensure_roster(void) { uint64_t t = prof_now(); ensure_roster_impl(); prof_add(PROF_ROSTER, t); }
 
 // ── Lua: mod.game.roster ─────────────────────────────────────────────────────
-static void push_member(lua_State *L, int k) {
-    uintptr_t a = g_ros[k];
-    uint32_t sb = 0, wx = 0, wy = 0, clv = 0, alv = 0, hpc = 0, mpc = 0;
-    uint32_t atk = 0, def = 0, spi = 0, res = 0, expc = 0, expm = 0;
-    int atk_b = 0, def_b = 0, spi_b = 0, res_b = 0;   // combat-stat BASE (2nd number) = raw + growth
-    mem_rd32((void *)(a + OFF_STATBLOCK), &sb);
-    mem_rd32((void *)(a + OFF_WORLD_X), &wx);
-    mem_rd32((void *)(a + OFF_WORLD_Y), &wy);
-    int hpm = 0, mpm = 0;
-    if (sb) {
-        mem_rd32((void *)(sb + OFF_COMBAT_LV_MAX), &clv);
-        mem_rd32((void *)(sb + OFF_ADV_LEVEL), &alv);
-        mem_rd32((void *)(sb + OFF_HP_CUR), &hpc);
-        mem_rd32((void *)(sb + OFF_MP_CUR), &mpc);
-        atk = (uint32_t)stat_max(sb, OFF_ATK, OFF_ATK_EQUIP, OFF_ATK_GROWTH);   // effective (w/ equip)
-        def = (uint32_t)stat_max(sb, OFF_DEF, OFF_DEF_EQUIP, OFF_DEF_GROWTH);
-        spi = (uint32_t)stat_max(sb, OFF_SPIRIT, OFF_SPI_EQUIP, OFF_SPI_GROWTH);
-        res = (uint32_t)stat_max(sb, OFF_RESIST, OFF_RES_EQUIP, OFF_RES_GROWTH);
-        atk_b = stat_sum2(sb, OFF_ATK, OFF_ATK_GROWTH);                          // base = raw + growth
-        def_b = stat_sum2(sb, OFF_DEF, OFF_DEF_GROWTH);
-        spi_b = stat_sum2(sb, OFF_SPIRIT, OFF_SPI_GROWTH);
-        res_b = stat_sum2(sb, OFF_RESIST, OFF_RES_GROWTH);
-        mem_rd32((void *)(sb + OFF_EXP_CUR), &expc);
-        mem_rd32((void *)(sb + OFF_EXP_MAX), &expm);
-        hpm = stat_max(sb, OFF_HP_BASE, OFF_HP_EQUIP, OFF_HP_BUFF);
-        mpm = stat_max(sb, OFF_MP_BASE, OFF_MP_EQUIP, OFF_MP_BUFF);
-    }
+static void push_member(lua_State *L, const member_t *m) {
+    const sotes_layout *l = sotes_layout_get();
+    uintptr_t sb = m->stats;
+    int x = 0, y = 0;
+    member_xy(l, m->ch, &x, &y);
     lua_newtable(L);
-    lua_pushinteger(L, (int)CODES[k]);      lua_setfield(L, -2, "code");
-    lua_pushstring(L, NAMES[k]);            lua_setfield(L, -2, "name");
-    lua_pushnumber(L, (double)a);           lua_setfield(L, -2, "actor");
-    lua_pushnumber(L, (double)sb);          lua_setfield(L, -2, "stat_block");
-    // `level` stays = combat_level for backward-compat, but it IS the combat level (see combat_level
-    // below).  The big character "Level" on the status screen = combat_level + adventurer_level.
-    lua_pushinteger(L, (int)clv);           lua_setfield(L, -2, "level");
-    lua_pushinteger(L, (int)clv);           lua_setfield(L, -2, "combat_level");
-    lua_pushinteger(L, (int)alv);           lua_setfield(L, -2, "adventurer_level");
-    lua_pushinteger(L, (int)(clv + alv));   lua_setfield(L, -2, "char_level");
-    lua_pushinteger(L, (int)wx);            lua_setfield(L, -2, "x");
-    lua_pushinteger(L, (int)wy);            lua_setfield(L, -2, "y");
-    lua_pushinteger(L, (int)hpc);           lua_setfield(L, -2, "hp");
-    lua_pushinteger(L, hpm);                lua_setfield(L, -2, "hp_max");
-    lua_pushinteger(L, (int)mpc);           lua_setfield(L, -2, "mp");
-    lua_pushinteger(L, mpm);                lua_setfield(L, -2, "mp_max");
-    // the 4 combat stats — the status screen's "effective/base" (effective = with equipment; base =
-    // raw + growth).  RE'd live vs Stella's sheet 2026-07-20 (all 4 exact).  `attack` = effective.
-    lua_pushinteger(L, (int)atk);           lua_setfield(L, -2, "attack");
-    lua_pushinteger(L, atk_b);              lua_setfield(L, -2, "attack_base");
-    lua_pushinteger(L, (int)def);           lua_setfield(L, -2, "defense");
-    lua_pushinteger(L, def_b);              lua_setfield(L, -2, "defense_base");
-    lua_pushinteger(L, (int)spi);           lua_setfield(L, -2, "spirit");
-    lua_pushinteger(L, spi_b);              lua_setfield(L, -2, "spirit_base");
-    lua_pushinteger(L, (int)res);           lua_setfield(L, -2, "resist");
-    lua_pushinteger(L, res_b);              lua_setfield(L, -2, "resist_base");
-    lua_pushinteger(L, (int)expc);          lua_setfield(L, -2, "exp");
-    lua_pushinteger(L, (int)expm);          lua_setfield(L, -2, "exp_max");
-    lua_pushboolean(L, actor_is_active(a)); lua_setfield(L, -2, "active");  // controlled member (needs the executor)
+    lua_pushinteger(L, (int)m->code);           lua_setfield(L, -2, "code");
+    const char *id = code_name(m->code), *nm = id;
+    char buf[9] = { 0 };
+    if (sb && mem_readable((void *)sb, 8)) { memcpy(buf, (void *)(sb + OFF_NAME), 8); if (buf[0]) nm = buf; }
+    if (nm) { lua_pushstring(L, nm); lua_setfield(L, -2, "name"); }    // the game's own text (Shift-JIS on ense-jp)
+    if (id) { lua_pushstring(L, id); lua_setfield(L, -2, "id"); }      // stable ASCII id by code
+    lua_pushnumber(L, (double)m->ch);           lua_setfield(L, -2, "actor");
+    lua_pushnumber(L, (double)m->slot);         lua_setfield(L, -2, "slot");
+    lua_pushnumber(L, (double)sb);              lua_setfield(L, -2, "stat_block");
+    lua_pushinteger(L, x);                      lua_setfield(L, -2, "x");
+    lua_pushinteger(L, y);                      lua_setfield(L, -2, "y");
+    lua_pushboolean(L, m->leader);              lua_setfield(L, -2, "active");   // the controlled member (room->leader)
+    if (sb) {
+        int clv = rdi(sb + l->st_combat_lv), cmax = rdi(sb + l->st_combat_max), alv = rdi(sb + l->st_adv_lv);
+        lua_pushinteger(L, clv + alv);          lua_setfield(L, -2, "level");            // the HUD / save-list "Lv"
+        lua_pushinteger(L, clv + alv);          lua_setfield(L, -2, "char_level");
+        lua_pushinteger(L, clv);                lua_setfield(L, -2, "combat_level");     // "Combat Level M/N": M
+        lua_pushinteger(L, cmax);               lua_setfield(L, -2, "combat_level_max"); //   N (the HUD stars)
+        lua_pushinteger(L, alv);                lua_setfield(L, -2, "adventurer_level");
+        lua_pushinteger(L, rdi(sb + OFF_HP_CUR)); lua_setfield(L, -2, "hp");
+        lua_pushinteger(L, sum3(sb, OFF_HP_BASE, OFF_HP_EQUIP, OFF_HP_BUFF)); lua_setfield(L, -2, "hp_max");
+        lua_pushinteger(L, rdi(sb + OFF_MP_CUR)); lua_setfield(L, -2, "mp");
+        lua_pushinteger(L, sum3(sb, OFF_MP_BASE, OFF_MP_EQUIP, OFF_MP_BUFF)); lua_setfield(L, -2, "mp_max");
+        lua_pushinteger(L, sum3(sb, OFF_ATK, OFF_ATK_EQUIP, OFF_ATK_GROWTH));    lua_setfield(L, -2, "attack");
+        lua_pushinteger(L, sum2(sb, OFF_ATK, OFF_ATK_GROWTH));                   lua_setfield(L, -2, "attack_base");
+        lua_pushinteger(L, sum3(sb, OFF_DEF, OFF_DEF_EQUIP, OFF_DEF_GROWTH));    lua_setfield(L, -2, "defense");
+        lua_pushinteger(L, sum2(sb, OFF_DEF, OFF_DEF_GROWTH));                   lua_setfield(L, -2, "defense_base");
+        lua_pushinteger(L, sum3(sb, OFF_SPIRIT, OFF_SPI_EQUIP, OFF_SPI_GROWTH)); lua_setfield(L, -2, "spirit");
+        lua_pushinteger(L, sum2(sb, OFF_SPIRIT, OFF_SPI_GROWTH));                lua_setfield(L, -2, "spirit_base");
+        lua_pushinteger(L, sum3(sb, OFF_RESIST, OFF_RES_EQUIP, OFF_RES_GROWTH)); lua_setfield(L, -2, "resist");
+        lua_pushinteger(L, sum2(sb, OFF_RESIST, OFF_RES_GROWTH));                lua_setfield(L, -2, "resist_base");
+        lua_pushinteger(L, rdi(sb + l->st_exp));     lua_setfield(L, -2, "exp");
+        lua_pushinteger(L, rdi(sb + l->st_exp_max)); lua_setfield(L, -2, "exp_max");
+    }
 }
 
-// mod.game.roster.members() -> { {code,name,actor,level,x,y,hp,...}, ... } present members.
+// mod.game.roster.members() -> { {code,name,actor,slot,x,y,hp,...,active}, ... } in room-slot order.
 static int l_roster_members(lua_State *L) {
     if (!gb_enabled("roster")) { lua_pushnil(L); return 1; }   // inert even via a captured ref
-    ensure_roster();
+    uint64_t t = prof_now();
+    member_t m[NSLOTS];
+    int n = party_members(m);
     lua_newtable(L);
-    int idx = 1;
-    for (int k = 0; k < 3; k++) if (g_ros[k]) { push_member(L, k); lua_rawseti(L, -2, idx++); }
+    for (int i = 0; i < n; i++) { push_member(L, &m[i]); lua_rawseti(L, -2, i + 1); }
+    prof_add(PROF_ROSTER, t);
+    return 1;
+}
+// mod.game.roster.world() -> {world, room, view, nflags} (raw pointers; nil outside a scene) — for RE / mods
+static int l_roster_world(lua_State *L) {
+    const sotes_layout *l = sotes_layout_get();
+    uintptr_t w = world_ptr();
+    if (!l || !w) { lua_pushnil(L); return 1; }
+    uintptr_t room = rd(w + l->world_room);
+    lua_newtable(L);
+    lua_pushnumber(L, (double)w);                      lua_setfield(L, -2, "world");
+    lua_pushnumber(L, (double)room);                   lua_setfield(L, -2, "room");
+    lua_pushnumber(L, (double)rd(w + l->world_view));  lua_setfield(L, -2, "view");
+    if (room) { lua_pushinteger(L, (int)(rd(room + l->room_nflags) & 0xffff)); lua_setfield(L, -2, "nflags"); }
     return 1;
 }
 
 static void install_roster(lua_State *L) {
     lua_newtable(L);
     lua_pushcfunction(L, l_roster_members); lua_setfield(L, -2, "members");
+    lua_pushcfunction(L, l_roster_world);   lua_setfield(L, -2, "world");
+    sotes_layout_push_lua(L);               lua_setfield(L, -2, "layout");   // this edition's offsets (sotes_layout.h)
 }
 
 // ── Lua: mod.game.coordinates ────────────────────────────────────────────────
-// mod.game.coordinates.get([code]) -> {x,y,actor,code} for a member (default Arche);
-// mod.game.coordinates.player() -> Arche's coords.  (A "controlled member" accessor
-// arrives with P3 hooks — the active-member predicate needs the input-mgr global.)
-static int coord_get_impl(lua_State *L, uint32_t code) {
-    int k = code_index(code); if (k < 0) k = 0;
-    ensure_roster();
-    uintptr_t a = g_ros[k];
-    if (!a) { lua_pushnil(L); return 1; }
-    uint32_t wx = 0, wy = 0;
-    mem_rd32((void *)(a + OFF_WORLD_X), &wx);
-    mem_rd32((void *)(a + OFF_WORLD_Y), &wy);
+// get([code]) -> {x,y,actor,code} for a member (default Arche); player() = Arche; target() = the
+// controlled member (room->leader).
+static int push_coords(lua_State *L, const member_t *m) {
+    int x, y;
+    if (!m || !member_xy(sotes_layout_get(), m->ch, &x, &y)) { lua_pushnil(L); return 1; }
     lua_newtable(L);
-    lua_pushinteger(L, (int)wx);         lua_setfield(L, -2, "x");
-    lua_pushinteger(L, (int)wy);         lua_setfield(L, -2, "y");
-    lua_pushnumber(L, (double)a);        lua_setfield(L, -2, "actor");
-    lua_pushinteger(L, (int)CODES[k]);   lua_setfield(L, -2, "code");
+    lua_pushinteger(L, x);              lua_setfield(L, -2, "x");
+    lua_pushinteger(L, y);              lua_setfield(L, -2, "y");
+    lua_pushnumber(L, (double)m->ch);   lua_setfield(L, -2, "actor");
+    lua_pushinteger(L, (int)m->code);   lua_setfield(L, -2, "code");
+    return 1;
+}
+static int coord_by(lua_State *L, uint32_t code, int want_leader) {
+    member_t m[NSLOTS];
+    int n = party_members(m);
+    for (int i = 0; i < n; i++)
+        if (want_leader ? m[i].leader : m[i].code == code) return push_coords(L, &m[i]);
+    if (want_leader && n) return push_coords(L, &m[0]);
+    lua_pushnil(L);
     return 1;
 }
 static int l_coord_get(lua_State *L) {
     if (!gb_enabled("coordinates")) { lua_pushnil(L); return 1; }
-    uint32_t code = lua_isnumber(L, 1) ? (uint32_t)lua_tointeger(L, 1) : 0xc35a;
-    return coord_get_impl(L, code);
+    return coord_by(L, lua_isnumber(L, 1) ? (uint32_t)lua_tointeger(L, 1) : 0xc35a, 0);
 }
 static int l_coord_player(lua_State *L) {
     if (!gb_enabled("coordinates")) { lua_pushnil(L); return 1; }
-    return coord_get_impl(L, 0xc35a);
+    return coord_by(L, 0xc35a, 0);
 }
-// coordinates.target() -> the CONTROLLED member's coords (needs the executor's captured
-// input mgr); falls back to Arche until the executor is armed.
 static int l_coord_target(lua_State *L) {
     if (!gb_enabled("coordinates")) { lua_pushnil(L); return 1; }
-    ensure_roster();
-    for (int k = 0; k < 3; k++) if (g_ros[k] && actor_is_active(g_ros[k])) return coord_get_impl(L, CODES[k]);
-    return coord_get_impl(L, 0xc35a);
+    return coord_by(L, 0, 1);
 }
 
 static void install_coordinates(lua_State *L) {
@@ -347,8 +225,7 @@ static void install_coordinates(lua_State *L) {
 // ── Lua: mod.game.mouse ──────────────────────────────────────────────────────
 // mod.game.mouse.get() -> { screen_x, screen_y, over, world_x, world_y }.  screen_* is the cursor in the
 // game's own 640x480 space (the ddraw layer undoes the borderless pillarbox / windowed client scale);
-// world_* is world centi-px via the camera (view origin + screen*viewport-span), omitted at the title/
-// menu (no scene/camera).  The game ignores the mouse itself — this is for the trainer + mouse mods.
+// world_* is world centi-px via the camera (view origin + screen*viewport-span), omitted outside a scene.
 static int l_mouse_get(lua_State *L) {
     if (!gb_enabled("mouse")) { lua_pushnil(L); return 1; }
     float gx = 0, gy = 0;
@@ -357,16 +234,12 @@ static int l_mouse_get(lua_State *L) {
     lua_pushnumber(L, gx);    lua_setfield(L, -2, "screen_x");
     lua_pushnumber(L, gy);    lua_setfield(L, -2, "screen_y");
     lua_pushboolean(L, over); lua_setfield(L, -2, "over");
-    // world-space: view origin (camera) + the screen fraction of the viewport span (cpx).
-    uint32_t root = 0, cam = 0, vleft = 0, vtop = 0, vpw = 0, vph = 0;
-    if (mem_rd32((void *)mem_reloc(VA_RENDER_ROOT), &root) && root &&
-        mem_rd32((void *)(uintptr_t)(root + OFF_CAM), &cam) && cam &&
-        mem_rd32((void *)(uintptr_t)(cam + CAM_VIEW_LEFT), &vleft) &&
-        mem_rd32((void *)(uintptr_t)(cam + CAM_VIEW_TOP), &vtop) &&
-        mem_rd32((void *)(uintptr_t)(cam + CAM_VP_W), &vpw) &&
-        mem_rd32((void *)(uintptr_t)(cam + CAM_VP_H), &vph) && vpw && vph) {
-        int wx = (int)vleft + (int)(gx * (float)vpw / 640.0f);   // vpw≈64000 for 640px => screen*100
-        int wy = (int)vtop  + (int)(gy * (float)vph / 480.0f);
+    const sotes_layout *l = sotes_layout_get();
+    uintptr_t w = world_ptr(), cam = (l && w) ? rd(w + l->world_view) : 0;
+    int vpw = cam ? rdi(cam + CAM_VP_W) : 0, vph = cam ? rdi(cam + CAM_VP_H) : 0;
+    if (vpw && vph) {
+        int wx = rdi(cam + CAM_VIEW_LEFT) + (int)(gx * (float)vpw / 640.0f);
+        int wy = rdi(cam + CAM_VIEW_TOP)  + (int)(gy * (float)vph / 480.0f);
         lua_pushinteger(L, wx);  lua_setfield(L, -2, "world_x");
         lua_pushinteger(L, wy);  lua_setfield(L, -2, "world_y");
     }
@@ -384,6 +257,7 @@ static void install_mouse(lua_State *L) {
 // Input-record contract: a record is {id@0, now@4, state=1@8}; its pointer is published into the input
 // manager's 64-slot ring at mgr+0x0c, slot 63 (first polled); the poll matches id + state==1 +
 // (poll_now - record_now) <= 0x64.  `now` = the poll's own timestamp.  Everything runs engine-thread.
+#define VA_RENDER_ROOT  0x92dd38    // v1: "in a scene" probe (old SE build)
 #define VA_PICKER_POLL  0x4378d0    // save-slot picker input poll (thiscall; ecx = picker ctrl, arg2 = now)
 #define VA_MENU_NAV     0x5e7fe0    // menu_ctrl nav/action (thiscall; ecx = menu_ctrl, arg1 = action code) — the
                                     //   EN-SE cursor controller the title steers its selection through.  DISASM-

@@ -65,13 +65,17 @@ hand.
 mod.game.list()                 -> { {id=, desc=, enabled=}, ... }
 mod.game.enable(id)/disable(id)/enabled(id)     -- live toggle (a stability valve)
 -- SotES bindings (grow as we RE more) — DATA accessors + semantic OPS:
-mod.game.roster.members()       -> { {code,name,actor,stat_block, char_level,combat_level,adventurer_level,
-                                       x,y, hp,hp_max,mp,mp_max, attack,defense,spirit,resist, exp,exp_max,
-                                       active, level=combat_level(back-compat)}, ... }
-                                   -- char_level = combat+adventurer (the status "Level"); atk/def/spi/res
-                                   -- are RAW base (display adds armor/weapon). RE: ../OpenSummoners
-                                   -- docs/findings/save15-live-stats.md.
-mod.game.coordinates.get([code])/player()/target()   -> {x,y,actor,code}   (centi-px)
+mod.game.roster.members()       -> { {code,id,name,actor,slot,stat_block, level,char_level,combat_level,
+                                       combat_level_max,adventurer_level, x,y, hp,hp_max,mp,mp_max,
+                                       attack(_base),defense(_base),spirit(_base),resist(_base), exp,exp_max,
+                                       active}, ... }       -- every active room party slot, in slot order
+                                   -- level = char_level = combat + adventurer (the HUD / save-list "Lv");
+                                   -- combat_level/_max = "Combat Level M/N" (N = the HUD stars).
+                                   -- id = ASCII by code (Arche/Sana/Stella/Chiffon); name = the game's text
+                                   -- (Shift-JIS on ense-jp).  active = the controlled member (room->leader).
+mod.game.roster.world()         -> {world, room, view, nflags} raw pointers (nil outside a scene)
+mod.game.roster.layout          -- this edition's struct offsets (core/sotes_layout.h) for mods doing raw reads
+mod.game.coordinates.get([code])/player()/target()   -> {x,y,actor,code}   (centi-px; target = controlled)
 mod.game.mouse.get()            -> {screen_x, screen_y, over, world_x, world_y}
 mod.game.attract.set(on)        -- toggle the attract/demo mode (off keeps the title up)
 mod.game.input.press(id[,mgr])  -- inject a UI button into the captured input mgr's ring (arbitrary
@@ -85,8 +89,11 @@ The **ops** (`attract`, `save`) are the model for core→mod work: known RE (her
 exposed as a semantic loader op, so a mod ORCHESTRATES it (`mod.game.save.load(slot)`) instead of
 reimplementing it.  The `autoload` mod is exactly this — read its `slot` config, call `save.load`.
 
-`active` / `coordinates.target()` identify the **controlled** member — they resolve once
-the executor is armed (they use the input manager it captures at the safepoint).
+Every SotES binding resolves through the **edition layer** (enold / ense-en / ense-jp): VAs by symbol
+(`mod.sym`), struct offsets from `core/sotes_layout.h`.  An unknown build → no layout → nil.
+**v2 (2026-11-24):** `roster` / `coordinates` / `mouse` are rebuilt on it (world → room → party slots, no
+heap scan; `level` is now the HUD level, was combat-max).  `attract` / `save` / `input.press` are still the
+v1 address set and REFUSE (log + false) until rebuilt.
 
 **`mod.hook`** — one trampoline per target VA dispatches an ordered chain, so multiple mods
 hook the same function without clobbering each other. Two tiers (a stability gradient):

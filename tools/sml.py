@@ -6,6 +6,8 @@
   tools/sml lua R 'return mod.edition'   # Lua on the engine thread, JSON result; -f FILE for a file
   tools/sml shot R [OUT.png]             # the X display (what a player sees)
   tools/sml log R [-n 40]                # tail of oss_modloader.log
+  tools/sml continue R                   # title → Continue → newest save; waits for a room + party
+  tools/sml test R tests/roster.lua ...  # Lua suites → PASS / FAIL (exit 1 on any FAIL)
   tools/sml down R | down --all
   tools/sml ls
 
@@ -169,7 +171,7 @@ def cmd_up(a):
         src = STEAM_USER if a.saves == "steam" else a.saves
         os.makedirs(os.path.join(d, "user"))
         for f in os.listdir(src):
-            if f.endswith((".sdt", ".dat")):
+            if f.endswith(".sdt") or (a.keep_config and f == "config.dat"):
                 shutil.copy(os.path.join(src, f), os.path.join(d, "user", f))
     for mname in filter(None, (a.mods or "").split(",")):
         for base in (os.path.join(MODS_REPO, "mods"), os.path.join(ROOT, "examples"), os.path.join(ROOT, "tests", "mods")):
@@ -188,7 +190,7 @@ def cmd_up(a):
 
     import fcntl
     lk = open(os.path.join(HOME, "display.lock"), "w")
-    fcntl.flock(lk, fcntl.LOCK_EX)        # parallel `up`s: one display allocation at a time
+    fcntl.flock(lk, fcntl.LOCK_EX)        # parallel `up`s: display + port + prefix slot claimed one run at a time
     disp = free_display()
     port = free_port()
     slot = free_slot()
@@ -199,13 +201,13 @@ def cmd_up(a):
         if os.path.exists(f"/tmp/.X11-unix/X{disp}"):
             break
         time.sleep(0.05)
-    fcntl.flock(lk, fcntl.LOCK_UN)
     wl = open(os.path.join(d, "wine.log"), "w")
     g = subprocess.Popen(["wine", ed["as"]], cwd=d, env=wine_env(f":{disp}", port, slot), stdout=wl, stderr=wl,
                          start_new_session=True)
     m = {"run": a.run, "edition": a.edition, "display": f":{disp}", "port": port, "xvfb_pid": xv.pid,
          "game_pid": g.pid, "slot": slot, "dir": d, "started": time.time()}
     json.dump(m, open(os.path.join(d, "run.json"), "w"), indent=1)
+    fcntl.flock(lk, fcntl.LOCK_UN)        # slot + display are claimed (run.json names a live pid) — next `up` may go
     t0 = time.time()
     while time.time() - t0 < a.timeout:
         if not alive(g.pid):
@@ -339,6 +341,75 @@ def cmd_down(a):
             print(f"{r}: down")
 
 
+# Title → Continue → the newest save (the picker's default), per edition: the SE title is a horizontal carousel
+# (Option / Exit / Start / Continue / Special, cursor on Start), enold a vertical list (Start / Continue / ...).
+# Menus drop input pressed within ~15 frames of opening (OpenSummoners tools/drive/DRIVER.md), hence the waits.
+# (frame gate, movie): SE plays a long studio intro that drops input until ~frame 1000 — one ent skips it; enold
+# shows its title by ~frame 1900 (no skip: an ent there would pick Start).  The cursor starts on Start because
+# `up` copies no config.dat (it remembers the last title pick).
+CONTINUE = {"enold": (1900, "D .*30 ent .*300 ent"),
+            "ense-en": (1200, "ent .*400 R .*30 ent .*300 ent"),
+            "ense-jp": (1200, "ent .*400 R .*30 ent .*300 ent")}
+IN_SCENE = "local w = mod.game.roster.world() return w ~= nil and w.room ~= 0 and #mod.game.roster.members() > 0"
+
+
+def cmd_continue(a):
+    """FRESH boot → (one ent skips the studio intro) → title → Continue → the picker's default save; waits until a
+    room with a party is up.  Only from a fresh `up`: a second ent on the title would pick Start."""
+    m = meta(a.run)
+    ok, txt = lua(m, IN_SCENE)
+    if not (ok and txt == "true"):
+        t0 = time.time()
+        gate, movie = CONTINUE[m["edition"]]
+        while time.time() - t0 < 60 and int(lua(m, "return mod.frame()")[1] or 0) < gate:
+            time.sleep(0.2)
+        lua(m, f"return mod.input.play([[{movie}]])")
+        wait_input(m, 90)
+        for _ in range(3):                  # the picker drops an early confirm: re-press until the room is up
+            t0 = time.time()
+            while time.time() - t0 < a.timeout / 3:
+                ok, txt = lua(m, IN_SCENE)
+                if ok and txt == "true":
+                    break
+                time.sleep(0.5)
+            if ok and txt == "true":
+                break
+            lua(m, "return mod.input.play([[ent .*30]])")
+    if ok and txt == "true":
+        print(f"{a.run}: in scene (frame {lua(m, 'return mod.frame()')[1]})")
+        return
+    die(f"{a.run}: not in a scene — sml shot {a.run}", 4)
+
+
+def wait_input(m, secs):
+    t0 = time.time()
+    while time.time() - t0 < secs:
+        ok, left = lua(m, "return mod.input.pending()")
+        if ok and left == "0":
+            return
+        time.sleep(0.1)
+
+
+def cmd_test(a):
+    """run Lua test files (each returns {pass, fails, info}) on a live run; exit 1 if any fails"""
+    m = meta(a.run)
+    bad = 0
+    for f in a.files:
+        ok, txt = lua(m, open(f).read(), timeout=60)
+        try:
+            r = json.loads(txt) if ok else {"pass": False, "fails": [txt]}
+        except ValueError:
+            r = {"pass": False, "fails": [txt]}
+        name = os.path.basename(f)
+        print(f"{'PASS' if r.get('pass') else 'FAIL'}  {name}  [{m['edition']}]")
+        for l in r.get("info") or []:
+            print(f"    {l}")
+        for l in r.get("fails") or []:
+            print(f"    ✗ {l}")
+        bad += not r.get("pass")
+    sys.exit(1 if bad else 0)
+
+
 def cmd_ls(a):
     for r in sorted(os.listdir(RUNS)) if os.path.isdir(RUNS) else []:
         p = os.path.join(RUNS, r, "run.json")
@@ -352,6 +423,7 @@ def main():
     sp = ap.add_subparsers(dest="cmd", required=True)
     p = sp.add_parser("up"); p.add_argument("run"); p.add_argument("--edition", default="ense-en")
     p.add_argument("--mods"); p.add_argument("--saves", default="steam"); p.add_argument("--cfg", nargs="*")
+    p.add_argument("--keep-config", action="store_true", help="also copy config.dat (settings + the last title pick)")
     p.add_argument("--timeout", type=float, default=90); p.set_defaults(f=cmd_up)
     p = sp.add_parser("ping"); p.add_argument("run"); p.set_defaults(f=cmd_ping)
     p = sp.add_parser("lua"); p.add_argument("run"); p.add_argument("code", nargs="*"); p.add_argument("-f", "--file")
@@ -365,6 +437,9 @@ def main():
     p = sp.add_parser("log"); p.add_argument("run"); p.add_argument("-n", type=int, default=40); p.set_defaults(f=cmd_log)
     p = sp.add_parser("down"); p.add_argument("run", nargs="?"); p.add_argument("--all", action="store_true"); p.set_defaults(f=cmd_down)
     p = sp.add_parser("ls"); p.set_defaults(f=cmd_ls)
+    p = sp.add_parser("continue"); p.add_argument("run"); p.add_argument("--timeout", type=float, default=40)
+    p.set_defaults(f=cmd_continue)
+    p = sp.add_parser("test"); p.add_argument("run"); p.add_argument("files", nargs="+"); p.set_defaults(f=cmd_test)
     a = ap.parse_args()
     a.f(a)
 

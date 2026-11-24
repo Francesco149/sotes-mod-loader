@@ -3,6 +3,24 @@
 Two layers: host-side native tests (run anywhere via `nix develop` + WSLInterop) and an
 in-game smoke test against the real unpacked SE.
 
+## Real exe under wine — `tools/sml` (v2, any edition, no human)
+
+```
+tools/sml up R --edition enold|ense-en|ense-jp --saves steam|DIR   # own prefix slot + Xvfb; copies *.sdt only
+tools/sml continue R          # fresh boot → title → Continue → the picker's default save; waits for a party
+tools/sml test R tests/*.lua  # each suite returns {pass, fails, info} → PASS/FAIL, exit 1 on a FAIL
+tools/sml shot R out.png      # LOOK at it: the test's numbers vs the HUD
+```
+
+| suite | proves | ense-en | ense-jp | enold |
+|---|---|---|---|---|
+| `tests/roster.lua` | world/room/view via `g_world` + layout; party slots → chars → stat block; one leader; hp/mp ≤ max; level = combat + adventurer; positions inside the map | PASS (HUD-checked: 179/197, 43/43, Lv8, 3/5 stars; Lv15 save: 293/293 …) | PASS (Steam saves) | PASS (port drive save; coords checked vs the frame) |
+
+`continue` caveats: SE's studio intro drops input until ~frame 1000 (one `ent` then skips it); enold has no
+intro.  The title + picker cursors start where `config.dat` left them, so `up` copies no `config.dat` unless
+`--keep-config`.  Parallel `up`s are safe (display / port / prefix slot claimed under one lock).
+Saves for enold: OpenSummoners `tests/scenarios/*/_saves/*/` (copy the `.sdt` files; read-only there).
+
 ## Host-side (no game)
 
 `nix develop --command make -C core tests` builds + runs the harness exes below via
