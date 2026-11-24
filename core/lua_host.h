@@ -22,6 +22,13 @@ int  lh_init(void);
 // load/run error is caught + logged; the mod is flagged, the loader continues.
 void lh_run_mod(const char *name, const char *dir, const char *init_lua_path);
 
+struct lua_State;
+// Push a fresh sandbox env (globals fall through to _G) whose `mod` is a per-mod table for `name`.
+// Used by lh_run_mod and the dev server's persistent env.
+void lh_push_env(struct lua_State *L, const char *name, const char *dir);
+// The dev server's helper chunk (dev.repr, ...), run once in its env.
+const char *lh_dev_lua(void);
+
 // The shared Lua state (NULL before lh_init).  A test/introspection seam — the loader
 // itself always reaches Lua through the typed helpers above.
 struct lua_State *lh_state(void);

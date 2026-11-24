@@ -18,6 +18,7 @@
 #include <d3dcompiler.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 // ════════════════════════════ the captured frame (lock-free triple buffer) ════════════════════════
@@ -436,4 +437,44 @@ extern "C" int ddp_cursor_game(float *gx, float *gy) {
     if (gx) *gx = x;
     if (gy) *gy = y;
     return (x >= 0 && y >= 0 && x < 640 && y < 480) ? 1 : 0;
+}
+
+// ════════════════════════════ ENGINE THREAD: one-shot screenshot (dev / tests) ════════════════════════════
+// Lock the game's back buffer (the finished frame the Flip is about to present) and write a 24-bit BMP.
+// Called from the frame hook's drain, i.e. inside flip, before the present.  Returns 1 on success.
+extern "C" int ddp_shot_bmp(void *screen_ctx, const char *path) {
+    if (!screen_ctx || !path) return 0;
+    char *zddobj = *(char **)((char *)screen_ctx + 0x16c);
+    if (!zddobj) return 0;
+    IDirectDrawSurface7 *surf = *(IDirectDrawSurface7 **)(zddobj + 0x2c);
+    if (!surf) return 0;
+    DDSURFACEDESC2 dd; memset(&dd, 0, sizeof dd); dd.dwSize = sizeof dd;
+    if (FAILED(surf->Lock(NULL, &dd, DDLOCK_READONLY | DDLOCK_WAIT, NULL)) || !dd.lpSurface) return 0;
+    int w = (int)dd.dwWidth, h = (int)dd.dwHeight, bpp = (int)dd.ddpfPixelFormat.dwRGBBitCount;
+    int ok = 0;
+    FILE *fp = (w > 0 && h > 0 && (bpp == 16 || bpp == 24 || bpp == 32)) ? fopen(path, "wb") : NULL;
+    if (fp) {
+        int row = (w * 3 + 3) & ~3;
+        uint32_t fsz = 54u + (uint32_t)row * (uint32_t)h;
+        uint8_t hd[54] = { 'B', 'M' };
+        memcpy(hd + 2, &fsz, 4); hd[10] = 54; hd[14] = 40;
+        memcpy(hd + 18, &w, 4); memcpy(hd + 22, &h, 4); hd[26] = 1; hd[28] = 24;
+        fwrite(hd, 1, 54, fp);
+        uint8_t *line = (uint8_t *)calloc((size_t)row, 1);
+        for (int y = h - 1; y >= 0; y--) {
+            const uint8_t *s = (const uint8_t *)dd.lpSurface + (size_t)y * dd.lPitch;
+            for (int x = 0; x < w; x++) {
+                uint8_t r, g, b;
+                if (bpp == 16) { uint16_t p = ((const uint16_t *)s)[x]; r = (uint8_t)(((p >> 11) & 31) * 255 / 31); g = (uint8_t)(((p >> 5) & 63) * 255 / 63); b = (uint8_t)((p & 31) * 255 / 31); }
+                else { const uint8_t *q = s + x * (bpp / 8); b = q[0]; g = q[1]; r = q[2]; }
+                line[x * 3] = b; line[x * 3 + 1] = g; line[x * 3 + 2] = r;
+            }
+            fwrite(line, 1, (size_t)row, fp);
+        }
+        free(line);
+        fclose(fp);
+        ok = 1;
+    }
+    surf->Unlock(NULL);
+    return ok;
 }

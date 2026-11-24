@@ -32,12 +32,14 @@ LJ_INC := $(LJ_DIR)/src
 LJ_HOSTCC ?= $(LUAJIT_HOST_CC)
 
 # ── host sources ─────────────────────────────────────────────────────────────
-CSRC   := loader.c lua_host.c mem.c game_bindings.c sotes_bindings.c executor.c profile.c config.c hooks.c native_bridge.c prof.c voice.c crashlog.c
+CSRC   := loader.c lua_host.c mem.c game_bindings.c sotes_bindings.c executor.c profile.c config.c hooks.c native_bridge.c prof.c voice.c crashlog.c \
+          syms.c gen/sotes_syms.c devserver.c
 # MinHook (vendored, BSD-2): the trampoline backend for the safepoint hook (P2) + the
 # general chained hook registry (P3).
 MINHOOK := minhook/src/hook.c minhook/src/buffer.c minhook/src/trampoline.c \
            minhook/src/hde/hde32.c minhook/src/hde/hde64.c
-COBJ   := $(addprefix $(OBJ)/, $(CSRC:.c=.o)) $(addprefix $(OBJ)/, $(notdir $(MINHOOK:.c=.o)))
+COBJ   := $(addprefix $(OBJ)/, $(CSRC:.c=.o)) $(addprefix $(OBJ)/, $(notdir $(MINHOOK:.c=.o))) $(OBJ)/embed.o
+LUASRC := $(wildcard lua/*.lua)
 
 # ── C++ UI host (P5): our ui.cpp + the ImGui TUs (flattened into obj/) ────────
 IMGUI_SRC := $(IMGUI)/imgui.cpp $(IMGUI)/imgui_draw.cpp $(IMGUI)/imgui_tables.cpp \
@@ -52,7 +54,7 @@ CXXFLAGS := -std=c++17 -O2 -Wall -Wextra -I. -I$(LJ_INC) -I$(IMGUI) -I$(IMGUI)/b
 # Link with g++ so libstdc++ (the ImGui TUs) resolves; -static* so the game's DLL search path
 # (no libgcc_s / libstdc++-6) can still LoadLibrary us.  DX/DWM/GDI/IMM libs back the UI.
 LDFLAGS  := -shared -static -static-libgcc -static-libstdc++ -s
-LIBS     := $(LJ_LIB) -lkernel32 -luser32 -lgdi32 -ld3d11 -ldxgi -ld3dcompiler -ldwmapi -limm32
+LIBS     := $(LJ_LIB) -lkernel32 -luser32 -lgdi32 -ld3d11 -ldxgi -ld3dcompiler -ldwmapi -limm32 -lws2_32
 
 .PHONY: all clean clean-luajit
 all: $(OUT)
@@ -64,8 +66,13 @@ $(OUT): $(COBJ) $(CXXOBJ) version.def
 
 # our C objects need the LuaJIT headers -> gate compilation on the lib being built.
 $(OBJ)/%.o: %.c loader_internal.h $(LJ_LIB)
-	@mkdir -p $(OBJ)
+	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
+
+# embedded Lua sources (.incbin, paths relative to core/)
+$(OBJ)/embed.o: embed.S $(LUASRC)
+	@mkdir -p $(OBJ)
+	$(CC) -c embed.S -o $@
 
 # our C++ (ui.cpp) — LuaJIT + ImGui headers.
 $(OBJ)/%.o: %.cpp ui.h loader_internal.h $(LJ_LIB)

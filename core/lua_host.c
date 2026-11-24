@@ -12,6 +12,8 @@
 // main-thread executor (P2) will marshal engine-touching work onto the game thread.
 
 #include "loader_internal.h"
+#include "syms.h"
+#include "ddraw_present.h"
 #include "lua_host.h"
 #include "mem.h"
 #include "game_bindings.h"
@@ -62,6 +64,15 @@ static int l_mod_log(lua_State *L) {
     return 0;
 }
 
+static int l_frame(lua_State *L) { lua_pushnumber(L, exec_frame()); return 1; }
+static int l_screen_ctx(lua_State *L) { lua_pushnumber(L, (lua_Number)(uintptr_t)exec_screen_ctx()); return 1; }
+// mod.screen.shot(path) — the current frame as a 24-bit BMP (engine thread only; inside mod code that is always so)
+static int l_shot(lua_State *L) {
+    if (GetCurrentThreadId() != exec_main_tid()) { lua_pushnil(L); lua_pushstring(L, "not on the engine thread"); return 2; }
+    lua_pushboolean(L, ddp_shot_bmp(exec_screen_ctx(), luaL_checkstring(L, 1)));
+    return 1;
+}
+
 // Build + push a fresh per-mod `mod` table (its own name/dir/log closure).
 static void push_mod_table(lua_State *L, const char *name, const char *dir) {
     lua_newtable(L);
@@ -81,6 +92,13 @@ static void push_mod_table(lua_State *L, const char *name, const char *dir) {
     exec_push_on_frame(L);                   lua_setfield(L, -2, "on_frame"); // per-frame callback (P2)
     hooks_push_table(L);                     lua_setfield(L, -2, "hook");     // chained hook registry (P3)
     ui_push_table(L);                        lua_setfield(L, -2, "ui");       // shared ImGui UI host (P5)
+    sym_push_lua(L);                         lua_setfield(L, -2, "sym");      // engine symbols by name (v2)
+    lua_pushstring(L, sym_edition_tag());    lua_setfield(L, -2, "edition");  // "enold" / "ense-en" / "ense-jp"
+    lua_pushcfunction(L, l_frame);           lua_setfield(L, -2, "frame");    // presented frames so far
+    lua_newtable(L);
+    lua_pushcfunction(L, l_shot);            lua_setfield(L, -2, "shot");
+    lua_pushcfunction(L, l_screen_ctx);      lua_setfield(L, -2, "ctx");
+    lua_setfield(L, -2, "screen");                                            // mod.screen.shot(path) / .ctx()
 
     // mod.config — the mod's own settings, schema from <dir>\mod.toml [config], values namespaced in
     // oss_mods.cfg.  Built by the embedded factory (CONFIG_LUA).  get/set/schema; nil if the factory
@@ -254,13 +272,7 @@ void lh_run_mod(const char *name, const char *dir, const char *init_lua_path) {
     // Fresh sandbox environment: the mod's writes land here (mods don't clobber
     // each other's globals); reads fall through to _G via the metatable, so the
     // Lua stdlib (string/table/math/print/...) is available.  Lua 5.1 setfenv.
-    lua_newtable(g_L);                                    // env
-    push_mod_table(g_L, name, dir);                      // env, mod
-    lua_setfield(g_L, -2, "mod");                        // env.mod = <table>
-    lua_newtable(g_L);                                   // env, meta
-    lua_getglobal(g_L, "_G");                            // env, meta, _G
-    lua_setfield(g_L, -2, "__index");                    // meta.__index = _G
-    lua_setmetatable(g_L, -2);                           // setmetatable(env, meta)
+    lh_push_env(g_L, name, dir);
     lua_setfenv(g_L, -2);                                // setfenv(chunk, env)
 
     // Protected call — a runtime error is caught, the mod flagged, loader lives.
@@ -271,6 +283,20 @@ void lh_run_mod(const char *name, const char *dir, const char *init_lua_path) {
     }
     ml_log("[lua] mod ok: %s", name);
 }
+
+void lh_push_env(lua_State *L, const char *name, const char *dir) {
+    lua_newtable(L);                                     // env
+    push_mod_table(L, name, dir);                        // env, mod
+    lua_setfield(L, -2, "mod");                          // env.mod = <table>
+    lua_newtable(L);                                     // env, meta
+    lua_getglobal(L, "_G");                              // env, meta, _G
+    lua_setfield(L, -2, "__index");                      // meta.__index = _G
+    lua_setmetatable(L, -2);                             // setmetatable(env, meta)
+}
+
+// The dev server's helpers (core/lua/dev.lua, embedded by core/embed.S).
+extern const char oss_lua_dev[];
+const char *lh_dev_lua(void) { return oss_lua_dev; }
 
 lua_State *lh_state(void) { return g_L; }
 

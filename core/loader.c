@@ -28,6 +28,8 @@
 #include "native_bridge.h"
 #include "ui.h"
 #include "prof.h"
+#include "syms.h"
+#include "devserver.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -227,6 +229,7 @@ static DWORD WINAPI loader_thread(void *unused) {
         exec_run_deferred_inline();
     }
 
+    devserver_start();   // opt-in (devserver=PORT / OSS_DEVSERVER): agents + tests drive the game
     ml_log("[loader] done: %d native + %d Lua mod(s) from %smods\\", nn, nl, g_gamedir);
     return 0;
 }
@@ -244,8 +247,10 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID reserved) {
 
         char host[MAX_PATH] = ""; GetModuleFileNameA(NULL, host, MAX_PATH);
         char *hslash = strrchr(host, '\\'); const char *hbase = hslash ? hslash + 1 : host;
-        g_is_sotes = istr(hbase, "sotes") != NULL;   // profile select (stub — generalizes later)
-        ml_log("[loader] %s %s — attach host=%s dir=%s sotes=%d", OSS_ML_NAME, OSS_ML_VERSION, host, g_gamedir, g_is_sotes);
+        // A SotES build = a known edition header (works packed or unpacked, any exe name) or the name.
+        g_is_sotes = sym_guess_edition() >= 0 || istr(hbase, "sotes") != NULL;
+        ml_log("[loader] %s %s — attach host=%s dir=%s sotes=%d edition(header)=%s", OSS_ML_NAME, OSS_ML_VERSION, host, g_gamedir,
+               g_is_sotes, sym_guess_edition() >= 0 ? SYM_EDITIONS[sym_guess_edition()].tag : "unknown");
 
         // Come up if there's anything for us to do beside the exe: a mods\ folder, a recognized
         // game profile (built-in QoL — focus-keep, launcher dismiss, the overlay/UI — runs even

@@ -62,6 +62,9 @@ void ddp_on_resize(int w, int h);
 // the game area.  Used by mod.game.mouse for the screen-space half (world-space adds the camera).
 int ddp_cursor_game(float *gx, float *gy);
 
+// ENGINE THREAD (inside the frame hook): write the back buffer as a 24-bit BMP. 1 = ok.
+int ddp_shot_bmp(void *screen_ctx, const char *path);
+
 #ifdef __cplusplus
 }
 #endif

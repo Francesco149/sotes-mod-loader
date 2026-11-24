@@ -591,7 +591,17 @@ static void al_title_cb(void *user) {
 }
 
 // mod.game.attract.set(on): on=false freezes the attract/demo (keeps the title up); on=true restores.
+// PORT-DEBT(v1-se-vas): attract / save / input patch + hook VAs from the PRE-2026-08 SE build; the Steam
+// update moved that code (0x437c70 is no longer even a function start).  Refused until rebuilt on the
+// symbol table (docs/plans/v2-revamp.md step 4) — a stale patch would write into unrelated code.
+static int legacy_refuse(lua_State *L, const char *what) {
+    ml_log("[game] %s: v1 address set (old SE build) — disabled until rebuilt on symbols (v2 step 4)", what);
+    lua_pushboolean(L, 0);
+    return 1;
+}
+
 static int l_attract_set(lua_State *L) {
+    return legacy_refuse(L, "attract.set");
     if (!gb_enabled("attract")) return 0;
     al_attract_freeze(lua_toboolean(L, 1) ? 0 : 1);
     return 0;
@@ -600,6 +610,7 @@ static int l_attract_set(lua_State *L) {
 // newest/default).  Runs on the engine thread (mod init / on_frame), so it installs the picker hook +
 // the per-frame drive directly; arms once (a second call while driving is a no-op that returns false).
 static int l_save_load(lua_State *L) {
+    return legacy_refuse(L, "save.load");
     if (!gb_enabled("save")) { lua_pushboolean(L, 0); return 1; }
     if (g_al_state != 0) { lua_pushboolean(L, 0); return 1; }
     g_al_target = lua_isnumber(L, 1) ? (int)lua_tointeger(L, 1) : -1;
@@ -635,6 +646,7 @@ static void install_save(lua_State *L) {
 // 0x03 down, 0x24 confirm/commit, 0x22 abort/back (0x02/0x04 are page-up/down = no-ops on the 1-page title).
 // Runs on the engine thread (call from mod.main / mod.on_frame).
 static int l_input_press(lua_State *L) {
+    return legacy_refuse(L, "input.press");
     if (!gb_enabled("input")) { lua_pushboolean(L, 0); return 1; }
     uint32_t id = (uint32_t)luaL_checkinteger(L, 1);
     uint32_t mgr = lua_isnumber(L, 2) ? (uint32_t)lua_tonumber(L, 2) : exec_ti_mgr();  // default = captured mgr

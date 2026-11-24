@@ -10,6 +10,7 @@
 #include "prof.h"
 #include "ddraw_present.h"
 #include "loader_internal.h"
+#include "syms.h"
 
 #include <windows.h>
 #include <string.h>
@@ -26,63 +27,51 @@ static HWND g_hwnd;           // the game window (set at bootstrap; used by the 
 uint32_t exec_main_tid(void) { return g_main_tid; }
 uint32_t *exec_main_tid_ptr(void) { return &g_main_tid; }   // hooks.c bakes this addr into the typed-hook gate
 
-// ── the register-capture observer thunk (Tier-1: convention-agnostic, can't modify) ──
-// MinHook patches the safepoint's first 5 bytes to jmp here.  We capture ecx (= the
-// input manager `this`), run the C drain, then TAIL-JUMP to the trampoline (the original)
-// with the caller's stack untouched — so the observed function runs exactly as before.
-// asm labels give the referenced C symbols fixed, prefix-free names for the thunk.
-void      safepoint_c(void)        asm("oss_sp_c");
-void     *g_sp_orig                asm("oss_sp_orig");   // MinHook trampoline (original)
-volatile uint32_t g_ti_mgr         asm("oss_sp_mgr");    // captured input manager (ecx)
-volatile uint32_t g_sp_now         asm("oss_sp_now");    // captured poll timestamp (arg1 at [esp+4])
+// ── the frame hook: ONE Tier-1 observer on the engine's Flip ──────────────────────────────────
+// `flip` (zdd present; __thiscall, ECX = the ZDD screen ctx, arg1 = HWND) runs once per presented
+// frame in EVERY state — title, menus, cutscenes, gameplay (it is rhost's frame boundary).  The thunk
+// captures ECX + HWND, runs the drain (mods, jobs, UI build) + the back-buffer capture, then either
+// tail-jumps to the original (stack intact) or — in ddraw takeover — skips the game's own present
+// (`ret 4`).  Resolved by name through the edition layer (syms.c), so it is hash-verified per build.
+void      frame_c(void)            asm("oss_frame_c");
+void     *g_frame_orig             asm("oss_frame_orig");   // MinHook trampoline (original flip)
+volatile uint32_t g_present_ctx    asm("oss_present_ctx");  // captured screen ctx (ecx)
+volatile uint32_t g_present_hwnd   asm("oss_present_hwnd"); // captured HWND (arg1)
+volatile uint32_t g_present_skip   asm("oss_present_skip"); // 1 = SKIP the game's own present (takeover)
+volatile uint32_t g_ti_mgr;        // input manager (filled by a binding that hooks the poll; 0 = unknown)
+volatile uint32_t g_sp_now;
+static volatile uint32_t g_frames;
 
 __asm__(
     ".text\n"
-    ".globl oss_sp_detour\n"
-    "oss_sp_detour:\n"
-    "  movl %ecx, oss_sp_mgr\n"   // capture this (= input manager) before anything clobbers ecx
-    "  pushal\n"                   // preserve all GP regs across the observer
-    "  movl 0x24(%esp), %eax\n"   // capture arg1 = the poll's `now` timestamp — AFTER pushal (the
-    "  movl %eax, oss_sp_now\n"   // original eax is saved; popal restores it).  arg1 = entry [esp+4]
-    "  call oss_sp_c\n"            // run the drain (cdecl, no args; reads oss_sp_mgr)
-    "  popal\n"                    // restores the original eax (+ all regs) for the trampoline
-    "  jmp *oss_sp_orig\n"         // continue into the original (stack intact) — never returns here
-);
-extern void oss_sp_detour(void) asm("oss_sp_detour");   // defined by the asm block above (no _ prefix)
-
-// ── the ddraw present observer thunk (zdd_present 0x5b8fc0; thiscall, ECX = the ZDD screen ctx) ──
-// Same shape as the safepoint thunk: capture ECX (+ arg1 HWND) then TAIL-JUMP to the trampoline so
-// the game's OWN present still runs (Phase A: capture only, no window takeover).  ddp_on_present
-// reads the finished back-buffer off the ctx and copies it into the lock-free capture buffer.
-void      present_c(void)          asm("oss_present_c");
-void     *g_present_orig           asm("oss_present_orig");   // MinHook trampoline (original present)
-volatile uint32_t g_present_ctx    asm("oss_present_ctx");    // captured screen ctx (ecx)
-volatile uint32_t g_present_hwnd   asm("oss_present_hwnd");   // captured HWND (arg1)
-volatile uint32_t g_present_skip   asm("oss_present_skip");   // 1 = SKIP the game's own present (takeover)
-
-__asm__(
-    ".text\n"
-    ".globl oss_present_detour\n"
-    "oss_present_detour:\n"
-    "  movl %ecx, oss_present_ctx\n"   // capture this (= the ZDD screen ctx) before ecx is clobbered
+    ".globl oss_frame_detour\n"
+    "oss_frame_detour:\n"
+    "  movl %ecx, oss_present_ctx\n"
     "  pushal\n"
-    "  movl 0x24(%esp), %eax\n"        // arg1 (HWND) at entry [esp+4]; after pushal it's at [esp+0x24]
+    "  movl 0x24(%esp), %eax\n"        // arg1 (HWND) at entry [esp+4]; after pushal at [esp+0x24]
     "  movl %eax, oss_present_hwnd\n"
-    "  call oss_present_c\n"            // capture (+ takeover-present); sets oss_present_skip
-    "  popal\n"                          // restores all GP regs (incl. the original ecx) for the tail
+    "  call oss_frame_c\n"
+    "  popal\n"
     "  cmpl $0, oss_present_skip\n"
     "  jne 1f\n"
-    "  jmp *oss_present_orig\n"         // NOT takeover: run the game's own present (stack intact)
+    "  jmp *oss_frame_orig\n"
     "1:\n"
-    "  ret $4\n"                         // TAKEOVER: skip it — zdd_present is thiscall(HWND), so ret 4
+    "  ret $4\n"
 );
-extern void oss_present_detour(void) asm("oss_present_detour");
+extern void oss_frame_detour(void) asm("oss_frame_detour");
 
-void present_c(void) {
-    ddp_on_present((void *)(uintptr_t)g_present_ctx, (void *)(uintptr_t)g_present_hwnd);
-    g_present_skip = (uint32_t)ddp_takeover_active();   // 1 -> the thunk ret 4's, skipping the game's BitBlt
-    ui_wake();   // render the companion mirror at the present rate (harmless while takeover owns the window)
+static int g_capture_on;
+void frame_c(void) {
+    g_frames++;
+    exec_on_safepoint((void *)(uintptr_t)g_ti_mgr);
+    if (g_capture_on) {
+        ddp_on_present((void *)(uintptr_t)g_present_ctx, (void *)(uintptr_t)g_present_hwnd);
+        g_present_skip = (uint32_t)ddp_takeover_active();
+        ui_wake();
+    }
 }
+uint32_t exec_frame(void) { return g_frames; }
+void *exec_screen_ctx(void) { return (void *)(uintptr_t)g_present_ctx; }
 
 uint32_t exec_ti_mgr(void) { return g_ti_mgr; }
 uint32_t exec_sp_now(void) { return g_sp_now; }   // the safepoint poll's timestamp (for input injection)
@@ -215,7 +204,6 @@ void exec_on_safepoint(void *ti_mgr) {
     prof_frame();
     InterlockedExchange(&in_sp, 0);
 }
-void safepoint_c(void) { exec_on_safepoint((void *)(uintptr_t)g_ti_mgr); }
 
 // ── Lua: mod.main / mod.on_frame ─────────────────────────────────────────────
 static int l_main(lua_State *L) {
@@ -288,35 +276,20 @@ void exec_keepactive(void) {
     if (t) { CloseHandle(t); ml_log("[exec] keepactive ON — re-posting WM_ACTIVATEAPP so the game ticks while unfocused"); }
 }
 
-static void install_present_hook(void);   // ddraw capture backend (defined below); armed after the safepoint
-
 static void install_safepoint_hook(void) {   // runs on the MAIN thread (in the WndProc)
-    const oss_profile *p = profile_current();
-    if (!p) return;
-    void *va = (void *)mem_reloc(p->safepoint_va);
+    void *va = (void *)sym_va("flip");
+    if (!va) { ml_log("[exec] no verified 'flip' symbol on %s — executor NOT armed (mods run degraded)", sym_edition_tag()); return; }
     MH_STATUS s = MH_Initialize();
     if (s != MH_OK && s != MH_ERROR_ALREADY_INITIALIZED) { ml_log("[exec] MH_Initialize failed (%d)", s); return; }
-    s = MH_CreateHook(va, (LPVOID)&oss_sp_detour, &g_sp_orig);
+    s = MH_CreateHook(va, (LPVOID)&oss_frame_detour, &g_frame_orig);
     if (s != MH_OK && s != MH_ERROR_ALREADY_CREATED) { ml_log("[exec] MH_CreateHook failed (%d)", s); return; }
     if (MH_EnableHook(va) != MH_OK) { ml_log("[exec] MH_EnableHook failed"); return; }
     g_armed = 1;
-    ml_log("[exec] safepoint hook armed @ %p (profile %s va 0x%p)", va, p->id, (void *)p->safepoint_va);
-    install_present_hook();   // ddraw capture / re-present backend (same engine thread, MH already up)
-}
-
-// Install the ddraw present hook (zdd_present) right after the safepoint, on the MAIN thread — the
-// capture/re-present backend (ddraw_present.cpp).  MH is already initialized by the safepoint install.
-// Opt-out with ddraw=0; non-fatal (a failure just leaves the game mirror/overlay off).
-static void install_present_hook(void) {
-    const oss_profile *p = profile_current();
-    if (!p || !p->present_va) return;
-    if (!config_get_bool("ddraw", 1)) { ml_log("[exec] present hook off (ddraw=0)"); return; }
-    ddp_set_takeover(config_get_int("ddraw_takeover", 0));   // own the game window (borderless) vs mirror-only
-    void *va = (void *)mem_reloc(p->present_va);
-    MH_STATUS s = MH_CreateHook(va, (LPVOID)&oss_present_detour, &g_present_orig);
-    if (s != MH_OK && s != MH_ERROR_ALREADY_CREATED) { ml_log("[exec] present MH_CreateHook failed (%d)", s); return; }
-    if (MH_EnableHook(va) != MH_OK) { ml_log("[exec] present MH_EnableHook failed"); return; }
-    ml_log("[exec] present hook armed @ %p (zdd_present va 0x%p) — ddraw capture on", va, (void *)p->present_va);
+    // ddraw capture / re-present backend (ddraw_present.cpp) rides the same hook.  The screen-ctx
+    // layout (+0x164 mode, +0x16c back-buffer object) is verified on the SE builds; opt-out ddraw=0.
+    g_capture_on = config_get_bool("ddraw", 1);   // ctx layout verified on enold + ense-en + ense-jp (sml probe 2026-11-24)
+    if (g_capture_on) ddp_set_takeover(config_get_int("ddraw_takeover", 0));
+    ml_log("[exec] frame hook armed @ %p (flip, %s)%s", va, sym_edition_tag(), g_capture_on ? " — ddraw capture on" : "");
 }
 
 static LRESULT CALLBACK boot_wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
@@ -343,6 +316,18 @@ static LRESULT CALLBACK boot_wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
 // "ActiveMovie" window, an IME window, or an early TRANSIENT window that later gets destroyed
 // (which silently drops our subclass + the posted bootstrap — the bug this fixes).  If the
 // profile has no window_class we fall back to the old heuristic (first non-launcher top-level).
+static BOOL CALLBACK dump_wnd(HWND h, LPARAM l) {   // diagnostic: our top-level windows (bootstrap stuck)
+    (void)l;
+    DWORD pid = 0; GetWindowThreadProcessId(h, &pid);
+    if (pid != GetCurrentProcessId()) return TRUE;
+    char cls[64] = "", title[64] = ""; GetClassNameA(h, cls, sizeof cls); GetWindowTextA(h, title, sizeof title);
+    ml_log("[exec] window %p class='%s' title='%s' visible=%d owner=%p", (void *)h, cls, title, IsWindowVisible(h), (void *)GetWindow(h, GW_OWNER));
+    for (HWND c = GetWindow(h, GW_CHILD); c; c = GetWindow(c, GW_HWNDNEXT)) {
+        GetClassNameA(c, cls, sizeof cls); GetWindowTextA(c, title, sizeof title);
+        ml_log("[exec]   child id=%d class='%s' style=%08lx text='%s'", GetDlgCtrlID(c), cls, (unsigned long)GetWindowLongA(c, GWL_STYLE), title);
+    }
+    return TRUE;
+}
 static BOOL CALLBACK find_wnd(HWND h, LPARAM l) {
     (void)l;
     DWORD pid = 0; GetWindowThreadProcessId(h, &pid);
@@ -392,11 +377,14 @@ int exec_bootstrap(void) {
     // user clicks Launch).  skip_launcher auto-clicks Launch (best-effort — BM_CLICK; the user
     // can always click manually, and the positive match still catches the window robustly).
     int launched = 0;
+    DWORD t0 = GetTickCount(); int dumped = 0;
     while (!g_hwnd) {
+        if (!dumped && GetTickCount() - t0 > 10000) { dumped = 1; EnumWindows(dump_wnd, 0); }
         if (skip && !launched) launched = dismiss_launcher();
         EnumWindows(find_wnd, 0);
         if (!g_hwnd) Sleep(25);
     }
+    if (sym_init() < 0) { ml_log("[exec] edition not confirmed — executor not armed"); return 0; }
     g_orig_wndproc = (WNDPROC)SetWindowLongPtrA(g_hwnd, GWLP_WNDPROC, (LONG_PTR)boot_wndproc);
     if (!g_orig_wndproc) { ml_log("[exec] window subclass failed — fallback"); return 0; }
     ml_log("[exec] game window %p subclassed — posting bootstrap to the main thread", (void *)g_hwnd);
