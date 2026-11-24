@@ -13,3 +13,20 @@ save_list         func ense-jp  0x584100
 menu_runner       func enold    0x565d10
 menu_runner       func ense-en  0x586590
 menu_runner       func ense-jp  0x584910
+# Sandbox ops (2026-11-24).  room_item_add (thiscall room, id, u16 *idx, count, u8 flag, dry; ret 0x14): SE = the
+# call inside item_give (0x404a70 / 0x404ac0 +0x266) — SE caps items per category (+0x2ac >= 900 / +0x78 5..8).
+# item_table = the static item-definition table (enold 736 B / SE 940 B per record, +0 id, +4 name, 0-id ends);
+# SE item_def also searches item_table_ext (a pointer to 0x200 more records).
+room_item_add     func enold    0x415e20
+room_item_add     func ense-en  0x404db0
+room_item_add     func ense-jp  0x404e00
+item_table        data enold    0x6c0cd0
+item_table        data ense-en  0x6a6210
+item_table        data ense-jp  0x6a4210
+item_table_ext    data ense-en  0x92b210
+item_table_ext    data ense-jp  0x926380
+# map_module = the HMODULE load_room reads map data from (FindResourceA(mod, room record +0xc, "DATA"); 0 = the exe;
+# the area table's +4 after its count overrides it).  load_room 0x586b9c / SE 0x5ad169 / JP 0x5aae39.
+map_module        data enold    0x8a6e7c
+map_module        data ense-en  0x92b230
+map_module        data ense-jp  0x9263a0

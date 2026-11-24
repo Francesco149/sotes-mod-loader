@@ -51,6 +51,17 @@ typedef struct sotes_layout {
     uint16_t st_adv_lv;       // adventurer level      0xe0          0xe4     ┘  3 + 12 = Lv15, 5 stars)
     uint16_t st_exp;          // exp                   0xe8          0xec
     uint16_t st_exp_max;      // exp to next           0xec          0xf0
+    // sandbox ops (api 1.2): the room loop's warp request (warp_request 0x54ecf0 / the warp item 0x5b3850 write it;
+    // room_warp_tick 0x59c750 / SE 0x5c4fe0 consumes it: dissolve, then the room loop returns 10 → the scene loop
+    // loads room {key, gate, face} with arrival message `kind`).  fieldxw --fn 0x54ecf0 / 0x5b3850 / 0x59c750.
+    uint16_t world_rl;        // wl_roomloop*          0x1044        0x1044
+    uint16_t rl_ui_lock;      // u16 warp countdown    0x28          0x2c
+    uint16_t rl_warp_req;     // 1 = warp requested    0x10          0x14
+    uint16_t rl_warp;         // {key, gate, face, kind} 0x900       0x944
+    uint16_t rec_exits;       // room record: {u16 gate, -, u32 to, -}[20] (12 B)  0x1c  0x1c  (load_room "PreviousGate")
+    uint16_t item_def_size;   // item_table record     736           940      (+0 id, +4 name; item_def 0x4078a0)
+    uint16_t world_script;    // != 0: an event script owns the game (script_begin / _end)  0x2760  0x3760
+    uint16_t rec_wmap;        // room record: W-map file id (≠ 0 → "wmap%d.sdt" instead of the map resource)  -  0x148
 } sotes_layout;
 
 // The running edition's layout (NULL until sym_init identified the build, or for an unknown build).

@@ -63,9 +63,25 @@ v2 so far (commits `10a1efe`, `b5b3b2b`, `6cb69d2`):
   `sml continue --slot N` uses it.  v1 C drive + `mod.game.input` (ring injection) deleted.  **Crosswalk caution:**
   confidence-1 SE symbols can be wrong — `tm_41c2f0` (SE = a free loop) and `item_kind` (SE = the list row-slot
   accessor) were; check the disasm before hooking a conf-1 symbol.
+- **Sandbox ops (2026-11-24, api 1.2)** — `mod.game.map.rooms/room/warp/warp_status/event`, `items.give/catalog`,
+  `roster.set`, `coordinates.set` (MOD-FORMAT).  **Warp = the warp item's own request** on the room loop (world
+  `+0x1044`; `+0x10` req / `+0x900` {key, gate, face, kind} / u16 ui_lock `+0x28`; SE `+0x14` / `+0x944` / `+0x2c`,
+  from fieldxw on warp_request 0x54ecf0 / 0x5b3850 / room_warp_tick): retail rules + dissolve, or `force` = ui_lock 1
+  (room_warp_tick's own `--ui_lock == 0 → return 10`).  Learned the hard way: (1) **the area table holds rooms with
+  NO map data** (999999 + the 110/120/130 series: 20 on SE, 20 on enold) — loading one = retail's fatal "The map data
+  is not found." + exit, so `loadable` = retail's own lookup (SE record `+0x148` ≠ 0 → `wmap%d.sdt`; else
+  `FindResourceA(map_module, record +0xc, "DATA")`, map_module enold `*0x8a6e7c` / SE `*0x92b230` / JP `*0x9263a0`,
+  override = area table `+count+4`); (2) **an event script's own frame loop calls room_warp_tick and DROPS its
+  result** — a warp armed during a cutscene is consumed and lost, so warp refuses while world `+0x2760` (SE `+0x3760`,
+  script_begin/_end) is set.  Towns (record `+0x114` == 2 → world `+0x1030`) refuse the unforced warp, as retail.
+  Items: SE has its own `room_item_add` (0x404db0 / JP 0x404e00, called by item_give) with per-category caps — called,
+  never re-implemented; catalog = `item_table` (enold 736 B / SE 940 B records) + SE's `item_table_ext`.
+  **Port-repo findings owed** (not written there — a port session runs in parallel; add to OpenSummoners
+  `engine-quirks.md` / `SE_CODE_MAP.md` when it's free): the map-less rooms, the dropped warp return in events, the
+  SE W-map path (`+0x148`), SE room_item_add / item tables / map_module VAs, SE warp-request offsets.
 - **Still fenced:** the voice patch never arms on the new build (signature-gated, fails safe).
-- **Next:** trainer as a `../sotes-mods` mod + sandbox (spawn / flags / warp — flags + gold + items + map now have
-  bindings) → more `tests/*.lua` → voice patch on symbols → Windows real-device runner (own scheduled task, never
+- **Next:** trainer as a `../sotes-mods` mod over the sandbox ops (+ actor spawn, still to RE) + its MCP over the dev
+  server → more `tests/*.lua` → voice patch on symbols → Windows real-device runner (own scheduled task, never
   `oss-rhost-runner`).  Host tests (`make -C core tests`) still assume WSL interop — port them to run under wine.
 
 ## State: P0–P5 DONE + **DDraw present (borderless + windowed takeover)** + **in-game overlay** + **`mod.config`** + **semantic `mod.game` ops** + **mod API versioning** + **early-boot phase & the `OssModEarlyInit` ABI** + **built-in JP voice restore** (2026-07-20). Next = **P8 launcher** + P7 trainer as a mod.

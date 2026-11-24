@@ -90,6 +90,23 @@ mod.game.items.gold()           -> cp, cap          (100 CP = 1 GP; the HUD coun
 mod.game.items.set_gold(cp)     -> cp (clamped to [0, cap])
                                 -- every WRITE runs only on the engine thread (on_frame / main / dev-server lua);
                                 --   elsewhere it returns nil, "...refused..."
+-- sandbox ops (api 1.2) — engine-thread only; each is the engine's own mechanism, not a re-implementation:
+mod.game.map.rooms()            -> {{key, map, loadable, exits = {{gate, to}, ...}}, ...}  the area table = every room
+                                --   the scene loop can load; loadable = its map data exists (retail's own lookup)
+mod.game.map.room(key)          -> one of those | nil
+mod.game.map.warp(key[, gate[, force]]) -> true | nil, why   warp the party (gate 0 / unknown = the room's first gate).
+                                --   The warp item's own request: retail's rules apply (no warp in towns, events,
+                                --   rooms that forbid it → "cannot teleport here", request dropped), its dissolve
+                                --   plays, the scene loop loads the room.  force = skip the rules + the dissolve
+                                --   (the countdown armed at 1).  Refused: unknown room, a room without map data
+                                --   (retail would exit "The map data is not found."), an event running, a warp running.
+mod.game.map.warp_status()      -> 'idle' | 'requested' | 'warping', key
+mod.game.map.event()            -> bool    an event script owns the game (cutscene / conversation)
+mod.game.items.give(id[, count]) -> index | nil, why   the engine's room_item_add (its capacity rules; count <= 0 =
+                                --   the item's default); no message
+mod.game.items.catalog()        -> {{id, name}, ...}   every item definition
+mod.game.roster.set(code|nil, {hp=, mp=}) -> true      current hp / mp (nil code = the controlled member)
+mod.game.coordinates.set(code|nil, x, y) -> true       teleport: the member's body box (x sticks, y settles)
 mod.game.attract.set(on) / .get() -- false keeps the title up (idle → no demo); true = retail
 mod.game.save.load([slot])      -> true | nil, err   -- load save `slot` from the title (nil / <0 = the list's
                                 --   default row = last used).  Typed hooks on the title driver (any edition):

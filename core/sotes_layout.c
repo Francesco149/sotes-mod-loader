@@ -11,6 +11,7 @@ static const sotes_layout L_ENOLD = {
     0x000, 0x004, 0x9c4, 0x9f4,
     0x040, 0x1d4, 0x750, 0xc7a4,
     0xd8, 0xdc, 0xe0, 0xe8, 0xec,
+    0x1044, 0x28, 0x10, 0x900, 0x1c, 736, 0x2760, 0,
 };
 static const sotes_layout L_ENSE = {
     "ense",
@@ -19,6 +20,7 @@ static const sotes_layout L_ENSE = {
     0x000, 0x004, 0x9e4, 0xa14,
     0x040, 0x1d4, 0x760, 0xc7b4,
     0xdc, 0xe0, 0xe4, 0xec, 0xf0,
+    0x1044, 0x2c, 0x14, 0x944, 0x1c, 940, 0x3760, 0x148,
 };
 
 const sotes_layout *sotes_layout_get(void) {
@@ -41,5 +43,6 @@ void sotes_layout_push_lua(lua_State *L) {
     F(ps_in) F(ps_code) F(ps_active) F(ps_ch)
     F(ent_body) F(ent_code) F(ch_stats) F(ch_held)
     F(st_combat_lv) F(st_combat_max) F(st_adv_lv) F(st_exp) F(st_exp_max)
+    F(world_rl) F(rl_ui_lock) F(rl_warp_req) F(rl_warp) F(rec_exits) F(item_def_size) F(world_script) F(rec_wmap)
 #undef F
 }

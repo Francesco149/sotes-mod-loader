@@ -21,6 +21,7 @@
 #include "loader_internal.h"
 
 #include <string.h>
+#include <windows.h>
 
 #include "lua.h"
 #include "lauxlib.h"
@@ -66,6 +67,9 @@ static int rdi(uintptr_t a) { return (int)rd(a); }
 static int sum3(uintptr_t sb, int a, int b, int c) { int m = rdi(sb + a) + rdi(sb + b) + rdi(sb + c); return m < 0 ? 0 : m; }
 static int sum2(uintptr_t sb, int a, int b) { int m = rdi(sb + a) + rdi(sb + b); return m < 0 ? 0 : m; }
 
+static int on_engine(void);
+static int wr32(uintptr_t a, uint32_t v);
+static int refuse_write(lua_State *L, const char *what);
 static uintptr_t world_ptr(void) {
     uintptr_t g = sym_va("g_world");
     return g ? rd(g) : 0;
@@ -173,8 +177,32 @@ static int l_roster_world(lua_State *L) {
     return 1;
 }
 
+// mod.game.roster.set(code|nil, {hp=, mp=}) -> true — the member's CURRENT hp / mp (stat block +0x54 / +0x5c, what
+// the HUD shows; max = base + equip + buff is untouched).  code nil = the controlled member.  Engine thread only.
+static const member_t *member_pick(member_t m[NSLOTS], int n, lua_State *L, int arg) {
+    int lead = lua_isnoneornil(L, arg);
+    uint32_t code = lead ? 0 : (uint32_t)luaL_checkinteger(L, arg);
+    for (int i = 0; i < n; i++) if (lead ? m[i].leader : m[i].code == code) return &m[i];
+    return NULL;
+}
+static int l_roster_set(lua_State *L) {
+    if (!gb_enabled("roster")) { lua_pushnil(L); return 1; }
+    luaL_checktype(L, 2, LUA_TTABLE);
+    member_t m[NSLOTS];
+    int n = party_members(m);
+    const member_t *p = member_pick(m, n, L, 1);
+    if (!p || !p->stats || !on_engine()) return refuse_write(L, "roster.set");
+    lua_getfield(L, 2, "hp");
+    if (lua_isnumber(L, -1)) wr32(p->stats + OFF_HP_CUR, (uint32_t)lua_tointeger(L, -1));
+    lua_getfield(L, 2, "mp");
+    if (lua_isnumber(L, -1)) wr32(p->stats + OFF_MP_CUR, (uint32_t)lua_tointeger(L, -1));
+    lua_pop(L, 2);
+    lua_pushboolean(L, 1);
+    return 1;
+}
 static void install_roster(lua_State *L) {
     lua_newtable(L);
+    lua_pushcfunction(L, l_roster_set);     lua_setfield(L, -2, "set");
     lua_pushcfunction(L, l_roster_members); lua_setfield(L, -2, "members");
     lua_pushcfunction(L, l_roster_world);   lua_setfield(L, -2, "world");
     sotes_layout_push_lua(L);               lua_setfield(L, -2, "layout");   // this edition's offsets (sotes_layout.h)
@@ -215,8 +243,25 @@ static int l_coord_target(lua_State *L) {
     return coord_by(L, 0, 1);
 }
 
+// mod.game.coordinates.set(code|nil, x, y) -> true — teleport a member: its body box top-left (world centi-px; the
+// position the physics integrates — x sticks, y then settles under gravity).  code nil = the controlled member.
+static int l_coord_set(lua_State *L) {
+    if (!gb_enabled("coordinates")) { lua_pushnil(L); return 1; }
+    int x = (int)luaL_checkinteger(L, 2), y = (int)luaL_checkinteger(L, 3);
+    member_t m[NSLOTS];
+    int n = party_members(m);
+    const member_t *p = member_pick(m, n, L, 1);
+    const sotes_layout *l = sotes_layout_get();
+    uintptr_t body = p ? rd(p->ch + l->ent_body) : 0;
+    if (!body || !on_engine()) return refuse_write(L, "coordinates.set");
+    wr32(body + BODY_X, (uint32_t)x);
+    wr32(body + BODY_Y, (uint32_t)y);
+    lua_pushboolean(L, 1);
+    return 1;
+}
 static void install_coordinates(lua_State *L) {
     lua_newtable(L);
+    lua_pushcfunction(L, l_coord_set);    lua_setfield(L, -2, "set");
     lua_pushcfunction(L, l_coord_get);    lua_setfield(L, -2, "get");
     lua_pushcfunction(L, l_coord_player); lua_setfield(L, -2, "player");
     lua_pushcfunction(L, l_coord_target); lua_setfield(L, -2, "target");
@@ -318,9 +363,137 @@ static int l_map_get(lua_State *L) {
     lua_pushinteger(L, areas ? rd16(areas + l->area_count) : 0); lua_setfield(L, -2, "nareas");
     return 1;
 }
+// mod.game.map.rooms() -> {{key, map, exits = {{gate, to}, ...}}, ...} — the area table = every room record the
+// scene loop can load (warp destinations); exits = the record's 20 gate slots (gate id, the room it leads to).
+// map.room(key) -> one of those | nil.
+// Can load_room load this room's map?  Retail's own lookup (load_room 0x586b9c; SE 0x5ad169): SE record +0x148 ≠ 0
+// → the W-map file; else FindResourceA(module, record +0xc, "DATA") with module = the area table's override (+4
+// after its count) or map_module (0 = the exe).  Not found = retail's fatal "The map data is not found." + exit —
+// the area table has such rooms (unused / cut), so map.warp refuses them.
+static int map_data_ok(const sotes_layout *l, uintptr_t areas, uintptr_t rec) {
+    if (l->rec_wmap && rd(rec + l->rec_wmap)) return 1;
+    uintptr_t mm = sym_va("map_module"), hmod = rd(areas + l->area_count + 4);
+    if (!hmod && mm) hmod = rd(mm);
+    if (!mm && !hmod) return 1;                       // unknown build: can't tell
+    return FindResourceA((HMODULE)hmod, MAKEINTRESOURCEA(rd16(rec + 0xc)), "DATA") != NULL;
+}
+static void push_room_rec(lua_State *L, const sotes_layout *l, uintptr_t areas, uintptr_t rec) {
+    lua_newtable(L);
+    lua_pushboolean(L, map_data_ok(l, areas, rec)); lua_setfield(L, -2, "loadable");
+    lua_pushinteger(L, rdi(rec));     lua_setfield(L, -2, "key");
+    lua_pushinteger(L, rdi(rec + 4)); lua_setfield(L, -2, "map");
+    lua_newtable(L);
+    int k = 0;
+    for (int i = 0; i < 20; i++) {
+        uintptr_t z = rec + l->rec_exits + 12 * i;
+        uint16_t gate = rd16(z);
+        int32_t to = rdi(z + 4);
+        if (!gate && !to) continue;
+        lua_newtable(L);
+        lua_pushinteger(L, gate); lua_setfield(L, -2, "gate");
+        lua_pushinteger(L, to);   lua_setfield(L, -2, "to");
+        lua_rawseti(L, -2, ++k);
+    }
+    lua_setfield(L, -2, "exits");
+}
+static uintptr_t areas_any(const sotes_layout **lo) {
+    const sotes_layout *l = sotes_layout_get();
+    uintptr_t w = world_ptr();
+    if (lo) *lo = l;
+    return (l && w) ? rd(w + l->world_areas) : 0;
+}
+static int l_map_rooms(lua_State *L) {
+    if (!gb_enabled("map")) { lua_pushnil(L); return 1; }
+    const sotes_layout *l;
+    uintptr_t areas = areas_any(&l);
+    if (!areas) { lua_pushnil(L); return 1; }
+    uint16_t n = rd16(areas + l->area_count);
+    lua_newtable(L);
+    for (uint32_t i = 0; i < n && i < 1024; i++) {
+        push_room_rec(L, l, areas, areas + 4 + l->area_size * i);
+        lua_rawseti(L, -2, (int)i + 1);
+    }
+    return 1;
+}
+static int l_map_room(lua_State *L) {
+    if (!gb_enabled("map")) { lua_pushnil(L); return 1; }
+    const sotes_layout *l;
+    uintptr_t areas = areas_any(&l), rec = areas ? area_find_rec(l, areas, (int32_t)luaL_checkinteger(L, 1)) : 0;
+    if (!rec) { lua_pushnil(L); return 1; }
+    push_room_rec(L, l, areas, rec);
+    return 1;
+}
+// map.warp(key[, gate[, force]]) -> true | nil, why — the engine's own warp: the room-loop request the warp item
+// writes (0x5b3850: +0x10 = 1, +0x900 key, +0x904 gate, +0x908 face, +0x90c kind; SE +0x14 / +0x944..), kind 0 =
+// no arrival message, face 1 (as warp_request).  room_warp_tick then applies retail's rules (world +0x1034 /
+// +0x1030 == 2 / +0x2768 (SE +0x3768, + SE +0x37b8 in 2..3) / room +0x4080 / no retry point +0x40d0 → "For some
+// reason, you cannot teleport here." and the request dropped), plays the dissolve (ui_lock 160), and returns 10:
+// the scene loop loads `key` at `gate` (0 / unknown = the room's first gate).
+// force = skip those rules + the dissolve: the countdown armed at 1 (no request), so room_warp_tick's own
+// `--ui_lock == 0 → return 10` fires on the next room tick.  Engine thread only.
+// An event script owns the game (script_begin 0x49cb60 sets world +0x2760 = 1, script_end clears it; SE +0x3760 — fieldxw): its own
+// frame loop calls room_warp_tick too but drops the result, so a warp armed then would be consumed and lost —
+// map.warp refuses while one runs.  map.event() -> bool.
+static int event_running(const sotes_layout *l) {
+    uintptr_t w = world_ptr();
+    return l && w && rd(w + l->world_script) != 0;
+}
+static int l_map_event(lua_State *L) {
+    const sotes_layout *l = sotes_layout_get();
+    if (!l || !world_ptr()) { lua_pushnil(L); return 1; }
+    lua_pushboolean(L, event_running(l));
+    return 1;
+}
+static uintptr_t cur_rl(const sotes_layout **lo) {
+    const sotes_layout *l = sotes_layout_get();
+    uintptr_t w = world_ptr();
+    if (lo) *lo = l;
+    return (l && w && rd(w + l->world_room)) ? rd(w + l->world_rl) : 0;
+}
+static int l_map_warp(lua_State *L) {
+    if (!gb_enabled("map")) { lua_pushnil(L); return 1; }
+    int32_t key = (int32_t)luaL_checkinteger(L, 1);
+    int32_t gate = (int32_t)luaL_optinteger(L, 2, 0), face = 1;
+    int force = lua_toboolean(L, 3);
+    const sotes_layout *l;
+    uintptr_t rl = cur_rl(&l);
+    if (!rl || !on_engine()) return refuse_write(L, "map.warp");
+    uintptr_t areas = areas_any(NULL), rec = area_find_rec(l, areas, key);
+    if (!rec) { lua_pushnil(L); lua_pushfstring(L, "map.warp: no room %d", key); return 2; }
+    if (!map_data_ok(l, areas, rec)) { lua_pushnil(L); lua_pushfstring(L, "map.warp: room %d has no map data", key); return 2; }
+    if (event_running(l)) { lua_pushnil(L); lua_pushstring(L, "map.warp: an event is running (map.event())"); return 2; }
+    if (rd16(rl + l->rl_ui_lock) || rd(rl + l->rl_warp_req)) { lua_pushnil(L); lua_pushstring(L, "map.warp: a warp is already running"); return 2; }
+    wr32(rl + l->rl_warp + 0x0, (uint32_t)key);
+    wr32(rl + l->rl_warp + 0x4, (uint32_t)gate);
+    wr32(rl + l->rl_warp + 0x8, (uint32_t)face);
+    wr32(rl + l->rl_warp + 0xc, 0);
+    if (force) {                                      // u16 ui_lock (the dword's high half is the next field)
+        uintptr_t a = rl + l->rl_ui_lock;
+        if (!mem_writable((void *)a, 2)) return refuse_write(L, "map.warp");
+        *(volatile uint16_t *)a = 1;
+    } else
+        wr32(rl + l->rl_warp_req, 1);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+// map.warp_status() -> 'idle' | 'requested' (room_warp_tick not run yet) | 'warping' (the dissolve, ui_lock), key
+static int l_map_warp_status(lua_State *L) {
+    const sotes_layout *l;
+    uintptr_t rl = cur_rl(&l);
+    if (!rl) { lua_pushstring(L, "idle"); return 1; }
+    const char *st = rd(rl + l->rl_warp_req) ? "requested" : rd16(rl + l->rl_ui_lock) ? "warping" : "idle";
+    lua_pushstring(L, st);
+    lua_pushinteger(L, rdi(rl + l->rl_warp));
+    return 2;
+}
 static void install_map(lua_State *L) {
     lua_newtable(L);
-    lua_pushcfunction(L, l_map_get); lua_setfield(L, -2, "get");
+    lua_pushcfunction(L, l_map_get);         lua_setfield(L, -2, "get");
+    lua_pushcfunction(L, l_map_rooms);       lua_setfield(L, -2, "rooms");
+    lua_pushcfunction(L, l_map_room);        lua_setfield(L, -2, "room");
+    lua_pushcfunction(L, l_map_warp);        lua_setfield(L, -2, "warp");
+    lua_pushcfunction(L, l_map_warp_status); lua_setfield(L, -2, "warp_status");
+    lua_pushcfunction(L, l_map_event);       lua_setfield(L, -2, "event");
 }
 
 // ── mod.game.flags — two engine tables:
@@ -497,8 +670,53 @@ static int l_items_set_gold(lua_State *L) {
     lua_pushinteger(L, v);
     return 1;
 }
+// mod.game.items.give(id[, count]) -> index | nil, why — the engine's own room_item_add (thiscall room, id, &idx,
+// count, 0, 0): the item-definition lookup, the edition's capacity rules (enold: 512 records, 48 gear; SE: per
+// category), count <= 0 = the definition's default.  No message (the script's item_give without its say).
+typedef int (__attribute__((thiscall)) *room_item_add_t)(void *room, int32_t id, uint16_t *idx, int32_t count,
+                                                          uint8_t flag, int32_t dry);
+static int l_items_give(lua_State *L) {
+    if (!gb_enabled("items")) { lua_pushnil(L); return 1; }
+    int32_t id = (int32_t)luaL_checkinteger(L, 1), count = (int32_t)luaL_optinteger(L, 2, 0);
+    const sotes_layout *l;
+    uintptr_t room = cur_room_any(&l), fn = sym_va("room_item_add");
+    if (!room || !fn || !on_engine()) return refuse_write(L, "items.give");
+    uint16_t idx = 0xffff;
+    int ok = ((room_item_add_t)fn)((void *)room, id, &idx, count, 0, 0);
+    if (!ok || idx == 0xffff) { lua_pushnil(L); lua_pushfstring(L, "items.give: refused by the game (id %d unknown or inventory full)", id); return 2; }
+    lua_pushinteger(L, idx);
+    return 1;
+}
+// mod.game.items.catalog() -> {{id, name}, ...} — every item definition (the static table; SE also the extension
+// table item_def searches), names in the edition's encoding.
+static void catalog_push(lua_State *L, const sotes_layout *l, uintptr_t t, uint32_t max, int *k) {
+    for (uint32_t i = 0; t && i < max; i++) {
+        uintptr_t d = t + (uintptr_t)l->item_def_size * i;
+        int32_t id = rdi(d);
+        if (!id) break;
+        char nm[64] = { 0 };
+        if (mem_readable((void *)(d + 4), sizeof nm - 1)) memcpy(nm, (void *)(d + 4), sizeof nm - 1);
+        lua_newtable(L);
+        lua_pushinteger(L, id); lua_setfield(L, -2, "id");
+        lua_pushstring(L, nm);  lua_setfield(L, -2, "name");
+        lua_rawseti(L, -2, ++*k);
+    }
+}
+static int l_items_catalog(lua_State *L) {
+    if (!gb_enabled("items")) { lua_pushnil(L); return 1; }
+    const sotes_layout *l = sotes_layout_get();
+    uintptr_t t = sym_va("item_table"), ext = sym_va("item_table_ext");
+    if (!l || !t) { lua_pushnil(L); return 1; }
+    int k = 0;
+    lua_newtable(L);
+    catalog_push(L, l, t, 4096, &k);
+    if (ext) catalog_push(L, l, rd(ext), 0x200, &k);
+    return 1;
+}
 static void install_items(lua_State *L) {
     lua_newtable(L);
+    lua_pushcfunction(L, l_items_give);     lua_setfield(L, -2, "give");
+    lua_pushcfunction(L, l_items_catalog);  lua_setfield(L, -2, "catalog");
     lua_pushcfunction(L, l_items_list);     lua_setfield(L, -2, "list");
     lua_pushcfunction(L, l_items_gold);     lua_setfield(L, -2, "gold");
     lua_pushcfunction(L, l_items_set_gold); lua_setfield(L, -2, "set_gold");
