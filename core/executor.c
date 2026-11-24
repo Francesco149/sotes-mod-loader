@@ -11,6 +11,7 @@
 #include "ddraw_present.h"
 #include "loader_internal.h"
 #include "syms.h"
+#include "dinput_inject.h"
 
 #include <windows.h>
 #include <string.h>
@@ -61,8 +62,10 @@ __asm__(
 extern void oss_frame_detour(void) asm("oss_frame_detour");
 
 static int g_capture_on;
+static int g_input_on;
 void frame_c(void) {
     g_frames++;
+    if (g_input_on) di_frame();          // advance the scripted input before mods run this frame
     exec_on_safepoint((void *)(uintptr_t)g_ti_mgr);
     if (g_capture_on) {
         ddp_on_present((void *)(uintptr_t)g_present_ctx, (void *)(uintptr_t)g_present_hwnd);
@@ -285,6 +288,7 @@ static void install_safepoint_hook(void) {   // runs on the MAIN thread (in the 
     if (s != MH_OK && s != MH_ERROR_ALREADY_CREATED) { ml_log("[exec] MH_CreateHook failed (%d)", s); return; }
     if (MH_EnableHook(va) != MH_OK) { ml_log("[exec] MH_EnableHook failed"); return; }
     g_armed = 1;
+    if (config_get_bool("input_inject", 1)) g_input_on = di_install();   // mod.input (dinput, any build)
     // ddraw capture / re-present backend (ddraw_present.cpp) rides the same hook.  The screen-ctx
     // layout (+0x164 mode, +0x16c back-buffer object) is verified on the SE builds; opt-out ddraw=0.
     g_capture_on = config_get_bool("ddraw", 1);   // ctx layout verified on enold + ense-en + ense-jp (sml probe 2026-11-24)

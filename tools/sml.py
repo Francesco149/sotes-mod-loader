@@ -221,6 +221,39 @@ def cmd_up(a):
     die(f"{a.run}: not armed after {a.timeout}s — sml log {a.run}", 3)
 
 
+def cmd_play(a):
+    m = meta(a.run)
+    ok, txt = lua(m, f"return mod.input.play([[{a.movie}]])")
+    if not ok:
+        die(txt)
+    if a.wait:
+        t0 = time.time()
+        while time.time() - t0 < a.timeout:
+            ok, left = lua(m, "return mod.input.pending()")
+            if ok and left == "0":
+                break
+            time.sleep(0.1)
+    ok, txt = lua(m, "return {frame=mod.frame(), pending=mod.input.pending()}")
+    print(txt)
+
+
+def cmd_wait(a):
+    """poll a Lua expression until truthy (prints its last value); exit 4 on timeout"""
+    m = meta(a.run)
+    t0 = time.time()
+    txt = ""
+    while time.time() - t0 < a.timeout:
+        ok, txt = lua(m, a.expr)
+        if not ok:
+            die(txt)
+        if txt not in ("null", "false", "0", '""'):
+            print(txt)
+            return
+        time.sleep(a.every)
+    print(f"timeout; last = {txt}")
+    sys.exit(4)
+
+
 def cmd_ping(a):
     ok, txt = request(meta(a.run), "ping", timeout=5)
     print(txt)
@@ -323,6 +356,10 @@ def main():
     p = sp.add_parser("ping"); p.add_argument("run"); p.set_defaults(f=cmd_ping)
     p = sp.add_parser("lua"); p.add_argument("run"); p.add_argument("code", nargs="*"); p.add_argument("-f", "--file")
     p.add_argument("--timeout", type=float, default=30); p.set_defaults(f=cmd_lua)
+    p = sp.add_parser("play"); p.add_argument("run"); p.add_argument("movie"); p.add_argument("--wait", action="store_true")
+    p.add_argument("--timeout", type=float, default=120); p.set_defaults(f=cmd_play)
+    p = sp.add_parser("wait"); p.add_argument("run"); p.add_argument("expr"); p.add_argument("--timeout", type=float, default=60)
+    p.add_argument("--every", type=float, default=0.25); p.set_defaults(f=cmd_wait)
     p = sp.add_parser("shot"); p.add_argument("run"); p.add_argument("out", nargs="?")
     p.add_argument("--x", action="store_true", help="the X screen instead of the back buffer"); p.set_defaults(f=cmd_shot)
     p = sp.add_parser("log"); p.add_argument("run"); p.add_argument("-n", type=int, default=40); p.set_defaults(f=cmd_log)

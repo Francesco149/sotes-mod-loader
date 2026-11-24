@@ -4,3 +4,7 @@
 _oss_lua_dev:
     .incbin "lua/dev.lua"
     .byte 0
+    .globl _oss_lua_input
+_oss_lua_input:
+    .incbin "lua/input.lua"
+    .byte 0

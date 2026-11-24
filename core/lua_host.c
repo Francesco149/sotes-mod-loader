@@ -14,6 +14,7 @@
 #include "loader_internal.h"
 #include "syms.h"
 #include "ddraw_present.h"
+#include "dinput_inject.h"
 #include "lua_host.h"
 #include "mem.h"
 #include "game_bindings.h"
@@ -64,6 +65,14 @@ static int l_mod_log(lua_State *L) {
     return 0;
 }
 
+static int g_input_ref = LUA_NOREF;   // the shared mod.input table (C half + core/lua/input.lua)
+extern const char oss_lua_input[];
+static void input_lua_init(lua_State *L) {
+    if (luaL_loadstring(L, oss_lua_input) != 0) { ml_log("[input] input.lua: %s", lua_tostring(L, -1)); lua_pop(L, 1); return; }
+    di_push_lua(L);
+    if (lua_pcall(L, 1, 1, 0) != 0) { ml_log("[input] input.lua: %s", lua_tostring(L, -1)); lua_pop(L, 1); return; }
+    g_input_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+}
 static int l_frame(lua_State *L) { lua_pushnumber(L, exec_frame()); return 1; }
 static int l_screen_ctx(lua_State *L) { lua_pushnumber(L, (lua_Number)(uintptr_t)exec_screen_ctx()); return 1; }
 // mod.screen.shot(path) — the current frame as a 24-bit BMP (engine thread only; inside mod code that is always so)
@@ -98,7 +107,8 @@ static void push_mod_table(lua_State *L, const char *name, const char *dir) {
     lua_newtable(L);
     lua_pushcfunction(L, l_shot);            lua_setfield(L, -2, "shot");
     lua_pushcfunction(L, l_screen_ctx);      lua_setfield(L, -2, "ctx");
-    lua_setfield(L, -2, "screen");                                            // mod.screen.shot(path) / .ctx()
+    lua_setfield(L, -2, "screen");
+    if (g_input_ref != LUA_NOREF) { lua_rawgeti(L, LUA_REGISTRYINDEX, g_input_ref); lua_setfield(L, -2, "input"); }  // mod.input (shared)                                            // mod.screen.shot(path) / .ctx()
 
     // mod.config — the mod's own settings, schema from <dir>\mod.toml [config], values namespaced in
     // oss_mods.cfg.  Built by the embedded factory (CONFIG_LUA).  get/set/schema; nil if the factory
@@ -251,6 +261,7 @@ int lh_init(void) {
     exec_init(g_L);             // the main-thread executor (mod.main / mod.on_frame)
     hooks_init(g_L);            // the chained hook registry (mod.hook.entry / remove)
     ui_init(g_L);               // the ImGui UI host — builds the shared mod.ui table (P5)
+    input_lua_init(g_L);        // mod.input (scripted keyboard through DirectInput)
     config_lua_init(g_L);       // the mod.config factory (mod.toml [config] schema + oss_mods.cfg)
 
     ml_log("[lua] LuaJIT up (%s, JIT off, FFI on)", LUAJIT_VERSION);
