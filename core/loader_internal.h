@@ -20,7 +20,7 @@
 // (absent = assume "1.0").  Native mods have their own OSS_ABI_VERSION (struct-growth) in oss_mod_api.h.
 #define OSS_API_VERSION "1.2"   // 1.1: mod.game.camera / map / flags / items; 1.2: sandbox ops (warp / rooms / give / set)
 #define OSS_API_MAJOR   1
-#define OSS_API_MINOR   0
+#define OSS_API_MINOR   2   // keep in step with OSS_API_VERSION (the gate compares these)
 
 #ifdef __cplusplus
 extern "C" {          // the UI host (ui.cpp) is C++; give the shared C decls C linkage
