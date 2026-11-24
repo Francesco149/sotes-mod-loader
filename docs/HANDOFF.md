@@ -113,8 +113,12 @@ v2 so far (commits `10a1efe`, `b5b3b2b`, `6cb69d2`):
   room's named one).  **Gate:** `tests/actors.lua` PASS ×3.  MCP: `actors` / `spawn` / `despawn`.
 - **Names:** `actors.catalog()` from the **`stat_table`** data symbol (= the port's base-stat table DAT_0067ac58;
   SE 0x65e3a8 / JP 0x65c3a8, 0xdc rows: +0 code, +0x3a display name, +0x8a English) — 73 / 85 of the codes named.
-- **Next:** trainer spawn panel (`../sotes-mods/mods/trainer`: catalog list + spawn by the leader + despawn) → more
-  `tests/*.lua` → voice patch on symbols → Windows real-device runner (own scheduled task, never `oss-rhost-runner`).  Host tests (`make -C core tests`) still
+- **Trainer spawn panel done** (`../sotes-mods` 5672b0b): catalog slider + "ahead of the leader" + per-spawn remove;
+  `trainer.spawn(code, dx_px)` / `trainer.despawn(slot)`.  Party codes (50010–50013) spawn as idle non-party clones
+  (no pslot) and remove cleanly (ense-jp, 120 frames).  **ImGui shows Shift-JIS as `?`** (UTF-8, no CJK font): the
+  trainer uses `en` on ense-jp; the Items panel still prints JP item names raw — a `mod.text` CP932→UTF-8 helper + a
+  CJK font range would fix both.
+- **Next:** more `tests/*.lua` → voice patch on symbols → Windows real-device runner (own scheduled task, never `oss-rhost-runner`).  Host tests (`make -C core tests`) still
   assume WSL interop — port them to run under wine.
 
 ## State: P0–P5 DONE + **DDraw present (borderless + windowed takeover)** + **in-game overlay** + **`mod.config`** + **semantic `mod.game` ops** + **mod API versioning** + **early-boot phase & the `OssModEarlyInit` ABI** + **built-in JP voice restore** (2026-07-20). Next = **P8 launcher** + P7 trainer as a mod.
