@@ -41,6 +41,13 @@ ddraw=1
 #   2 = windowed (a normal RESIZABLE window, 2x game res — same smooth present; drag to resize)
 ddraw_takeover=0
 
+# Takeover scaling.  ddraw_window_scale = the windowed takeover's starting size (N x 640x480, default 1);
+# ddraw_snap = window resizes snap to whole multiples (default 1); ddraw_integer = draw at the largest
+# whole multiple that fits, black borders (pixel-exact; default 1) — 0 = fill keeping the aspect.
+ddraw_window_scale=1
+ddraw_snap=1
+ddraw_integer=1
+
 # Dev profiler: time the loader's per-frame overhead on the engine thread (the safepoint drain, the
 # UI snapshot build, and the roster heap-scan) and log avg/max microseconds every 5s to
 # oss_modloader.log.  0 = off (default, zero cost), 1 = on.

@@ -323,6 +323,12 @@ static ID3D11DeviceContext    *g_devctx;
 static IDXGISwapChain         *g_swap;
 static ID3D11RenderTargetView *g_rtv;
 static bool                    g_visible = true;
+// Segoe UI glyphs beyond Latin-1 that mod text uses: general punctuation (— – … ‘ ’ “ ”), arrows (→ ←), math (≤ ≥ ×),
+// geometric shapes (▶ ●).  ImGui's default range is Latin-1 only — the rest drew as '?'.
+static const ImWchar *ui_glyph_ranges(void) {
+    static const ImWchar r[] = { 0x0020, 0x00FF, 0x2000, 0x206F, 0x2190, 0x21FF, 0x2200, 0x22FF, 0x25A0, 0x25FF, 0 };
+    return r;
+}
 static int                     g_key_toggle = VK_F10;   // F8 collides with SotES' in-game menu key; ui_key overrides
 
 // UI-thread live-value cache — lets sliders/checkboxes stay smooth between the (throttled) engine
@@ -523,7 +529,7 @@ static bool overlay_init(void *dev_, void *ctx_, void *hwnd_) {
     ImGuiIO &io = ImGui::GetIO(); io.IniFilename = NULL;
     io.MouseDrawCursor = true;   // borderless-fullscreen: draw ImGui's own cursor (don't trust the OS one)
     { const char *f = "C:\\Windows\\Fonts\\segoeui.ttf";
-      if (GetFileAttributesA(f) != INVALID_FILE_ATTRIBUTES) io.Fonts->AddFontFromFileTTF(f, 18.0f); else io.Fonts->AddFontDefault(); }
+      if (GetFileAttributesA(f) != INVALID_FILE_ATTRIBUTES) io.Fonts->AddFontFromFileTTF(f, 18.0f, NULL, ui_glyph_ranges()); else io.Fonts->AddFontDefault(); }
     apply_theme();
     if (!ImGui_ImplWin32_Init(hwnd)) { ml_log("[ui] overlay ImGui_ImplWin32_Init failed"); ImGui::DestroyContext(); return false; }
     if (!ImGui_ImplDX11_Init(dev, ctx)) { ml_log("[ui] overlay ImGui_ImplDX11_Init failed"); ImGui_ImplWin32_Shutdown(); ImGui::DestroyContext(); return false; }
@@ -608,7 +614,7 @@ static DWORD WINAPI ui_thread(void *unused) {
     IMGUI_CHECKVERSION(); ImGui::CreateContext();
     ImGuiIO &io = ImGui::GetIO(); io.IniFilename = NULL; io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     { const char *f = "C:\\Windows\\Fonts\\segoeui.ttf";
-      if (GetFileAttributesA(f) != INVALID_FILE_ATTRIBUTES) io.Fonts->AddFontFromFileTTF(f, 18.0f); else io.Fonts->AddFontDefault(); }
+      if (GetFileAttributesA(f) != INVALID_FILE_ATTRIBUTES) io.Fonts->AddFontFromFileTTF(f, 18.0f, NULL, ui_glyph_ranges()); else io.Fonts->AddFontDefault(); }
     apply_theme();
     ImGui_ImplWin32_Init(g_hwnd);
     ImGui_ImplDX11_Init(g_dev, g_devctx);

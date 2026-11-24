@@ -295,7 +295,10 @@ static void install_safepoint_hook(void) {   // runs on the MAIN thread (in the 
     // ddraw capture / re-present backend (ddraw_present.cpp) rides the same hook.  The screen-ctx
     // layout (+0x164 mode, +0x16c back-buffer object) is verified on the SE builds; opt-out ddraw=0.
     g_capture_on = config_get_bool("ddraw", 1);   // ctx layout verified on enold + ense-en + ense-jp (sml probe 2026-11-24)
-    if (g_capture_on) ddp_set_takeover(config_get_int("ddraw_takeover", 0));
+    if (g_capture_on) {
+        ddp_set_takeover(config_get_int("ddraw_takeover", 0));
+        ddp_set_scaling(config_get_bool("ddraw_integer", 1), config_get_bool("ddraw_snap", 1), config_get_int("ddraw_window_scale", 1));
+    }
     ml_log("[exec] frame hook armed @ %p (flip, %s)%s", va, sym_edition_tag(), g_capture_on ? " — ddraw capture on" : "");
 }
 
@@ -314,6 +317,7 @@ static LRESULT CALLBACK boot_wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (m == WM_PAINT) { ValidateRect(h, NULL); return 0; }
     }
     // Windowed takeover: track resizes so our swapchain follows the window (no-op in other modes).
+    if (m == WM_SIZING && ddp_on_sizing((int)w, (void *)l)) return TRUE;   // snap to whole multiples
     if (m == WM_SIZE && w != SIZE_MINIMIZED) ddp_on_resize((int)LOWORD(l), (int)HIWORD(l));
     return CallWindowProcA(g_orig_wndproc, h, m, w, l);
 }

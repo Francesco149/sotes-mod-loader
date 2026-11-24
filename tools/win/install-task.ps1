@@ -6,3 +6,6 @@ $p = New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive -RunLevel Limi
 $s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew
 Register-ScheduledTask -TaskName 'sml-win-launch' -Action $a -Principal $p -Settings $s -Force | Out-Null
 Get-ScheduledTask -TaskName 'sml-win-launch' | ft TaskName,State
+$a2 = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\sml-win\shot.ps1'
+Register-ScheduledTask -TaskName 'sml-win-shot' -Action $a2 -Principal $p -Settings $s -Force | Out-Null
+Get-ScheduledTask -TaskName 'sml-win-shot' | ft TaskName,State

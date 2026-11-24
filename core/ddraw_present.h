@@ -56,6 +56,11 @@ int  ddp_takeover_active(void);
 // Windowed takeover (mode 2): the game window was resized — resize our swapchain to the new client and
 // re-present.  Call from the game window's WndProc (WM_SIZE), on the engine thread.  No-op otherwise.
 void ddp_on_resize(int w, int h);
+// Scaling (config): integer = present at whole multiples only; snap = windowed resizes snap to whole multiples;
+// winscale = the windowed takeover's starting size (x 640x480, shrunk to the work area).
+void ddp_set_scaling(int integer, int snap, int winscale);
+// WM_SIZING in the windowed takeover: snap the proposed rect; 1 = adjusted (return TRUE).
+int  ddp_on_sizing(int edge, void *rect);
 
 // Map the desktop cursor into the game's 640x480 screen space (undoing the borderless pillarbox / the
 // windowed client scale).  Fills gx/gy with the game-screen position; returns 1 if the cursor is over

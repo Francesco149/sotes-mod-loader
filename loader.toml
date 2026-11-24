@@ -62,6 +62,26 @@ max         = 2
 label       = "Window takeover (0 = off, 1 = borderless, 2 = windowed)"
 description = "OWN the game window with a smooth vsync'd present. 0 = off, 1 = borderless-fullscreen, 2 = resizable window. Requires DirectDraw on."
 
+
+[config.ddraw_window_scale]
+type        = "int"
+default     = 1
+min         = 1
+max         = 6
+label       = "Windowed takeover: starting size (x 640x480)"
+description = "The window opens at this whole multiple of the game's 640x480 (shrunk to fit the screen)."
+
+[config.ddraw_snap]
+type        = "bool"
+default     = true
+label       = "Windowed takeover: snap resizes to whole multiples"
+description = "Dragging the window edge snaps it to 1x / 2x / 3x ... of 640x480."
+
+[config.ddraw_integer]
+type        = "bool"
+default     = true
+label       = "Integer scaling (pixel-exact)"
+description = "Draw the game at the largest whole multiple that fits (black borders, e.g. maximized or fullscreen); off = fill the window keeping the aspect (sharp-bilinear)."
 [config.keepactive]
 type        = "bool"
 default     = true

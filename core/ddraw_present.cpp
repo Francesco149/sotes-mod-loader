@@ -88,7 +88,23 @@ static HWND g_game_hwnd;     // the game window (captured from the present hook)
 static Frame g_e_lastframe;  // shallow copy of the last presented frame (buf points into g_fr[], stable at
 static int  g_e_haveframe;   // 640x480 so it never reallocs) — re-presented on a windowed resize (drag stays live)
 static void ddp_engine_present(HWND hwnd, const Frame *f);   // defined below
+static int  g_integer = 1;   // config ddraw_integer: present at the largest WHOLE multiple that fits (pixel-exact)
+static int  g_snap = 1;      // config ddraw_snap: windowed-takeover resizes snap to whole multiples of 640x480
+static int  g_winscale = 1;  // config ddraw_window_scale: the windowed takeover's starting size (x 640x480)
 extern "C" void ddp_set_takeover(int mode) { g_tk_mode = mode; }
+extern "C" void ddp_set_scaling(int integer, int snap, int winscale) {
+    g_integer = integer; g_snap = snap; g_winscale = winscale < 1 ? 1 : winscale;
+}
+// The on-screen image size for a sw x sh source in a cw x ch client: the largest whole multiple when integer scaling
+// is on and at least 1x fits (centred, black borders), else aspect-correct fit (sharp-bilinear between multiples).
+static void fit_view(float cw, float ch, float sw, float sh, float *vw, float *vh) {
+    if (g_integer) {
+        int kx = (int)(cw / sw), ky = (int)(ch / sh), k = kx < ky ? kx : ky;
+        if (k >= 1) { *vw = sw * k; *vh = sh * k; return; }
+    }
+    float srcA = sw / sh, dstA = cw / ch;
+    if (dstA > srcA) { *vh = ch; *vw = *vh * srcA; } else { *vw = cw; *vh = *vw / srcA; }
+}
 extern "C" int  ddp_takeover_active(void)  { return (g_tk_mode && g_e_ready) ? 1 : 0; }   // skip the game present only if we ARE presenting
 
 // ════════════════════════════ ENGINE THREAD: capture ════════════════════════════
@@ -292,13 +308,17 @@ static bool e_create(HWND hwnd) {
         LONG wst = (st & ~WS_POPUP) | WS_OVERLAPPEDWINDOW;
         SetWindowLongA(hwnd, GWL_STYLE, wst);
         RECT wa = mi.rcWork; int aw = wa.right - wa.left, ah = wa.bottom - wa.top;
-        RECT r = { 0, 0, 1280, 960 }; AdjustWindowRect(&r, wst, FALSE);   // 2x 640x480 client -> window rect
-        int winw = r.right - r.left, winh = r.bottom - r.top;
+        int k = g_winscale, winw, winh;                                    // N x 640x480 client, shrunk to fit
+        for (;; k--) {
+            RECT r = { 0, 0, 640 * k, 480 * k }; AdjustWindowRect(&r, wst, FALSE);
+            winw = r.right - r.left; winh = r.bottom - r.top;
+            if (k <= 1 || (winw <= aw && winh <= ah)) break;
+        }
         if (winw > aw) winw = aw;
         if (winh > ah) winh = ah;
         SetWindowPos(hwnd, HWND_TOP, wa.left + (aw - winw) / 2, wa.top + (ah - winh) / 2, winw, winh, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
         RECT cr; GetClientRect(hwnd, &cr); mw = cr.right - cr.left; mh = cr.bottom - cr.top;
-        if (mw <= 0 || mh <= 0) { mw = 1280; mh = 960; }
+        if (mw <= 0 || mh <= 0) { mw = 640; mh = 480; }
     } else {
         SetWindowLongA(hwnd, GWL_STYLE, (st & ~(WS_CAPTION|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_SYSMENU|WS_DLGFRAME|WS_BORDER)) | WS_POPUP);
         mw = mi.rcMonitor.right - mi.rcMonitor.left; mh = mi.rcMonitor.bottom - mi.rcMonitor.top;
@@ -366,8 +386,8 @@ static void e_present_frame(HWND hwnd, const Frame *f) {
     g_e_ctx->Unmap(g_e_tex, 0);
 
     // aspect-correct fit within the client (pillarbox); the on-screen image size feeds sharp-bilinear.
-    float srcA = (float)f->w / (float)f->h, dstA = (float)g_e_bbw / (float)g_e_bbh, vw, vh;
-    if (dstA > srcA) { vh = (float)g_e_bbh; vw = vh * srcA; } else { vw = (float)g_e_bbw; vh = vw / srcA; }
+    float vw, vh;
+    fit_view((float)g_e_bbw, (float)g_e_bbh, (float)f->w, (float)f->h, &vw, &vh);
     D3D11_MAPPED_SUBRESOURCE cm;
     if (SUCCEEDED(g_e_ctx->Map(g_e_cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &cm))) {
         float *p = (float *)cm.pData; p[0] = (float)f->w; p[1] = (float)f->h; p[2] = vw; p[3] = vh; g_e_ctx->Unmap(g_e_cb, 0); }
@@ -392,6 +412,32 @@ static void ddp_engine_present(HWND hwnd, const Frame *f) {
     if (!g_e_ready) { if (!e_create(hwnd)) return; g_e_ready = 1; }   // create fail -> stays 0 -> game presents (fallback)
     g_e_lastframe = *f; g_e_haveframe = 1;   // remember for a windowed-resize re-present (buf stable at 640x480)
     e_present_frame(hwnd, f);
+}
+
+// Windowed takeover only, WM_SIZING: snap the drag to a whole multiple of 640x480 (client), keeping the edge opposite
+// the dragged one fixed.  The dragged edge picks the axis (sides: that axis; corners: the larger multiple).  Returns 1
+// when it adjusted *r (the caller returns TRUE).
+extern "C" int ddp_on_sizing(int edge, void *rv) {
+    if (g_tk_mode != 2 || !g_e_ready || !g_snap || !rv || !g_game_hwnd) return 0;
+    RECT *r = (RECT *)rv;
+    RECT z = { 0, 0, 0, 0 };
+    AdjustWindowRect(&z, (DWORD)GetWindowLongA(g_game_hwnd, GWL_STYLE), FALSE);   // frame thickness (z is negative-left)
+    int fw = z.right - z.left, fh = z.bottom - z.top;
+    float cw = (float)(r->right - r->left - fw), ch = (float)(r->bottom - r->top - fh);
+    int kx = (int)(cw / 640.0f + 0.5f), ky = (int)(ch / 480.0f + 0.5f), k;
+    if (edge == WMSZ_LEFT || edge == WMSZ_RIGHT) k = kx;
+    else if (edge == WMSZ_TOP || edge == WMSZ_BOTTOM) k = ky;
+    else k = kx > ky ? kx : ky;
+    MONITORINFO mi; mi.cbSize = sizeof mi;
+    if (GetMonitorInfoA(MonitorFromWindow(g_game_hwnd, MONITOR_DEFAULTTONEAREST), &mi)) {
+        int aw = mi.rcWork.right - mi.rcWork.left, ah = mi.rcWork.bottom - mi.rcWork.top;
+        while (k > 1 && (640 * k + fw > aw || 480 * k + fh > ah)) k--;
+    }
+    if (k < 1) k = 1;
+    int w = 640 * k + fw, h = 480 * k + fh;
+    if (edge == WMSZ_LEFT || edge == WMSZ_TOPLEFT || edge == WMSZ_BOTTOMLEFT) r->left = r->right - w; else r->right = r->left + w;
+    if (edge == WMSZ_TOP || edge == WMSZ_TOPLEFT || edge == WMSZ_TOPRIGHT) r->top = r->bottom - h; else r->bottom = r->top + h;
+    return 1;
 }
 
 // Windowed takeover only: the user resized the game window — resize the swapchain to the new client and
@@ -426,9 +472,9 @@ extern "C" int ddp_cursor_game(float *gx, float *gy) {
     float cw = (float)(rc.right - rc.left), ch = (float)(rc.bottom - rc.top);
     if (cw <= 0 || ch <= 0) return 0;
     float ox = 0, oy = 0, sx, sy;
-    if (g_tk_mode && g_e_ready) {           // takeover: aspect-fit pillarbox within the client (monitor OR window)
-        float srcA = 640.0f / 480.0f, dstA = cw / ch, vw, vh;
-        if (dstA > srcA) { vh = ch; vw = vh * srcA; } else { vw = cw; vh = vw / srcA; }
+    if (g_tk_mode && g_e_ready) {           // takeover: the present's fit within the client (monitor OR window)
+        float vw, vh;
+        fit_view(cw, ch, 640.0f, 480.0f, &vw, &vh);
         ox = (cw - vw) * 0.5f; oy = (ch - vh) * 0.5f; sx = vw / 640.0f; sy = vh / 480.0f;
     } else {                                 // windowed: the game BitBlt's 640x480 to the full client
         sx = cw / 640.0f; sy = ch / 480.0f;

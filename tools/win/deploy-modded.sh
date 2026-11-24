@@ -27,6 +27,7 @@ nix develop "$ROOT" --command make -C "$ROOT/core" >/dev/null
 STAGE="$(mktemp -d)"; trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$STAGE/payload/mods"
 cp "$ROOT/build/version.dll" "$STAGE/payload/"
+cp "$ROOT/tools/win/modded.oss_loader.cfg" "$STAGE/payload/oss_loader.cfg"
 for m in $MODS; do
   [ -d "$MODS_REPO/mods/$m" ] && cp -r "$MODS_REPO/mods/$m" "$STAGE/payload/mods/" || echo ">> skip $m (not in $MODS_REPO/mods)"
 done

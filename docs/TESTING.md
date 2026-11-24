@@ -148,4 +148,9 @@ builds the loader and refreshes it (`tools/win/deploy.ps1` on the box: first run
 a running game's `version.dll` is renamed aside, the new one applies next launch).  **Auto:** the post-commit hook
 (`tools/git-hooks`, `core.hooksPath`; `../sotes-mods/.git/hooks/post-commit` execs the same, local only) runs it in the
 background when a commit touches `core/` / `mods/` / `loader.toml` / the deploy scripts; log `.git/deploy-modded.log`;
-opt out `DEPLOY_MODDED=0`.  `MODS="trainer dashboard autoload"` to ship more.
+opt out `DEPLOY_MODDED=0`.  `MODS="trainer dashboard autoload"` to ship more.  It ships `tools/win/modded.oss_loader.cfg`
+(only when absent): windowed takeover = ONE window (the game's own, drawn by the loader; mod panels overlay it, F10),
+starting at 1x, resizes snapping to whole multiples, integer-scaled present.  Looking at it: task **`sml-win-shot`**
+(`shot.ps1`, PrintWindow of each sotes window → `C:\sml-win\shot-N.png` + sizes in `shot.txt`; a screen grab would
+capture whatever covers the game).  Snap checked from inside the game via LuaJIT ffi (`SendMessageA(WM_SIZING)` with
+the dev server on): +300/+250, +700/+540, bottom +400 → 2x (the monitor caps 3x); a 1084x721 client → a centred 1x image.
