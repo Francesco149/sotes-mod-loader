@@ -90,10 +90,31 @@ def free_slot():
     return slot
 
 
+NULL_SINK = "sml_silent"
+
+
+def silent_sink():
+    """A PipeWire/Pulse null sink for the runs: the game's DirectSound keeps a real device (sounds load and play,
+    sound.status sees them) but nothing reaches the speakers.  USER 2026-11-25: runs were audible (title / attract)."""
+    try:
+        sinks = subprocess.run(["pactl", "list", "short", "sinks"], capture_output=True, text=True, timeout=5).stdout
+        if NULL_SINK not in sinks:
+            subprocess.run(["pactl", "load-module", "module-null-sink", f"sink_name={NULL_SINK}",
+                            f"sink_properties=device.description={NULL_SINK}"], capture_output=True, timeout=5)
+        return NULL_SINK
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
 def wine_env(display, port, slot=0):
     e = dict(os.environ)
     e.update(WINEPREFIX=slot_prefix(slot), WINEDEBUG="-all", WINEDLLOVERRIDES="version=n,b;mscoree,mshtml=",
              DISPLAY=display, OSS_DEVSERVER=str(port))
+    sink = silent_sink()
+    if sink:
+        e["PULSE_SINK"] = sink          # never the user's speakers
+    else:
+        e["WINEDLLOVERRIDES"] += ";winepulse.drv,winealsa.drv=d"   # no audio server: no audio driver at all
     return e
 
 
