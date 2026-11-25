@@ -9,6 +9,12 @@ Rolling "where we are / what's next" for a fresh session. Orient: this → `DESI
 > THERE** (`SE_CODE_MAP.md` / `engine-quirks.md`), not only in this repo — loader docs cover the
 > loader, game facts belong to the port so both projects benefit. (README "Related".)
 
+> **The Windows box's RAM was unstable** (memslammer, 2026-11-25: byte-wide error after 178 s; owner loosened the
+> settings, retest running). Nothing here failed on it, but once memslammer runs clean: rerun the 2026-11-24
+> `tools/win/` gate (voice 58/58 + the 40–50 ms SteamStub race timing, roster / world / sandbox / actors on EN + JP);
+> re-hash `C:\sotes-modded` (game copied on the box by `deploy.ps1`) against the Steam install; Steam "verify files" on
+> the real install the harness swapped `version.dll` in. wine / Linux results are unaffected.
+
 ## v2 REVAMP IN PROGRESS (2026-11-24) — read `docs/plans/v2-revamp.md` first
 
 **v1 was broken on the current Steam build** (SE update 2026-08-09: `0x437c70` is no longer a function
