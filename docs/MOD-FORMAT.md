@@ -434,7 +434,9 @@ mod.game.sprites.new_bank       -- a sheet may have MORE cells than `like` (its 
 mod.game.sprites.encode24(img, template)
 s:say(text, {portrait = bank, frame = n})   the speaker's bust from any bank of 160 x 176 cells (the runner's own
                                    portrait fields +0x84 / +0x88); the text wraps at 36 columns as with retail's
-mod.game.sound.room_music(room, file | nil[, {loop =, volume =}])   a PCM .wav as that room's music: the loader plays
+mod.game.sound.room_music(room, file | nil[, {loop =, volume =, normalize =}])   a PCM .wav as that room's music, at the
+                                   game's own music volume setting (followed live) and levelled to the game's tracks
+                                   (-14.7 dB mean); volume = a trim on top, 1/100 dB.  The loader plays
                                    it (DirectSound) and answers the engine's bgm_pick with 0 there, so the game fades
                                    its own BGM out and brings the next room's back by itself
 mod.game.sound.music(file | nil[, opts]) / .music_status()

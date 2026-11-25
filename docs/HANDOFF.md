@@ -300,6 +300,15 @@ v2 so far (commits `10a1efe`, `b5b3b2b`, `6cb69d2`):
   - **wine:** dialogue text looks unevenly spaced — the engine draws Courier New per character at a 7 px pitch and the
     prefix has no Courier New (fc-list: none), so a substitute's glyphs sit in 7 px cells.  Not a mod / encoding issue;
     check on Windows.
+  - **Music level (USER: "way louder than stock"):** the track played at a fixed -7 dB while the game's BGM runs at its
+    music-volume setting: the music manager (`*(sys +0x2884)` enold / `+0x2960` SE EN; found by shape at runtime: +0x18
+    track table, +0x1c count, **+0x28 master volume**, 1/100 dB — what 0x5bbe20 writes from the config; seen -800 on a
+    fresh enold, -1600 on the SE test config).  Now: level = that master volume (re-read every 20 frames) + a gain to the
+    game's tracks' mean (-14.7 dB, measured with ffmpeg on the WMA temp files; Recettear's open.wav is -16.1) + the mod's
+    trim.  Port-repo finding owed.  Not checked by ear.
+  - **Windows fixes after the first hand run:** the setup gate held a system DLL's window (loader lock → no dialog): it now
+    holds only calls from the exe image; `map.get()` searched the whole area table per call (0.4 ms; mod rooms last) —
+    choppy with api 1.11's per-frame callers: one-entry cache.
   - **Not done:** enold / ense-jp runs of the mod (ense-en only), selling the player's own loot (needs an item-remove
     op), new item definitions (Recettear's items + icons), more Recettear cast (sprites for 15 are converted).
 - **Next (modding PoC):** a monster with its own skills / projectiles (skill records + their clips), a portrait / voice in s:say, camera shake, Windows hand-play of the hall.

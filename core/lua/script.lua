@@ -57,7 +57,9 @@
 -- override, a fixed id) and compared with the track that plays; a different answer makes the engine cross-fade.  A
 -- mod's track is a PCM .wav FILE (core/music.c: a DirectSound stream of the loader's own); while it plays, a typed
 -- hook answers bgm_pick with 0 — the engine fades its own music out, and brings the room's back when ours stops.
---   sound.room_music(room, file | nil[, {loop = true, volume = 0}])   `file` is this room's music while the party is there
+--   sound.room_music(room, file | nil[, {loop = true, volume = 0, normalize = true}])   `file` is this room's music while
+--                                         the party is there.  It plays at the game's own music volume setting, levelled
+--                                         to the game's tracks; volume = the mod's trim on top (1/100 dB)
 --   sound.music(file | nil[, opts])       play `file` everywhere, until music(nil) (then the rooms' own again)
 --   sound.music_status() -> {file, playing, position, volume} | nil
 local hook, mem, sym, log, game, res, edition_fn, music, on_frame = ...
@@ -576,6 +578,36 @@ end
 
 -- ── music ────────────────────────────────────────────────────────────────────────────────────────────────────────
 local mus = { rooms = {}, forced = nil, cur = nil, armed = false, bad = {} }
+-- A track plays at the GAME'S music volume: the music manager's master volume (the object the engine's own volume
+-- setter 0x5bbe20 writes: +0x28, 1/100 dB; +0x18 its track table, +0x1c the count), which the options menu changes
+-- live.  The manager hangs off sys (enold +0x2884, SE EN +0x2960): found by shape, once.  On top of that the track is
+-- LEVELLED to the game's own music (its WMA tracks measure -14.7 dB mean): gain = -14.7 - the track's mean level
+-- (core/music.c), then the mod's own trim (`volume`).  DirectSound cannot amplify: the sum is capped at 0.
+local GAME_MEAN_DB = -14.7
+local function master()
+  local sys = sym.va('g_sys')
+  if not sys then return -800 end
+  if mus.zdm_off == nil then
+    mus.zdm_off = false
+    for off = 0x2800, 0x2b00, 4 do
+      local p = mem.read_u32(sys + off)
+      if p and p > 0x10000 and mem.readable(p, 0x30) then
+        local n, tb, vol = mem.read_u16(p + 0x1c), mem.read_u32(p + 0x18), mem.read_i32(p + 0x28)
+        if n > 0 and n <= 64 and tb > 0x10000 and mem.readable(tb, 56) and vol <= 0 and vol >= -10000 then mus.zdm_off = off break end
+      end
+    end
+    log(mus.zdm_off and ('[music] the game\'s music manager: sys +0x%x'):format(mus.zdm_off) or '[music] music manager not found: default volume')
+  end
+  if not mus.zdm_off then return -800 end
+  local p = mem.read_u32(sys + mus.zdm_off)
+  local v = p and p ~= 0 and mem.read_i32(p + 0x28)
+  return (v and v <= 0 and v >= -10000) and v or -800
+end
+local function level(t)
+  local st = music.status()
+  local gain = (t.normalize ~= false and st and st.mean_db) and (GAME_MEAN_DB - st.mean_db) * 100 or 0
+  return math.max(-10000, math.min(0, math.floor(master() + gain + (t.volume or 0))))
+end
 local function music_arm()
   if mus.armed then return true end
   local va = sym.va('bgm_pick')
@@ -585,14 +617,21 @@ local function music_arm()
     local m = game.map and game.map.get and game.map.get()
     local want = m and (mus.forced or mus.rooms[m.area]) or nil
     if want and mus.bad[want.file] then want = nil end
-    if want == mus.cur then return end
+    if want == mus.cur then
+      if want then mus.n = (mus.n or 0) + 1; if mus.n % 20 == 0 then music.volume(level(want)) end end   -- follows the options menu
+      return
+    end
     if want then
-      local ok, err = music.play(want.file, want.loop ~= false, want.volume or 0)
+      local ok, err = music.play(want.file, want.loop ~= false, -10000)     -- silent until its level is known
       if not ok then
         mus.bad[want.file] = true
         log('[music] ' .. tostring(want.file) .. ': ' .. tostring(err))
         want = nil
         if mus.cur then music.stop() end
+      else
+        local v = level(want)
+        music.volume(v)
+        log(('[music] level %d (game music volume %d, track mean %.1f dB)'):format(v, master(), (music.status() or {}).mean_db or 0))
       end
     else
       music.stop()
@@ -605,7 +644,7 @@ end
 local function track(file, o)
   if file == nil then return nil end
   o = o or {}
-  return { file = tostring(file), loop = o.loop, volume = o.volume }
+  return { file = tostring(file), loop = o.loop, volume = o.volume, normalize = o.normalize }
 end
 function sound.room_music(room, file, o)
   assert(type(room) == 'number', 'sound.room_music(room, file[, opts])')

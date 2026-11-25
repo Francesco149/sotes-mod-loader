@@ -8,6 +8,7 @@
 #include "executor.h"
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 #define COBJMACROS
 #include <mmsystem.h>
 #include <dsound.h>
@@ -18,6 +19,7 @@ static IDirectSound8      *g_ds;
 static IDirectSoundBuffer *g_buf;
 static char                g_path[MAX_PATH];
 static long                g_vol;          // 1/100 dB, <= 0
+static double              g_mean_db;      // the track's mean level (RMS over every sample), dBFS
 
 static void music_stop(void) {
     if (g_buf) { IDirectSoundBuffer_Stop(g_buf); IDirectSoundBuffer_Release(g_buf); g_buf = NULL; }
@@ -57,6 +59,14 @@ static const char *music_play(const char *path, int loop, long vol) {
     if (!err && (!pcm || !npcm || wf.wFormatTag != WAVE_FORMAT_PCM)) err = "not PCM audio";
     if (!err) {
         wf.cbSize = 0;
+        // mean level: RMS of the samples (16-bit; 8-bit tracks are not measured), a stride keeps it under ~1e6 reads
+        g_mean_db = -14.7;
+        if (wf.wBitsPerSample == 16) {
+            unsigned ns = npcm / 2, step = ns / 1000000 + 1;
+            double acc = 0; unsigned cnt = 0;
+            for (unsigned i = 0; i < ns; i += step) { short v = (short)(pcm[2 * i] | pcm[2 * i + 1] << 8); acc += (double)v * v; cnt++; }
+            if (cnt && acc > 0) g_mean_db = 10.0 * log10(acc / cnt / (32768.0 * 32768.0));
+        }
         DSBUFFERDESC bd; memset(&bd, 0, sizeof bd);
         bd.dwSize = sizeof bd;
         bd.dwFlags = DSBCAPS_CTRLVOLUME | DSBCAPS_GLOBALFOCUS | DSBCAPS_GETCURRENTPOSITION2;
@@ -108,6 +118,7 @@ static int l_status(lua_State *L) {
     lua_pushboolean(L, (st & DSBSTATUS_PLAYING) != 0);      lua_setfield(L, -2, "playing");
     lua_pushnumber(L, pos);                                 lua_setfield(L, -2, "position");
     lua_pushnumber(L, g_vol);                               lua_setfield(L, -2, "volume");
+    lua_pushnumber(L, g_mean_db);                           lua_setfield(L, -2, "mean_db");
     return 1;
 }
 void music_push_lua(lua_State *L) {
