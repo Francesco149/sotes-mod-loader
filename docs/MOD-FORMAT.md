@@ -117,12 +117,14 @@ mod.game.map.warp(key[, gate[, force]]) -> true | nil, why   warp the party (gat
                                 --   (the countdown armed at 1).  Refused: unknown room, a room without map data
                                 --   (retail would exit "The map data is not found."), an event running, a warp running.
 mod.game.map.warp_status()      -> 'idle' | 'requested' | 'warping', key
-mod.game.map.add_room{key=, like=, map=} -> true | nil, why   (api 1.7) a NEW room: a copy of room `like`'s record
+mod.game.map.add_room{key=, like=, map=[, town=]} -> true | nil, why   (api 1.7) a NEW room: a copy of room `like`'s record
                                 --   (kind, tileset, town flag, BGM, name) with id `key` and map DATA id `map` (u16;
                                 --   serve its bytes with mod.res.set("DATA", map, ...)), no exits.  The area table is
                                 --   rebuilt each session, so the loader re-applies additions on every area_find (a
                                 --   save made in the room loads while the mod is installed).  Keep `like` in the
-                                --   same area (key / 1000) so area state carries.
+                                --   same area (key / 1000) so area state carries.  town = false / true (api 1.8)
+                                --   overrides the town kind (record +0x114 = 2): in a town hits do NO damage either
+                                --   way (barrels still break) — a house-looking arena needs town = false.
 mod.game.map.set_exit(room, zone, to[, gate]) -> true | nil, why   (api 1.7) room's exit for `zone` → room `to`,
                                 --   arriving at its zone actor `gate` (default 1).  The zone needs a zone device in
                                 --   the room's MAP (70101 walk-in, 70102 press-Up door; A[0] = zone) — the arrival
@@ -153,7 +155,45 @@ mod.game.actors.spawn(code[, {x=, y=} | {dx=, dy=}, facing=]) -> slot | nil, why
                                 --   feet (centre x, bottom y); else the leader's feet + dx (ahead; default 6000) + dy.
                                 --   Refused: a code char_init lacks (retail would exit "Unknown Object Type"),
                                 --   pool full.  Any code draws — sprite banks need no preparation.
+                                --   handle = n (api 1.8): talkable — see script.on_talk.  A spawned monster is a real
+                                --   enemy outside towns (it fights, takes damage, drops coins).
 mod.game.actors.remove(slot)    -> true | nil, why   retail's char_unload (a script's removal); party refused
+mod.game.actors.set_handle(slot, h) -> true | nil, why   (api 1.8) the actor's script handle (entity_set_handle:
+                                --   +0x1d8 + the world's handle list the talk probe walks).  list() rows carry
+                                --   `handle` and `ptr` (the character) since 1.8.
+mod.game.script                 -- [api 1.8] EVENT SCRIPTS IN LUA on retail's own scene machinery (core/lua/script.lua;
+                                --   hooks arm on first use).  A retail conversation = a C function the script engine
+                                --   picks by (room, mode, the talked-to actor's handle) that fills the event runner's
+                                --   command block and runs frames (script_wait); a Lua script does the same over FFI.
+  .on_talk(handle, fn[, {room=, name=}])   talk (V) to a character / examine (X, sword sheathed) a device whose
+                                --   handle == handle (a map record's A[1], actors.spawn{handle=}, set_handle).  Runs
+                                --   retail's talk beat (camera, party, weapons away, face each other) then fn(s).
+  .off_talk(handle)
+  .run(fn[, {name=}])           a script with no actor at the next free-roam frame (gimmick_pass calls event_run,
+                                --   then retail's post-talk input reset) — e.g. a reward cutscene
+  .after(fn)                    fn() at the next free-roam frame: warps (one armed inside an event is lost) etc.
+  .running() / .pending() / .errors()
+  -- fn(s): s.actor, s.handle, s.room, s.name (the box title) and, all retail's own:
+  s:say(text[, {name=, actor=('leader'|ptr), own_name=, voice=, face=}])   a message box (\n = retail's %n)
+  s:narrate(text)               a narration box (kind 3, no speaker — what examine messages use)
+  s:choose({...}[, {default=, no_cancel=, x=, y=, w=}]) -> i | nil   the runner's choice list, ≤ 16 rows
+  s:yes_no([no_cancel]) -> bool  retail's localized Yes / No
+  s:shop({item ids}[, {buy=, sell=}])   the shop (Buy / Sell, equip preview, prices) on any stock
+  s:inn{price=, offer=('%d'), decline=, broke=, morning=, bye=}   the whole inn: price window, payment, rest, heal
+  s:rest() / s:heal()           the inn rest alone (jingle, black, heal, back) / the party to full
+  s:storage()                   the storage box
+  s:book(title, {pages})        the book reader (≤ 2047 chars a page)
+  s:give(what, n[, quiet]) -> got   the story gift ("You obtained ..."; full bag: retail's refusal); what = an item
+                                --   id or 1 / 2 / 3 = n copper / silver / gold coins
+  s:fade_out([ms]) / s:fade_in([ms]) / s:wait([ms]) / s:pause(n) / s:camera(actor[, speed]) / s:sound(id) / s:leader()
+  -- A wait that returns 6 (quit / game over) aborts the script like retail; a Lua error ends the event (logged).
+mod.game.sound                  -- [api 1.8] sound effects
+  .play(id[, vol[, freq]])      a stock pool slot (0..464 enold / 482 SE) or a .add handle; vol in 1/100 dB
+  .add(wav[, {voices=}]) -> h   RIFF WAVE bytes → a new sound: served through the resource overlay, played from the
+                                --   loader's own pool (swapped into a slot only inside the engine's sfx_play): no
+                                --   stock sound changes
+  .wav(samples[, rate]) -> bytes   16-bit mono PCM from -1..1 floats (synthesize in Lua: nothing shipped)
+  .status(id) -> {loaded, voices, playing}   (playing = DSBSTATUS_PLAYING voices; for tests)
 mod.game.attract.set(on) / .get() -- false keeps the title up (idle → no demo); true = retail
 mod.game.save.load([slot])      -> true | nil, err   -- load save `slot` from the title (nil / <0 = the list's
                                 --   default row = last used).  Typed hooks on the title driver (any edition):

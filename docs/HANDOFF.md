@@ -162,6 +162,38 @@ v2 so far (commits `10a1efe`, `b5b3b2b`, `6cb69d2`):
     (`L*30` to turn, `V*10` to talk); 1–6-flip taps silently drop.  V (ring 38) = talk; Enter advances messages.
   - **Gate:** `tests/testroom.sh R` (a `--mods testroom` run, continued) — house overlay hit, door → 210142, 2 talks run +
     end, back through the door.
+- **Event scripts + sound (api 1.8, 2026-11-25)** — `mod.game.script` / `mod.game.sound` (`core/lua/script.lua`, embedded,
+  hooks armed on first use) + the testroom 0.2 **Mod Hall** (`../sotes-mods` 2f32d41).  Talk handlers claim script_engine
+  events by the actor's handle and run retail's primitives; full list in MOD-FORMAT.  RE facts it rests on (all SE-checked by
+  disasm / the SE IDA export; **port-repo findings owed**, not written there — a port session runs in parallel):
+  - **Choice list** = the runner's generic list (scene_run): +0x584 u16 count, +0x588 pick / default id, +0x58c id on cancel,
+    +0x590 no-cancel, window +0x594 w / +0x598 x / +0x59c y (height 28 n + 64), 0x58-B rows from +0x5a0 {text[0x50], kind,
+    id}, wait mode +0x20 = 5.  scene_yes_no just fills 2 rows; **SE yes_no takes an arg** (→ +0x590), SE shop_run a 4th
+    (sell mode, retail passes 1), **SE room_party_heal (room, all, mp)** (enold 2 args).  Line break token in text = `%n`.
+  - Narration box = scene_msg kind 3, no actor.  Books: title[0x28] + 2052-B pages {text[2048], u32 end}; the first page
+    with end ≠ 0 terminates.  Shop stock = 0-terminated int32 ids.  Fades: ms (+0x3c), effect wait +0x20 2 / +0x24 1 /
+    +0x28 1 plain, 2 fade / +0x2c ms.
+  - **Retail's inn = el_41c390** (enold 0x41c390 / SE 0x417390 / JP 0x417380): (ev, price CP, 1, mode 0, speaker, offer
+    printf, decline, not-enough, morning, bye) — its own "Inn - N to stay" window.  si_41a160 = the rest alone (jingle,
+    fade, world tick off +0x1c — clear it after, as the inn does).
+  - Furniture talk beat = scene_talk_face(ev, 0, actor, **0, 0**) (people 1, 1); a device asked to face back hangs the cast wait.
+  - **touch_pass only runs on the talk / examine keys**; gimmick_pass (enold 0x59afd0 / SE 0x5c3860) runs every free-roam
+    frame → run() / after() hang off it.  event_run's room arg = the room POINTER (world +0x2784 / SE +0x3788).
+  - entity_set_handle (0x555f00 / SE 0x574610, thiscall) = +0x1d8 + the world handle list (+0x2790 / SE +0x3794) — a
+    summon_spawn'd NPC becomes talkable.
+  - **Town rooms** (record +0x114 = 2): weapons drawn with Z still swing and barrels break, but hits do no damage either way
+    — spawned monsters are inert there; outside towns they're real enemies (fight, die, drop coins).  add_room{town=false}.
+  - Sound pools: sys (g_sys: enold 0x8a6b60 / en 0x92af08 / jp 0x926078) + 0x364 ×465 / en 0x378 ×483 / jp 0x374 ×483, all
+    in use; pool {u16 n, next, voices*, dsound*, u16 res, -, hmodule, u16 group}, WAVE via FindResourceA(mod, res,
+    "WAVE") (a plain RIFF).  Custom sounds = our pool swapped into slot 0 only during sfx_play.
+  - Under wine the house floor line for coordinates.set is **y 52000** (54400 = inside the floor: the leader can jump but
+    not walk or swing — cost an hour).  Keys: Z draw/sheathe, X attack / examine, V talk, C jump, esc cancel.
+  - symgen's rh_hooks regex skipped the table rows (`"name", 0xVA,`) — +178 symbols now.
+  - **Gate:** `tests/hall.sh R` (a `--mods testroom` run, continued) — PASS on ense-en.  **Not yet run on enold / ense-jp.**
+  - `sml` runs now play into a null sink (`sml_silent`; USER: the attract was audible) — PipeWire also remembers
+    "  sotes" → sml_silent.
+- **Next (modding PoC):** custom sprites (sheets are DATA resources too: a recolour / new bank through the overlay — format
+  RE first), hall.sh on enold + ense-jp, a portrait / voice in s:say, camera shake, Windows hand-play of the hall.
 - **Next:** more `tests/*.lua` → a fuller Windows runner (`tools/win/` is launch + Lua only: no `--saves` isolation — it uses the real install + Steam saves, backs up / restores `version.dll` by hand) (own scheduled task, never `oss-rhost-runner`).  Host tests (`make -C core tests`) still
   assume WSL interop — port them to run under wine.
 
