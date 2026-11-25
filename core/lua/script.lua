@@ -13,7 +13,8 @@
 --                                             (a map record's A[1], or actors.spawn{handle=} / actors.set_handle)
 --   script.off_talk(handle)
 --   script.run(fn)                            queue a script with no actor: it starts at the next free-roam frame
---                                             (touch_pass — where retail starts talks — calls event_run itself)
+--                                             (gimmick_pass, where retail starts switch / chest events, calls
+--                                             event_run itself; then touch_pass's post-talk input reset)
 --   script.after(fn)                          fn() at the next free-roam frame (after the running event): warps etc.
 --   script.running() -> bool                  a mod script owns the game right now
 --
@@ -29,7 +30,8 @@
 --   s:give(what, n[, quiet]) -> got                            retail's story gift ("You obtained ..."): what = an
 --                                                              item id, or 1 / 2 / 3 = n copper / silver / gold
 --   s:heal()                                                  the whole party to full (the inn's room_party_heal)
---   s:rest()                                                  retail's inn rest: jingle + fade to black (then fade_in)
+--   s:rest()                                                  retail's inn rest: jingle, fade out, heal, fade back
+--   s:inn{price=, offer=, decline=, broke=, morning=, bye=}   retail's whole inn (its price window + Yes / payment)
 --   s:fade_out([ms]) / s:fade_in([ms]) / s:wait([ms])          screen fades / a plain wait (default 1000 ms)
 --   s:pause(n)                                                the scene countdown (+0x57c; retail uses 100..200)
 --   s:camera(actor[, speed])                                  pan to an actor (nil = the leader)
@@ -89,6 +91,7 @@ local SIGS = {
   event_run = 'int (__thiscall *)(void *, void *, void *, void *, int, int, int)',
   sfx_play = 'int (__thiscall *)(void *, uint16_t, int, int)',
   si_41a160 = 'int (__thiscall *)(void *)',
+  el_41c390 = 'int (__thiscall *)(void *, int, int, int, void *, const char *, const char *, const char *, const char *, const char *)',
   room_input_flush = 'void (__thiscall *)(void *)',
   ts_40fe00 = 'void (__thiscall *)(void *)',
 }
@@ -224,17 +227,37 @@ function S:give(what, n, quiet)
   return got[0] ~= 0
 end
 function S:heal() need('heal')(ffi.cast('void *', u32(self.ev, 0x8))) end
--- retail's inn rest (si_41a160): the inn jingle, a 1 s fade to black and its wait; the screen stays black (fade_in)
+-- the effect wait (scene_wait / scene_wait_fade: +0x20 = 2, +0x24 = 1, +0x28 1 / 2, +0x2c ms)
+local function effect_wait(s, kind, t) local ev = s.ev w32(ev, 0x24, 1); w32(ev, 0x28, kind); w32(ev, 0x2c, t); w32(ev, 0x20, 2); return wait(s) end
+-- retail's inn rest (si_41a160: the inn jingle, a 1 s fade to black, the world tick off +0x1c) and what retail's inn
+-- (el_41c390) does after it: the party healed, a 200 pause, a 500 ms fade back with a 1 s wait, the world tick on.
 function S:rest()
   local r = need('si_41a160')(self.ev)
+  if r == 6 then error(ABORT, 0) end
+  self:heal()
+  self:pause(200)
+  local ev = self.ev
+  w32(ev, 0x30, 1); w32(ev, 0x34, 2); w32(ev, 0x3c, 500); w32(ev, 0x38, 1)
+  local r2 = effect_wait(self, 1, 1000)
+  w32(ev, 0x1c, 0)
+  return r2
+end
+-- retail's whole inn (el_41c390, the innkeepers' own): `offer` (a printf with the price, %d) → the "Inn - N to stay"
+-- window (Stay / Leave / the party) → not enough money: `broke`; declined: `decline`; else paid, rest (as above),
+-- `morning`, then `bye`.  Lines nil = skipped.  Returns the game's result (6 = the scene ended).
+function S:inn(o)
+  o = o or {}
+  local keep = self._keep
+  local function str(t) if t == nil then return nil end t = msgtext(t) keep[#keep + 1] = t return t end
+  local r = need('el_41c390')(self.ev, o.price or 1000, 1, 0, self.actor, str(o.offer), str(o.decline), str(o.broke),
+    str(o.morning), str(o.bye))
   if r == 6 then error(ABORT, 0) end
   return r
 end
 -- the fade command (scene_fade_out / _in: +0x30 = 1, +0x34 3 out / 2 in, +0x3c ms, +0x38 0 / 1) and the effect wait
 -- (scene_wait / scene_wait_fade: +0x20 = 2, +0x24 = 1, +0x28 1 / 2, +0x2c ms) — what retail's inn rest runs
-local function effect_wait(s, kind, t) local ev = s.ev w32(ev, 0x24, 1); w32(ev, 0x28, kind); w32(ev, 0x2c, t); w32(ev, 0x20, 2); return wait(s) end
 function S:fade_out(t) local ev = self.ev w32(ev, 0x30, 1); w32(ev, 0x34, 3); w32(ev, 0x3c, t or 1000); w32(ev, 0x38, 0); return effect_wait(self, 2, t or 1000) end
-function S:fade_in(t) local ev = self.ev w32(ev, 0x30, 1); w32(ev, 0x34, 2); w32(ev, 0x3c, t or 1000); w32(ev, 0x38, 1); return effect_wait(self, 2, t or 1000) end
+function S:fade_in(t) local ev = self.ev w32(ev, 0x30, 1); w32(ev, 0x34, 2); w32(ev, 0x3c, t or 1000); w32(ev, 0x38, 1); local r = effect_wait(self, 1, t or 1000) w32(ev, 0x1c, 0) return r end
 function S:wait(ms) return effect_wait(self, 1, ms or 1000) end
 -- the countdown (scene_pause): +0x20 = 6, +0x57c = ticks
 function S:pause(t) local ev = self.ev w32(ev, 0x57c, t or 30); w32(ev, 0x20, 6); return wait(self) end
@@ -253,7 +276,11 @@ local function run_script(ev, job, actor)
     wait(s)
     if actor ~= nil then                    -- retail's talk beat: weapons away, face each other, camera back
       if P.scene_party_stance(ev, 0, ffi.cast('void *', u32(ev, 0x8))) ~= 0 then wait(s) end
-      P.scene_talk_face(ev, 0, actor, 1, 1)
+      -- a character turns back and Arche steps away if too close (1, 1); furniture / devices: neither (0, 0) —
+      -- retail's bookshelves do (0, 0), and a device asked to face back never finishes the cast wait
+      local code = i32(actor, 0x1d4)
+      local person = code >= 50000 and code < 60000
+      P.scene_talk_face(ev, 0, actor, person and 1 or 0, person and 1 or 0)
       wait(s)
       camera_on(ev, P.script_leader(ev))
       wait(s)
@@ -292,8 +319,9 @@ local function engine_pre(ctx)
   ctx.blocked, ctx.ret = true, run_script(ev, job, actor)
 end
 
--- touch_pass(rl, leader, pressed) runs every free-roam frame: the place retail starts a talk (event_run mode 2).
-local function touch_pre(ctx)
+-- gimmick_pass(rl, leader) runs every free-roam frame (the room loop, room loaded, UI unlocked) and starts events itself
+-- (switches, chests: event_run).  touch_pass — the talk check — only runs on the talk / examine keys.
+local function frame_pre(ctx)
   if #st.after > 0 then
     local fns = st.after
     st.after = {}
@@ -307,8 +335,8 @@ local function touch_pre(ctx)
   if w == 0 then return end
   local rl = ctx.args[1]
   local ev = ffi.cast('void *', mem.read_u32(w + 0x1054))
-  local r = P.event_run(ev, rl, ffi.cast('void *', w + L.room), nil, 0, 0, MODE_MOD)
-  -- what touch_pass does after a handled talk: the input latches reset, every room's input flushed
+  local r = P.event_run(ev, rl, ffi.cast('void *', mem.read_u32(w + L.room)), nil, 0, 0, MODE_MOD)   -- the room (world +0x2784 / SE +0x3788)
+  -- what touch_pass does after a handled talk (so the confirm key doesn't leak into play): the input latches reset, every room's input flushed
   if P.ts_40fe00 then P.ts_40fe00(ffi.cast('void *', sym.va('g_sys'))) end
   if P.room_input_flush then
     local rooms, n = u32(rl, 0), r16(rl, 4)
@@ -320,7 +348,7 @@ end
 local function install()
   if st.installed then return true end
   if not layout() then return nil, 'unknown edition ' .. tostring(edition) end
-  local se, tp = sym.va('script_engine'), sym.va('touch_pass')
+  local se, tp = sym.va('script_engine'), sym.va('gimmick_pass')
   if not (se and tp) then return nil, 'script symbols missing on this build' end
   bind()
   for _, n in ipairs { 'script_begin', 'script_end', 'script_leader', 'script_party_cast', 'script_wait',
@@ -328,9 +356,9 @@ local function install()
     if not P[n] then return nil, 'symbol ' .. n .. ' missing on this build' end
   end
   hook.typed(se, 'int __thiscall(void *)', { pre = engine_pre })
-  hook.typed(tp, 'int __thiscall(void *, void *, int)', { pre = touch_pre })
+  hook.typed(tp, 'int __thiscall(void *, void *)', { pre = frame_pre })
   st.installed = true
-  log(string.format('[script] armed (script_engine 0x%x, touch_pass 0x%x, %s)', se, tp, edition))
+  log(string.format('[script] armed (script_engine 0x%x, gimmick_pass 0x%x, %s)', se, tp, edition))
   return true
 end
 

@@ -497,13 +497,15 @@ static int l_map_warp_status(lua_State *L) {
 // a custom room — sees them.  Idempotent: an existing key is left alone, an exit slot with the zone is rewritten.
 //   add_room: copies the record of `like` (an existing room: kind, tileset, town flag, BGM, name …), sets key + the
 //             u16 map DATA id (+0xc; serve the map with mod.res.set("DATA", id, bytes)), clears its exits (and the
-//             SE W-map id +0x148).  Up to 1024 records (retail ~430).
+//             SE W-map id +0x148).  Up to 1024 records (retail ~430).  town = true / false (api 1.8) overrides the
+//             town kind (+0x114): a town's hits do no damage — a house-looking arena needs town = false.
 //   set_exit: room's zone slot (record +0x1c: {u16 zone, u16 0, i32 to, u16 gate, u16 0} ×20) → room `to`, arriving
 //             at the live zone actor whose id is `gate` there.  A zone device (70101 walk-in / 70102 press-Up door …,
 //             A[0] = zone) in the room's map makes it reachable.
 #define XROOM_MAX 32
 #define XEXIT_MAX 64
-static struct { int32_t key, like; uint16_t map; } g_xroom[XROOM_MAX];
+static struct { int32_t key, like, town; uint16_t map; } g_xroom[XROOM_MAX];   // town: -1 = as `like`
+#define REC_TOWN 0x114   // room record: 2 = a town (world +0x1030 at load: weapons sheathed, hits do no damage, no warp)
 static struct { int32_t room, to; uint16_t zone, gate; } g_xexit[XEXIT_MAX];
 static int g_nxroom, g_nxexit, g_rooms_hook;
 
@@ -520,6 +522,7 @@ static void rooms_ensure(uintptr_t areas) {
         *(uint16_t *)(dst + 0xc) = g_xroom[i].map;
         memset((void *)(dst + l->rec_exits), 0, 20 * 12);
         if (l->rec_wmap) *(uint32_t *)(dst + l->rec_wmap) = 0;
+        if (g_xroom[i].town >= 0) *(uint32_t *)(dst + REC_TOWN) = g_xroom[i].town ? 2 : 0;
         *(uint16_t *)(areas + l->area_count) = (uint16_t)(n + 1);
     }
     for (int i = 0; i < g_nxexit; i++) {
@@ -553,12 +556,13 @@ static int l_map_add_room(lua_State *L) {
     lua_getfield(L, 1, "key");  int32_t key = (int32_t)luaL_checkinteger(L, -1);
     lua_getfield(L, 1, "like"); int32_t like = (int32_t)luaL_checkinteger(L, -1);
     lua_getfield(L, 1, "map");  int map = (int)luaL_checkinteger(L, -1);
-    lua_pop(L, 3);
+    lua_getfield(L, 1, "town"); int town = lua_isnil(L, -1) ? -1 : lua_toboolean(L, -1);   // api 1.8
+    lua_pop(L, 4);
     if (map <= 0 || map > 0xffff) return luaL_error(L, "map.add_room: map must be a u16 DATA id");
     int i = 0;
     while (i < g_nxroom && g_xroom[i].key != key) i++;
     if (i == XROOM_MAX) { lua_pushnil(L); lua_pushstring(L, "map.add_room: too many custom rooms"); return 2; }
-    g_xroom[i].key = key; g_xroom[i].like = like; g_xroom[i].map = (uint16_t)map;
+    g_xroom[i].key = key; g_xroom[i].like = like; g_xroom[i].map = (uint16_t)map; g_xroom[i].town = town;
     if (i == g_nxroom) g_nxroom++;
     if (!rooms_arm(L)) return 2;
     lua_pushboolean(L, 1);
