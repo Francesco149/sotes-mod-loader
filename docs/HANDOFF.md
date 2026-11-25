@@ -152,6 +152,9 @@ v2 so far (commits `10a1efe`, `b5b3b2b`, `6cb69d2`):
     devices (A[0] zone) in front of the panel (x + 32 px).  Map NPC record: A[1] handle, A[4] facing (≠ 0 = LEFT), A[6]
     presence (9 = always).  The SE talk list is world **+0x3794** (enold +0x2790); its probe = a 40 px strip from 8 px in
     front of the leader (`body_probe_rect`), so the leader must FACE the NPC.
+  - **Zone order matters:** `zone_pass` takes the FIRST live zone actor (actor-slot order = map object order) overlapping
+    the leader and returns when its zone has no exit record — script zones (70105, ids 9xx) overlapping a door shadow it.
+    Put an added door device FIRST in the object list (testroom: Arche's house zone 905 at x 96).
   - **Bad SE symbol fixed:** `script_end` ense-en/jp were the crosswalk's 0x4981c0 / 0x498100 (a story-flag lookup it
     calls) — calling it faulted at the end of the first talk.  Real: 0x497bd0 / 0x497b10 (enold prologue, unique;
     `symgen_manual.tsv`).  Port-repo finding owed (crosswalk TSV).
