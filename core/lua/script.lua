@@ -16,6 +16,7 @@
 --                                             (gimmick_pass, where retail starts switch / chest events, calls
 --                                             event_run itself; then touch_pass's post-talk input reset)
 --   script.after(fn)                          fn() at the next free-roam frame (after the running event): warps etc.
+--   script.on_tick(fn) -> h / off_tick(h)     fn() on every free-roam game tick (60 / s; not during events)
 --   script.running() -> bool                  a mod script owns the game right now
 --
 -- Text: \n becomes retail's %n line break.
@@ -64,7 +65,7 @@ local function layout() if not L then edition = edition_fn(); L = ED[edition] en
 local MODE_MOD = 0x4d4f44                   -- 'MOD': event_run's mode for a queued script (no retail script matches)
 local ABORT = {}                            -- error sentinel: a wait returned 6
 
-local st = { installed = false, talk = {}, queue = {}, after = {}, running = false, errors = 0 }
+local st = { installed = false, talk = {}, queue = {}, after = {}, ticks = {}, running = false, errors = 0 }
 local P = {}                                -- bound primitives
 
 local function addr(p) return p == nil and 0 or tonumber(ffi.cast('uintptr_t', p)) end
@@ -393,6 +394,13 @@ end
 -- gimmick_pass(rl, leader) runs every free-roam frame (the room loop, room loaded, UI unlocked) and starts events itself
 -- (switches, chests: event_run).  touch_pass — the talk check — only runs on the talk / examine keys.
 local function frame_pre(ctx)
+  for i = 1, #st.ticks do                                -- on_tick: every free-roam game tick
+    local t = st.ticks[i]
+    if t and t.fn then
+      local ok, err = pcall(t.fn)
+      if not ok then t.fn = nil; st.errors = st.errors + 1; log('[script] on_tick (removed): ' .. tostring(err)) end
+    end
+  end
   if #st.after > 0 then
     local fns = st.after
     st.after = {}
@@ -456,6 +464,16 @@ function script.after(fn)
   st.after[#st.after + 1] = fn
   return true
 end
+-- fn() on every free-roam game tick (gimmick_pass: 60 a second whatever the display's frame rate; none during events,
+-- menus or room changes) -> a handle for off_tick.  mod.on_frame runs per PRESENTED frame instead (any rate, always).
+function script.on_tick(fn)
+  assert(type(fn) == 'function', 'on_tick(fn)')
+  local ok, err = install()
+  if not ok then return nil, err end
+  st.ticks[#st.ticks + 1] = { fn = fn }
+  return #st.ticks
+end
+function script.off_tick(h) local t = st.ticks[h] if t then t.fn = nil end return t ~= nil end
 function script.running() return st.running end
 function script.pending() return #st.queue end
 function script.errors() return st.errors end

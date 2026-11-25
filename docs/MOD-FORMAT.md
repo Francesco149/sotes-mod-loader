@@ -172,6 +172,9 @@ mod.game.script                 -- [api 1.8] EVENT SCRIPTS IN LUA on retail's ow
   .run(fn[, {name=}])           a script with no actor at the next free-roam frame (gimmick_pass calls event_run,
                                 --   then retail's post-talk input reset) — e.g. a reward cutscene
   .after(fn)                    fn() at the next free-roam frame: warps (one armed inside an event is lost) etc.
+  .on_tick(fn) -> h / .off_tick(h)   [api 1.10] fn() on every free-roam GAME TICK (60 a second whatever the display's
+                                --   frame rate; none during events, menus, room changes).  For anything that moves
+                                --   or counts: mod.on_frame runs per presented frame (60..200+ a second by machine).
   .running() / .pending() / .errors()
   -- fn(s): s.actor, s.handle, s.room, s.name (the box title) and, all retail's own:
   s:say(text[, {name=, actor=('leader'|ptr), own_name=, voice=, face=}])   a message box (\n = retail's %n)

@@ -139,10 +139,16 @@ echo "    arena: 3 slimes, cleared → reward $g0 -> $g1 CP, door back to the ha
 # sprites (api 1.9): the Tester's recoloured bank, Bit's bank + clips, both served from the overlay
 [ "$(L 'local SP = mod.game.sprites local b = testroom.look.banks for _, a in ipairs(mod.game.actors.list()) do if a.handle == testroom.H.GUIDE then return b.guide and mod.mem.read_u16(a.ptr + 0x48) == b.guide and SP.bank(b.guide).ours end end')" = true ] || fail "sprites: the Tester does not wear the recoloured bank"
 [ "$(L 'local b = testroom.look.banks for _, a in ipairs(mod.game.actors.list()) do if a.handle == testroom.H.BIT then return b.bit and mod.mem.read_u16(a.ptr + 0x48) == b.bit and mod.game.actors.name(a) == "Bit" end end')" = true ] || fail "sprites: Bit does not wear bit.bmp"
-bx0=$(L 'return mod.mem.read_i32(mod.mem.read_u32(testroom.bit.ptr + 0x40) + 4)'); P ".*400"
+# the patrol runs on the game tick (script.on_tick): 60 centi-px a tick = 36 px a second at any frame rate
+bx0=$(L 'return mod.mem.read_i32(mod.mem.read_u32(testroom.bit.ptr + 0x40) + 4)')
+W "return mod.mem.read_i32(mod.mem.read_u32(testroom.bit.ptr + 0x40) + 4) ~= $bx0" 60 || fail "bit: the patrol did not move him ($bx0)"
+L 'local ffi = require("ffi") pcall(ffi.cdef, "unsigned long __stdcall GetTickCount(void);") testroom.pt = { ffi.C.GetTickCount(), mod.mem.read_i32(mod.mem.read_u32(testroom.bit.ptr + 0x40) + 4) } return true' >/dev/null
+P ".*300"
+spd=$(L 'local ffi = require("ffi") local dt = (ffi.C.GetTickCount() - testroom.pt[1]) / 1000 return math.floor(math.abs(mod.mem.read_i32(mod.mem.read_u32(testroom.bit.ptr + 0x40) + 4) - testroom.pt[2]) / dt / 100 + 0.5)')
+[ "$spd" -ge 20 ] && [ "$spd" -le 42 ] || fail "bit: patrol speed $spd px/s, want ~36, less on a loaded box (the game tick)"
 bx1=$(L 'return mod.mem.read_i32(mod.mem.read_u32(testroom.bit.ptr + 0x40) + 4)')
 [ "$bx0" != "$bx1" ] || fail "bit: the patrol did not move him ($bx0)"
-echo "    sprites: Tester in bank $(L 'return testroom.look.banks.guide'), Bit in bank $(L 'return testroom.look.banks.bit') (patrol $bx0 -> $bx1)"
+echo "    sprites: Tester in bank $(L 'return testroom.look.banks.guide'), Bit in bank $(L 'return testroom.look.banks.bit') (patrol $bx0 -> $bx1, $spd px/s)"
 
 # bit: dance (1) → the dance clip + spin → How were you made (2) → Bye (3)
 L 'testroom.bit.wait = 1000000 return true' >/dev/null    # stand still to be talked to

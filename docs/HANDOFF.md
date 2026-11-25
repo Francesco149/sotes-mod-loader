@@ -258,12 +258,13 @@ v2 so far (commits `10a1efe`, `b5b3b2b`, `6cb69d2`):
     skips nested calls of the same VA (`rec.busy`), so a spawn from inside a char_init runs unhooked: actors.spawn applies
     the type itself then.  Type callbacks run on the game tick, `mod.on_frame` on every flip (200 / s under wine): state
     shared between the two needs care (testroom's wave-clear check waits for the types' death reports).
+  - **`script.on_tick(fn)`** = the same gimmick_pass hook, for mods (60 / s free-roam ticks); testroom's patrol + arena run on it.
   - **Other fixed capacities seen** (not lifted): 32 live characters per room (the pool actors.spawn fills), 32 frames per
     clip, the 25 dynamic tint clones at the end of the retail banks.
   - **Gates:** `tests/hall.sh` (Bit from a map record with code 50990, cubes = types 51990 / 51991, banks ≥ the retail
     count, the dance 12.7 s) + **`tests/banks.sh`** (40 new banks, each drawn on the leader; a retail one; a room change) —
     PASS enold / ense-en / ense-jp.
-- **Next (modding PoC):** a game-tick callback for mods (on_frame = flips: Bit's patrol speed follows the frame rate), a monster with its own skills / projectiles (skill records + their clips), a portrait / voice in s:say, camera shake, Windows hand-play of the hall.
+- **Next (modding PoC):** a monster with its own skills / projectiles (skill records + their clips), a portrait / voice in s:say, camera shake, Windows hand-play of the hall.
 - **Next:** more `tests/*.lua` → a fuller Windows runner (`tools/win/` is launch + Lua only: no `--saves` isolation — it uses the real install + Steam saves, backs up / restores `version.dll` by hand) (own scheduled task, never `oss-rhost-runner`).  Host tests (`make -C core tests`) still
   assume WSL interop — port them to run under wine.
 
