@@ -258,6 +258,14 @@ v2 so far (commits `10a1efe`, `b5b3b2b`, `6cb69d2`):
     skips nested calls of the same VA (`rec.busy`), so a spawn from inside a char_init runs unhooked: actors.spawn applies
     the type itself then.  Type callbacks run on the game tick, `mod.on_frame` on every flip (200 / s under wine): state
     shared between the two needs care (testroom's wave-clear check waits for the types' death reports).
+  - **The display restore only runs from the window procedure's WM_ACTIVATEAPP case** (SE 0x5d95a0 → 0x5d9780; not per
+    frame): `if (this+8 && zdd_any_lost(zdd)) { zdd_restore_all(zdd); re-decode loop }`.  So the trigger is "surfaces lost,
+    THEN the app is (re)activated" — alt-tab back into exclusive fullscreen.  Instrumented: an entry observer on the
+    restore-all call's target (found from the E8 before the loop; SE 0x5e1800) logs `[sprites] DISPLAY RESTORE #n …` and
+    `sprites.capacity().restores` counts.  **Forced under wine (ense-en):** NOP the 6-byte `jz` at loop − 17 (the "nothing
+    lost" branch), PostMessageA(game window, WM_ACTIVATEAPP, 1, 0), put the jz back → restore #1, 8192 entries walked, no
+    fault, Bit / the Tester still drawn (looked).  A real loss on Windows: USER test pending (`tools/win/restore-test.sh`
+    puts the hand-play copy in exclusive fullscreen for it; `off` puts the windowed config back).
   - **`script.on_tick(fn)`** = the same gimmick_pass hook, for mods (60 / s free-roam ticks); testroom's patrol + arena run on it.
   - **Other fixed capacities seen** (not lifted): 32 live characters per room (the pool actors.spawn fills), 32 frames per
     clip, the 25 dynamic tint clones at the end of the retail banks.

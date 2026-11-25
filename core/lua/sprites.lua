@@ -40,7 +40,8 @@
 --   sprites.new_bank{like = i, image = img | sheet = blob[, cell_w=, cell_h=, mirror=, retail=]} -> index
 --                                          (at most as many cells as `like` has frames: its trim records are reused;
 --                                          retail = true: one of the game's own unused banks instead of a new one)
---   sprites.capacity() -> {retail, total, used, free, extended[, error]}   bank counts (extended = tables relocated)
+--   sprites.capacity() -> {retail, total, used, free, extended, restores[, error]}   bank counts (extended = tables
+--                                          relocated; restores = display restores seen since — each is logged)
 --   sprites.clip{frames = {..}[, base=0, dur=14, loop=true, loop_to=0, dx={..}, dy={..}]} -> clip (keep it alive)
 --   sprites.set_look(actor, bank)          actor = a char pointer or an actors.list() entry
 --   sprites.set_clips(actor, {stand=, walk=, run=, air=})   clip objects or raw pointers; nil = unchanged
@@ -267,6 +268,26 @@ local function extend()
     return fail('a code patch was refused')
   end
   ext.on, ext.next, ext.retail = true, b.count, b.count
+  -- Instrumentation: the display restore.  The loop is entered right after the engine's "restore every surface" call
+  -- (enold 0x5b9240, reached only when DirectDraw reported a lost surface): an observer on that call's target logs
+  -- each restore with how many of the new banks hold decoded frames the loop is about to re-decode.
+  local loop = b.restore_base - 1
+  if hook and hook.entry and mem.read_u8(loop - 5) == 0xE8 then
+    local target = (loop + mem.read_i32(loop - 4)) % 4294967296
+    local okh, errh = pcall(hook.entry, target, function()
+      ext.restores = (ext.restores or 0) + 1
+      local banks, frames = 0, 0
+      for i = ext.retail, ext.next - 1 do
+        local sl = ext.slots[i]
+        local e, n, k = mem.read_u32(sl), mem.read_u16(sl + 4), 0
+        if e ~= 0 then for f = 0, n - 1 do if mem.read_u32(e + 8 * f) ~= 0 then k = k + 1 end end end
+        if k > 0 then banks, frames = banks + 1, frames + k end
+      end
+      log(('[sprites] DISPLAY RESTORE #%d: the engine restores its surfaces and re-decodes every bank; %d new banks hold %d decoded frames (table of %d entries walked)')
+          :format(ext.restores, banks, frames, mem.read_u32(b.restore_count) or -1))
+    end)
+    log(okh and ('[sprites] display-restore observer on 0x%x'):format(target) or ('[sprites] no display-restore observer: ' .. tostring(errh)))
+  end
   log(('[sprites] bank tables relocated: %d retail banks + %d new (%d sites)'):format(b.count, CAP - b.count, #b.sites))
   return true
 end
@@ -326,7 +347,8 @@ function sprites.capacity()
   local used = 0
   for _ in pairs(st.mine) do used = used + 1 end
   return { retail = l and l.count or 0, total = ok and CAP or (l and l.count or 0), used = used,
-           free = ok and CAP - ext.next or count_retail_free(), extended = ok and true or false, error = err }
+           free = ok and CAP - ext.next or count_retail_free(), extended = ok and true or false, error = err,
+           restores = ext.restores or 0 }
 end
 
 local clone_fn
