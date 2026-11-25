@@ -346,9 +346,17 @@ static void install_camera(lua_State *L) {
 // looks up per room), its map (area_find: the area table's record +4; 336 B enold / 344 B SE), the raw room record.
 static uintptr_t area_find_rec(const sotes_layout *l, uintptr_t areas, int32_t id) {   // area_find
     if (!areas) return 0;
+    // One-entry cache: mods ask map.get() every frame / tick, and the linear search (guarded reads over 400+ records;
+    // rooms a mod added sit at the END) cost ~0.4 ms a call under wine — several callers made mod rooms choppy on
+    // Windows.  The hit is re-checked against the table (same table, the record still carries the id).
+    static uintptr_t c_areas, c_rec; static int32_t c_id;
+    if (c_rec && c_areas == areas && c_id == id && rdi(c_rec) == id) return c_rec;
     uint16_t n = rd16(areas + l->area_count);
     for (uint32_t i = 0; i < n && i < 1024; i++)
-        if (rdi(areas + 4 + l->area_size * i) == id) return areas + 4 + l->area_size * i;
+        if (rdi(areas + 4 + l->area_size * i) == id) {
+            c_areas = areas; c_id = id; c_rec = areas + 4 + l->area_size * i;
+            return c_rec;
+        }
     return 0;
 }
 static int l_map_get(lua_State *L) {
