@@ -176,6 +176,10 @@ mod.game.script                 -- [api 1.8] EVENT SCRIPTS IN LUA on retail's ow
   -- fn(s): s.actor, s.handle, s.room, s.name (the box title) and, all retail's own:
   s:say(text[, {name=, actor=('leader'|ptr), own_name=, voice=, face=}])   a message box (\n = retail's %n)
   s:narrate(text)               a narration box (kind 3, no speaker — what examine messages use)
+                                --   api 1.9: long text is PAGED: the box holds 3 lines of 44 bytes (36 with a portrait;
+                                --   narration 2 × 60) and retail has no paging — overflow typed past the bottom, only
+                                --   the last lines stayed.  The text is wrapped with retail's word rules (text_wrap
+                                --   0x40e5e0) and each page of lines becomes its own message.  script.wrap_pages(t, w, n)
   s:choose({...}[, {default=, no_cancel=, x=, y=, w=}]) -> i | nil   the runner's choice list, ≤ 16 rows
   s:yes_no([no_cancel]) -> bool  retail's localized Yes / No
   s:shop({item ids}[, {buy=, sell=}])   the shop (Buy / Sell, equip preview, prices) on any stock
@@ -194,6 +198,33 @@ mod.game.sound                  -- [api 1.8] sound effects
                                 --   stock sound changes
   .wav(samples[, rate]) -> bytes   16-bit mono PCM from -1..1 floats (synthesize in Lua: nothing shipped)
   .status(id) -> {loaded, voices, playing}   (playing = DSBSTATUS_PLAYING voices; for tests)
+mod.game.sprites                -- [api 1.9] CUSTOM SPRITES on retail's own sprite banks (core/lua/sprites.lua; no hooks)
+                                --   A sheet = a DATA resource (header + 256-colour palette + 8bpp bottom-up pixels,
+                                --   index 0 = transparent) cut into a grid of cells; a bank = one sheet (925 banks);
+                                --   a character draws its track 0 (char +0x48 = the bank) through its body's clip
+                                --   (frame = base + delta[f]); facing left adds the bank's mirror offset.
+  .decode(blob) -> img          an 8bpp sheet → img {w, h, pal[0..255] = {r, g, b}, px}  (img:get / set / fill /
+                                --   blit(src, sx, sy, w, h, dx, dy[, map]) / clone)
+  .encode(img, template) -> blob   back to sheet bytes (template = any stock sheet: its header is reused)
+  .bmp(bytes) -> img            an 8-bit indexed, uncompressed BMP (what a mod ships: draw in any editor)
+  .image(w, h[, pal]) -> img    a blank image
+  .bank(i) -> {index, res, module, cell_w, cell_h, mirror, frames, decoded, ours}
+  .sheet(i) -> img, blob        bank i's sheet, read from the user's own game data
+  .new_bank{like = i, image = img | sheet = blob[, cell_w=, cell_h=, mirror=]} -> index | nil, why
+                                --   retail's slot_clone (0x4179b0 / SE 0x411b10) makes a free bank a copy of `like`'s
+                                --   descriptor (cell grid, colour key, mirror offset); its DATA id points at the new
+                                --   bytes in the resource overlay; the per-cell trim records are recomputed.  Same
+                                --   layout as `like` (at most its cell count).  Free banks are few (SE: 4) — share.
+  .free_banks() -> n
+  .clip{frames = {..}[, base=, dur=14, loop=true, loop_to=0, dx={..}, dy={..}]} -> clip   an animation (retail's
+                                --   anim_clip: up to 32 frames, dur = ticks per frame, per-frame offsets)
+  .set_look(actor, bank)        actor = an actors.list() row or a char pointer
+  .set_clips(actor, {stand=, walk=, run=, air=})   the state clips (stand +0x15914 / SE +0x15934 …)
+  .get_clips(actor) -> {stand, walk, run, air0, air1}   (pointers)
+  .play(actor, clip)            on the body now (the state machine replaces it at the next state change)
+mod.game.actors.name(actor) / .set_name(actor, s)   [api 1.9] the display name (char +0x274, 19 chars: the target
+                                --   window's label)
+mod.game.actors.hp(actor) -> cur, max / .set_hp(actor, cur[, max])   [api 1.9] the live stat block
 mod.game.attract.set(on) / .get() -- false keeps the title up (idle → no demo); true = retail
 mod.game.save.load([slot])      -> true | nil, err   -- load save `slot` from the title (nil / <0 = the list's
                                 --   default row = last used).  Typed hooks on the title driver (any edition):

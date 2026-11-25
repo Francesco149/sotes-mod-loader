@@ -9,6 +9,10 @@
 #   inn        a room → retail's own inn (price window, Stay) → gold − 2000 CP, rest, back from black
 #   arena      Slimes → warped to 210143, 3 hostile slimes spawned → (killed by the test) → the reward cutscene
 #              (+200 CP) → back through the door to the hall
+#   sprites    (api 1.9) the Tester wears a new bank (her stock sheet recoloured), Bit wears bit.bmp + custom clips
+#   bit        talk → wave → the dance (custom clip + spin) → "How were you made?" → Bye; the patrol moves him
+#   cubes      Glitch Cubes → 2 slimes in cube.bmp, named, 60 HP → removed → each splits into 2 Glitch Bits →
+#              removed → the reward → back through the door
 #   warp mage  "Arche's house" → the house (zone 4 arrival)
 # Drives the scene runner by its wait mode (*(world+0x1054) +0x20: 1 message, 5 choice): Enter on messages, the
 # cursor + Enter on choices.  Keys held ≥ 6 flips (the wine flip rate is well above the game's input poll).
@@ -24,11 +28,13 @@ MODE='local w = mod.mem.read_u32(mod.sym.va("g_world")) local ev = mod.mem.read_
 mode() { L "$MODE"; }
 gold() { L 'return (mod.game.items.gold())'; }
 # advance messages until a choice (mode 5) is up; fail after N tries
-to_choice() { for _ in $(seq 30); do [ "$(mode)" = 5 ] && return 0; [ "$(mode)" = -1 ] && return 1; P "ent*6 .*40"; done; return 1; }
+# (the runner's mode reads -1 for a moment between two messages: "no event" only counts when it holds)
+ended() { [ "$(mode)" = -1 ] && { P ".*40"; [ "$(mode)" = -1 ]; }; }
+to_choice() { for _ in $(seq 30); do [ "$(mode)" = 5 ] && return 0; ended && return 1; P "ent*6 .*40"; done; return 1; }
 # pick option k (1-based) of the open choice list
 pick() { P ".*20"; for _ in $(seq $(($1 - 1))); do P "D*6 .*12"; done; P "ent*6 .*60"; }
 # advance until the event ends
-to_end() { for _ in $(seq 40); do [ "$(mode)" = -1 ] && return 0; P "ent*6 .*40"; done; return 1; }
+to_end() { for _ in $(seq 40); do ended && return 0; P "ent*6 .*40"; done; return 1; }
 # walk up to the NPC with handle H (stand right of it, face left) and talk
 talk() {
   local x; x=$(L "for _, a in ipairs(mod.game.actors.list()) do if a.handle == $1 then return a.x end end")
@@ -50,7 +56,7 @@ P ".*30"; shot hall.png
 
 # bookshelf (x 32 px; examine = X with the sword sheathed)
 L 'mod.game.coordinates.set(nil, 8000, 52000) return true' >/dev/null
-P ".*30 L*6 .*20"
+P ".*30 L*20 .*20"
 for _ in 1 2 3; do P "X*6 .*60"; [ "$(mode)" != -1 ] && break; done
 W 'return mod.game.map.event()' 60 || fail "bookshelf: no event"
 P ".*200"; shot book.png
@@ -124,6 +130,52 @@ L 'mod.game.coordinates.set(nil, 45600, 52000) return true' >/dev/null
 P ".*30 U*20 .*30"
 W 'return mod.game.map.get().area == 210142 and not mod.game.map.event()' || fail "arena: the door did not lead back to the hall"
 echo "    arena: 3 slimes, cleared → reward $g0 -> $g1 CP, door back to the hall"
+
+# sprites (api 1.9): the Tester's recoloured bank, Bit's bank + clips, both served from the overlay
+[ "$(L 'local SP = mod.game.sprites local b = testroom.look.banks for _, a in ipairs(mod.game.actors.list()) do if a.handle == testroom.H.GUIDE then return b.guide and mod.mem.read_u16(a.ptr + 0x48) == b.guide and SP.bank(b.guide).ours end end')" = true ] || fail "sprites: the Tester does not wear the recoloured bank"
+[ "$(L 'local b = testroom.look.banks for _, a in ipairs(mod.game.actors.list()) do if a.handle == testroom.H.BIT then return b.bit and mod.mem.read_u16(a.ptr + 0x48) == b.bit and mod.game.actors.name(a) == "Bit" end end')" = true ] || fail "sprites: Bit does not wear bit.bmp"
+bx0=$(L 'return mod.mem.read_i32(mod.mem.read_u32(testroom.bit.ptr + 0x40) + 4)'); P ".*400"
+bx1=$(L 'return mod.mem.read_i32(mod.mem.read_u32(testroom.bit.ptr + 0x40) + 4)')
+[ "$bx0" != "$bx1" ] || fail "bit: the patrol did not move him ($bx0)"
+echo "    sprites: Tester in bank $(L 'return testroom.look.banks.guide'), Bit in bank $(L 'return testroom.look.banks.bit') (patrol $bx0 -> $bx1)"
+
+# bit: dance (1) → the dance clip + spin → How were you made (2) → Bye (3)
+L 'testroom.bit.wait = 1000000 return true' >/dev/null    # stand still to be talked to
+talk "$(H BIT)"
+to_choice || fail "bit: no menu"; shot bit_menu.png
+pick 1
+for _ in $(seq 10); do [ "$(L 'return testroom.bit.mode')" = '"dance"' ] && break; P "ent*6 .*10"; done
+[ "$(L 'return testroom.bit.mode')" = '"dance"' ] || fail "bit: never danced"
+shot bit_dance.png
+[ "$(L 'return mod.mem.read_u32(mod.mem.read_u32(testroom.bit.ptr + 0x40) + 0x6c) == mod.game.sprites.get_clips(testroom.bit.ptr).stand')" = true ] || fail "bit: the dance clip is not on the body"
+to_choice || fail "bit: no menu after the dance"; pick 2
+to_choice || fail "bit: no menu after the explanation"; pick 3
+to_end || fail "bit: never ended"
+[ "$(L 'return testroom.bit.mode')" = '"patrol"' ] || fail "bit: not back on patrol"
+echo "    bit: wave, dance (spin $(L 'return testroom.bit.spin')), explanation, back on patrol"
+
+# cubes: Glitch Cubes (4) → the cube look, name, HP → removed → 2 + 2 Glitch Bits → removed → the reward
+talk "$(H ARENA)"
+to_choice || fail "cubes: no menu"; pick 4
+to_end || fail "arena master (cubes): never ended"
+W 'return mod.game.map.get().area == 210143 and not mod.game.map.event()' || fail "cubes: never arrived"
+P ".*60"
+CUBES='local n, ok = 0, true for _, a in ipairs(mod.game.actors.list()) do if a.code == 51010 then n = n + 1 local c, m = mod.game.actors.hp(a) ok = ok and mod.game.actors.name(a) == "%s" and m == %d and mod.mem.read_u16(a.ptr + 0x48) == testroom.look.banks.cube end end return ok and n or -n'
+[ "$(L "$(printf "$CUBES" "Glitch Cube" 60)")" = 2 ] || fail "cubes: want 2 Glitch Cubes (60 HP, cube bank): $(L "$(printf "$CUBES" "Glitch Cube" 60)")"
+shot cubes.png
+g0=$(gold)
+L 'for _, a in ipairs(mod.game.actors.list()) do if a.code == 51010 then mod.game.actors.remove(a.slot) end end return true' >/dev/null
+W "$(printf "$CUBES" "Glitch Bit" 24 | sed 's/return ok and n or -n/return ok and n == 4/')" 300 || fail "cubes: no split ($(L "$(printf "$CUBES" "Glitch Bit" 24)"))"
+P ".*30"; shot cubes_split.png
+L 'for _, a in ipairs(mod.game.actors.list()) do if a.code == 51010 then mod.game.actors.remove(a.slot) end end return true' >/dev/null
+W 'return mod.game.map.event()' 200 || fail "cubes: no reward event"
+to_end || fail "cubes: the reward never ended"
+g1=$(gold)
+[ "$g1" -ge $((g0 + 800)) ] || [ "$g0" -ge 14200 ] || fail "cubes: no reward gold ($g0 -> $g1)"
+L 'mod.game.coordinates.set(nil, 45600, 52000) return true' >/dev/null
+P ".*30 U*20 .*30"
+W 'return mod.game.map.get().area == 210142 and not mod.game.map.event()' || fail "cubes: the door did not lead back to the hall"
+echo "    cubes: 2 Glitch Cubes → split into 4 Glitch Bits → cleared → reward $g0 -> $g1 CP"
 
 # warp mage: Arche's house (1)
 talk "$(H WARP)"

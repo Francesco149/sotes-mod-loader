@@ -198,8 +198,38 @@ v2 so far (commits `10a1efe`, `b5b3b2b`, `6cb69d2`):
   - **Gate:** `tests/hall.sh R` (a `--mods testroom` run, continued) — PASS on ense-en.  **Not yet run on enold / ense-jp.**
   - `sml` runs now play into a null sink (`sml_silent`; USER: the attract was audible) — PipeWire also remembers
     "  sotes" → sml_silent.
-- **Next (modding PoC):** custom sprites (sheets are DATA resources too: a recolour / new bank through the overlay — format
-  RE first), hall.sh on enold + ense-jp, a portrait / voice in s:say, camera shake, Windows hand-play of the hall.
+- **Custom sprites (api 1.9, 2026-11-25)** — `mod.game.sprites` (`core/lua/sprites.lua`, embedded, no hooks) + testroom 0.3
+  (the Tester recoloured, **Bit** = a new NPC from the mod's own `bit.bmp` + clips + a Lua patrol, **Glitch Cubes** = a
+  new monster: slime body/AI under `cube.bmp`, Lua blink-teleport + split-on-death).  RE facts (SE-checked; **port-repo
+  findings owed**, not written there — a port session runs in parallel):
+  - **Sheet DATA format** = bs_parse_compressed_header 0x5b7c10: base = dword +0x448; sig dword +0x438 − base = 0x2711;
+    w = dword (4 + 4·(dword +0x440 − base)) − base; h = dword (0x420 + 4·(dword +0x18 − base)) − base; bpp = +0x430 − base;
+    pixels at 0x458 + (dword +0x450 − base) (char sheets: 1150); palette BGRA at +0x20; bottom-up 8bpp, index 0 = key.
+    The port's `tools/extract/lizsoft_sprite.py` docstring (fixed offsets, "W/H not in the file") is the weaker read.
+  - **Banks**: sys +0xaac / SE +0xb08 / JP +0xb04, **925** entries (ends where the palette-descriptor array starts:
+    +0x18e0 / SE +0x197c / JP +0x1988).  Descriptor u16 +0 = the **mirror frame offset** (facing left draws frame +
+    it: folk 16, slime 24) — the port's "DAT_008a8440 flip table" is this array.  900..924 = retail's dynamic tint
+    clones (allocator marks desc +0x10).  Unused static banks on SE: 49, 50, 51, 67 (no DATA id, no entries).
+  - **slot_clone** (0x4179b0 / SE 0x411b10 / JP 0x411b00; thiscall sys, dst, src): frameless copy of src (cell w/h
+    +0x20/+0x24, key +0x28, module +0x3c, DATA id u16 +0x40, group +0x42) + **aux = per-cell trim records** (slot
+    +0x34, 24 B: x0, x1, y0, y1, has-opaque, has-key; count = src +0x38) — copied, so a recoloured / new sheet must
+    get its own or cells empty in src stay invisible (cost a test round).
+  - **Character look** = track 0 (char +0x48 u16 = the bank; live-swappable); clips stand/air0/air1 +0x15914/18/1c,
+    walk +0x15980, run +0x15994 (SE/JP +0x20); body clip +0x6c, timer +0x70, frame +0x72, done +0x74.  Townsfolk
+    share one clip set (enold 0x6290e0) and differ only by track; SE track ids ≠ enold's (mom 172 SE / guard 236).
+  - Display name = char +0x274 (20 B; char_stats_init's copy of the stat-table name; the target window shows it).
+    Live HP = *(char +0x750 / SE +0x760) +0x54 / +0x58.
+  - **Message box** (enold sub_439690's box setup → win_text_add 0x40dee0): 44 bytes × 3 lines, 36 with a portrait
+    (a2+132 ≠ 0), the other branch (a2+752 ≠ 0) 60 × 2; no paging.  **A %n inside a letter run joins both halves into
+    one word for the wrap** (`mod%npainted` → "mod" pushed to its own line) — paging must cut pages, not insert breaks.
+  - `mod.dir` had no trailing separator (MOD-FORMAT said it did) — fixed.  script.lua's `game.script = …` rawsets over
+    the binding registry's toggle (sprites.lua fills the cached tables in place instead) — script/sound toggles inert.
+  - **Gate:** `tests/hall.sh R` + sprites / bit / cubes steps — PASS ense-en, ense-jp, enold (first hall.sh runs on JP / enold; banks 49/50 SE-en, 53/54 JP, 43/44 enold).  `ended()` = mode −1 held across 40
+    frames (it flickers −1 between messages).
+  - **Open (USER 2026-11-25): "adult NPCs sink into the ground like the guard"** — not reproduced under wine: every
+    cast member's lowest drawn row = Arche's (415, diffed shots), retail's own guard (50150) is placed identically
+    (record y + 32 px, body 9600 high) and draws its robe to the floor line.  Needs the user's screenshot.
+- **Next (modding PoC):** a monster with its own skills / projectiles (skill records + their clips), a portrait / voice in s:say, camera shake, Windows hand-play of the hall.
 - **Next:** more `tests/*.lua` → a fuller Windows runner (`tools/win/` is launch + Lua only: no `--saves` isolation — it uses the real install + Steam saves, backs up / restores `version.dll` by hand) (own scheduled task, never `oss-rhost-runner`).  Host tests (`make -C core tests`) still
   assume WSL interop — port them to run under wine.
 

@@ -16,3 +16,7 @@ _oss_lua_title:
 _oss_lua_script:
     .incbin "lua/script.lua"
     .byte 0
+    .globl _oss_lua_sprites
+_oss_lua_sprites:
+    .incbin "lua/sprites.lua"
+    .byte 0

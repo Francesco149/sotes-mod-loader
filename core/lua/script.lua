@@ -139,18 +139,86 @@ local function camera_on(ev, target, speed)   -- the pan command (scene_camera's
 end
 function S:leader() return need('script_leader')(self.ev) end
 function S:camera(actor, speed) camera_on(self.ev, actor or P.script_leader(self.ev), speed); wait(self) end
+-- Paging.  The message window (enold sub_439690's box setup) wraps its text control (win_text_add 0x40dee0) at
+-- 44 bytes x 3 lines (36 x 3 with a portrait; the narration strip 60 x 2) and has no paging of its own: a longer
+-- text types out past the bottom and only its last lines stay in view.  So the text is wrapped here with retail's
+-- word rules (text_wrap 0x40e5e0, OpenSummoners engine-quirks #148) and each page of lines becomes its own message.
+-- Words: a letter run [A-Za-z'] + one trailing blank / ! , - . ; ?; a digit run continued by 1-9 , . + one trailing
+-- blank; else one glyph (an SJIS glyph = 2 bytes; its kinsoku runs are not modelled — they only keep punctuation
+-- with the glyph before it, so a page here can only break earlier than retail would, never later).
 local function msgtext(t) return (tostring(t):gsub('\n', '%%n')) end   -- retail's line break token is %n
+local function is_alpha(b) return b and (b >= 65 and b <= 90 or b >= 97 and b <= 122 or b == 39) end
+local function wrap_pages(text, width, lines)
+  local s = tostring(text):gsub('\r', '')
+  -- rows = { text, forced }: a row's own source text (soft-wrapped rows keep their trailing blank: retail re-wraps a
+  -- page itself, at the same places — a %n is only put where the author broke the line, since a %n inside a letter
+  -- run joins the two halves into one word for the wrap and can push it onto its own line)
+  local rows, row, col = {}, {}, 0
+  local function newline(forced) rows[#rows + 1] = { table.concat(row), forced }; row, col = {}, 0 end
+  local i, n = 1, #s
+  while i <= n do
+    local b = s:byte(i)
+    if b == 10 or (b == 37 and s:byte(i + 1) == 110) then             -- \n or %n: forced break
+      newline(true); i = i + (b == 10 and 1 or 2)
+    else
+      local j = i
+      if is_alpha(b) then
+        while is_alpha(s:byte(j + 1)) do j = j + 1 end
+        local t = s:byte(j + 1)
+        if t == 32 or t == 33 or t == 44 or t == 45 or t == 46 or t == 59 or t == 63 then j = j + 1 end
+      elseif b >= 48 and b <= 57 then
+        while true do
+          local t = s:byte(j + 1)
+          if t and (t >= 49 and t <= 57 or t == 44 or t == 46) then j = j + 1 else break end
+        end
+        if s:byte(j + 1) == 32 then j = j + 1 end
+      elseif b == 37 and s:byte(i + 1) == 109 then                      -- %mN% key icon: one glyph
+        local e = s:find('%', i + 2, true); j = e or i + 1
+      elseif b >= 0x80 then
+        j = i + 1
+      end
+      local word = s:sub(i, j)
+      local w = (b == 37 and s:byte(i + 1) == 109) and 2 or #word
+      if col > 0 and col + w > width then newline(false) end
+      row[#row + 1] = word; col = col + w
+      i = j + 1
+    end
+  end
+  if #row > 0 or #rows == 0 then newline(false) end
+  local pages = {}
+  for k = 1, #rows, lines do
+    local p = {}
+    local last = math.min(k + lines - 1, #rows)
+    for q = k, last do
+      p[#p + 1] = rows[q][1]
+      if rows[q][2] and q < last then p[#p + 1] = '%n' end
+    end
+    local t = table.concat(p):gsub('^ +', ''):gsub(' +$', '')
+    if t ~= '' then pages[#pages + 1] = t end
+  end
+  if #pages == 0 then pages[1] = '' end
+  return pages
+end
+S.wrap_pages = wrap_pages
 function S:say(text, o)
   o = o or {}
   local actor = o.actor == 'leader' and P.script_leader(self.ev) or o.actor or self.actor
   local name = o.name or self.name
-  need('scene_msg')(self.ev, 0, actor, msgtext(text), 0, 1, (o.own_name or not name) and 1 or 0, name, o.voice or 0, 0,
-    o.face or 0)
-  return wait(self)
+  local r
+  for k, page in ipairs(wrap_pages(text, (o.face or 0) ~= 0 and 36 or 44, 3)) do
+    need('scene_msg')(self.ev, 0, actor, page, 0, 1, (o.own_name or not name) and 1 or 0, name,
+      k == 1 and o.voice or 0, 0, o.face or 0)
+    r = wait(self)
+  end
+  return r
 end
 function S:narrate(text)
-  need('scene_msg')(self.ev, 3, nil, msgtext(text), 0, 1, 0, nil, 0, 0, 0)
-  return wait(self)
+  local r
+  for _, page in ipairs(wrap_pages(text, 60, 2)) do
+    need('scene_msg')(self.ev, 3, nil, page, 0, 1, 0, nil, 0, 0, 0)
+    r = wait(self)
+  end
+  return r
 end
 -- The scene runner's choice list (scene_run: +0x584 count, +0x588 the pick / default id, +0x58c the pick on cancel,
 -- +0x590 no cancel, the window +0x594 w / +0x598 x / +0x59c y (height 28 n + 64), 0x58-byte rows from +0x5a0:

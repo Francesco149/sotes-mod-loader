@@ -113,6 +113,18 @@ static void script_lua_init(lua_State *L) {
     if (lua_pcall(L, 7, 1, 0) != 0) { ml_log("[script] script.lua: %s", lua_tostring(L, -1)); lua_pop(L, 1); return; }
     lua_pop(L, 1);   // install(): called by the API itself
 }
+// mod.game.sprites — core/lua/sprites.lua (custom sheets in new sprite banks, clips, a character's look; no hooks)
+extern const char oss_lua_sprites[];
+static void sprites_lua_init(lua_State *L) {
+    if (luaL_loadstring(L, oss_lua_sprites) != 0) { ml_log("[sprites] sprites.lua: %s", lua_tostring(L, -1)); lua_pop(L, 1); return; }
+    mem_push_lua(L);
+    sym_push_lua(L);
+    lua_pushcfunction(L, l_title_log);
+    gb_push_lua(L);
+    resov_push_lua(L);
+    lua_pushcfunction(L, l_edition_tag);
+    if (lua_pcall(L, 6, 0, 0) != 0) { ml_log("[sprites] sprites.lua: %s", lua_tostring(L, -1)); lua_pop(L, 1); }
+}
 static int l_frame(lua_State *L) { lua_pushnumber(L, exec_frame()); return 1; }
 static int l_screen_ctx(lua_State *L) { lua_pushnumber(L, (lua_Number)(uintptr_t)exec_screen_ctx()); return 1; }
 // mod.screen.shot(path) — the current frame as a 24-bit BMP (engine thread only; inside mod code that is always so)
@@ -127,7 +139,12 @@ static void push_mod_table(lua_State *L, const char *name, const char *dir) {
     lua_newtable(L);
 
     lua_pushstring(L, name);                 lua_setfield(L, -2, "name");
-    lua_pushstring(L, dir);                  lua_setfield(L, -2, "dir");
+    {   // with a trailing separator, as MOD-FORMAT documents (mod.dir .. "file")
+        size_t n = strlen(dir);
+        lua_pushstring(L, dir);
+        if (n && dir[n - 1] != '\\' && dir[n - 1] != '/') { lua_pushstring(L, "\\"); lua_concat(L, 2); }
+        lua_setfield(L, -2, "dir");
+    }
     lua_pushstring(L, OSS_ML_NAME);          lua_setfield(L, -2, "loader");
     lua_pushstring(L, OSS_ML_VERSION);       lua_setfield(L, -2, "loader_version");
     lua_pushstring(L, OSS_API_VERSION);      lua_setfield(L, -2, "api_version");   // the mod API contract (MAJ.MIN)
@@ -305,6 +322,7 @@ int lh_init(void) {
     input_lua_init(g_L);        // mod.input (scripted keyboard through DirectInput)
     title_lua_init(g_L);        // mod.game.save / attract (core/lua/title.lua)
     script_lua_init(g_L);       // mod.game.script / sound (core/lua/script.lua)
+    sprites_lua_init(g_L);      // mod.game.sprites (core/lua/sprites.lua)
     config_lua_init(g_L);       // the mod.config factory (mod.toml [config] schema + oss_mods.cfg)
 
     ml_log("[lua] LuaJIT up (%s, JIT off, FFI on)", LUAJIT_VERSION);

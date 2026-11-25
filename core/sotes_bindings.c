@@ -1112,6 +1112,9 @@ static void install_save(lua_State *L) { lua_newtable(L); }
 // and sound effects (stock pools + custom WAVE data through the resource overlay).
 static void install_script(lua_State *L) { lua_newtable(L); }
 static void install_sound(lua_State *L) { lua_newtable(L); }
+// mod.game.sprites (api 1.9) — core/lua/sprites.lua: sheets (decode / encode / 8-bit BMP), new sprite banks through
+// retail's slot_clone + the resource overlay, animation clips, a character's look (track 0) and state clips.
+static void install_sprites(lua_State *L) { lua_newtable(L); }
 
 // ── registration ─────────────────────────────────────────────────────────────
 void sotes_bindings_register(void) {
@@ -1180,6 +1183,11 @@ void sotes_bindings_register(void) {
         "sound", "sound effects — .play(id[, vol[, freq]]) stock pools; .add(wav) custom WAVE data (resource overlay); .wav(pcm, rate)",
         install_sound, 1
     };
+    static const gb_def SPRITES = {
+        "sprites", "custom sprites — .decode / .encode / .bmp sheets, .new_bank{like=, image=}, .clip{frames=}, "
+        ".set_look(actor, bank), .set_clips(actor, {stand=, walk=, ...})", install_sprites, 1
+    };
     gb_register(&SCRIPT);
     gb_register(&SOUND);
+    gb_register(&SPRITES);
 }
