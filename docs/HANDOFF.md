@@ -264,8 +264,10 @@ v2 so far (commits `10a1efe`, `b5b3b2b`, `6cb69d2`):
     restore-all call's target (found from the E8 before the loop; SE 0x5e1800) logs `[sprites] DISPLAY RESTORE #n …` and
     `sprites.capacity().restores` counts.  **Forced under wine (ense-en):** NOP the 6-byte `jz` at loop − 17 (the "nothing
     lost" branch), PostMessageA(game window, WM_ACTIVATEAPP, 1, 0), put the jz back → restore #1, 8192 entries walked, no
-    fault, Bit / the Tester still drawn (looked).  A real loss on Windows: USER test pending (`tools/win/restore-test.sh`
-    puts the hand-play copy in exclusive fullscreen for it; `off` puts the windowed config back).
+    fault, Bit / the Tester still drawn (looked).  **Windows, exclusive fullscreen (USER 2026-11-25, `tools/win/restore-test.sh on` → played → `off`):** the game ran
+    and looked fine, tables relocated, observer armed — but the log holds NO restore line: on that box (Windows' DirectDraw
+    emulation) no surface was reported lost, so the engine's restore never ran.  A real loss stays unobserved; the forced
+    wine run is the evidence for the loop.
   - **`script.on_tick(fn)`** = the same gimmick_pass hook, for mods (60 / s free-roam ticks); testroom's patrol + arena run on it.
   - **Other fixed capacities seen** (not lifted): 32 live characters per room (the pool actors.spawn fills), 32 frames per
     clip, the 25 dynamic tint clones at the end of the retail banks.
