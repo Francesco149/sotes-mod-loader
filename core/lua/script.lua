@@ -326,9 +326,12 @@ end
 -- (scene_wait / scene_wait_fade: +0x20 = 2, +0x24 = 1, +0x28 1 / 2, +0x2c ms) — what retail's inn rest runs
 function S:fade_out(t) local ev = self.ev w32(ev, 0x30, 1); w32(ev, 0x34, 3); w32(ev, 0x3c, t or 1000); w32(ev, 0x38, 0); return effect_wait(self, 2, t or 1000) end
 function S:fade_in(t) local ev = self.ev w32(ev, 0x30, 1); w32(ev, 0x34, 2); w32(ev, 0x3c, t or 1000); w32(ev, 0x38, 1); local r = effect_wait(self, 1, t or 1000) w32(ev, 0x1c, 0) return r end
-function S:wait(ms) return effect_wait(self, 1, ms or 1000) end
+
 -- the countdown (scene_pause): +0x20 = 6, +0x57c = ticks
 function S:pause(t) local ev = self.ev w32(ev, 0x57c, t or 30); w32(ev, 0x20, 6); return wait(self) end
+-- a plain wait = the tick-counted pause (60 game ticks a second, measured: pause(300) = 4.79 s).  Not the effect
+-- wait: with no effect running that one returns after ~80 frames whatever +0x2c says (s:wait(5000) lasted 0.5 s).
+function S:wait(ms) return self:pause(math.max(1, math.floor((ms or 1000) * 60 / 1000 + 0.5))) end
 function S:sound(id, vol, freq) return game.sound.play(id, vol, freq) end
 
 -- ── running a script on the event ────────────────────────────────────────────────────────────────────────────────

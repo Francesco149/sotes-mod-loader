@@ -115,6 +115,31 @@ static void script_lua_init(lua_State *L) {
 }
 // mod.game.sprites — core/lua/sprites.lua (custom sheets in new sprite banks, clips, a character's look; no hooks)
 extern const char oss_lua_sprites[];
+// the running edition's bank-table sites (tools/banksites.py) → {sys, slots_off, descs_off, count, restore_base,
+// restore_count, sites = {{va, expect, kind}, ...}} | nil
+#include "sotes_banksites.h"
+static int l_banksites(lua_State *L) {
+    int ed = sym_edition();
+    if (ed < 0 || ed > 2) { lua_pushnil(L); return 1; }
+    const BankSites *b = &g_banksites[ed];
+    lua_newtable(L);
+    lua_pushnumber(L, b->sys); lua_setfield(L, -2, "sys");
+    lua_pushnumber(L, b->slots_off); lua_setfield(L, -2, "slots_off");
+    lua_pushnumber(L, b->descs_off); lua_setfield(L, -2, "descs_off");
+    lua_pushnumber(L, b->count); lua_setfield(L, -2, "count");
+    lua_pushnumber(L, b->restore_base); lua_setfield(L, -2, "restore_base");
+    lua_pushnumber(L, b->restore_count); lua_setfield(L, -2, "restore_count");
+    lua_newtable(L);
+    for (int i = 0; i < b->nsites; i++) {
+        lua_newtable(L);
+        lua_pushnumber(L, b->sites[i].va); lua_rawseti(L, -2, 1);
+        lua_pushnumber(L, b->sites[i].expect); lua_rawseti(L, -2, 2);
+        lua_pushnumber(L, b->sites[i].kind); lua_rawseti(L, -2, 3);
+        lua_rawseti(L, -2, i + 1);
+    }
+    lua_setfield(L, -2, "sites");
+    return 1;
+}
 static void sprites_lua_init(lua_State *L) {
     if (luaL_loadstring(L, oss_lua_sprites) != 0) { ml_log("[sprites] sprites.lua: %s", lua_tostring(L, -1)); lua_pop(L, 1); return; }
     mem_push_lua(L);
@@ -123,7 +148,9 @@ static void sprites_lua_init(lua_State *L) {
     gb_push_lua(L);
     resov_push_lua(L);
     lua_pushcfunction(L, l_edition_tag);
-    if (lua_pcall(L, 6, 0, 0) != 0) { ml_log("[sprites] sprites.lua: %s", lua_tostring(L, -1)); lua_pop(L, 1); }
+    lua_pushcfunction(L, l_banksites);
+    hooks_push_table(L);
+    if (lua_pcall(L, 8, 0, 0) != 0) { ml_log("[sprites] sprites.lua: %s", lua_tostring(L, -1)); lua_pop(L, 1); }
 }
 static int l_frame(lua_State *L) { lua_pushnumber(L, exec_frame()); return 1; }
 static int l_screen_ctx(lua_State *L) { lua_pushnumber(L, (lua_Number)(uintptr_t)exec_screen_ctx()); return 1; }

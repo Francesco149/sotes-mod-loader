@@ -15,8 +15,20 @@
 --   base + delta[f]; the char's state clips: stand +0x15914, air +0x15918 / +0x1591c, walk +0x15980, run +0x15994
 --   (SE / JP +0x20 each).
 --   slot_clone (0x4179b0 / SE 0x411b10, thiscall sys, dst, src) makes bank dst a frameless copy of src's descriptor
---   (cell size, key, module, DATA id, aux records, mirror offset) — retail's own way to make a variant bank.  Banks
---   900..924 are retail's dynamic tint clones (the allocator marks desc +0x10); the rest with no DATA id are unused.
+--   (cell size, key, module, DATA id, aux records, mirror offset) — retail's own way to make a variant bank.  The
+--   last 25 banks are retail's dynamic tint clones (the allocator marks desc +0x10); the rest with no DATA id are
+--   unused: 2 to 4 per edition.
+--
+-- BANKS PAST THE END (api 1.10).  The two tables are fixed arrays inside the static system object — 909 entries on
+--   enold, 925 on SE EN, 929 on SE JP (slots end where the descriptors start), allocated once at boot (build_title_
+--   drive: a 0x44-byte slot + a 0x14-byte descriptor per entry) and never moved.  Bank numbers are u16 everywhere.
+--   So the loader RELOCATES the tables: two arrays of CAP entries of its own, the retail pointers mirrored in front,
+--   and every instruction that reads `table[register]` (97 / 113 / 115 sites, found by tools/banksites.py, each
+--   verified before anything is written) gets its disp32 rebased onto them.  Reads with a constant bank and the
+--   whole-table loops (unload by group, shutdown) stay on the old arrays, which stay right for every retail bank.
+--   One loop is rebased too: the display restore (enold 0x5b14c0 — after a lost-surface restore it re-decodes every
+--   decoded frame of every bank); it dereferences each entry, so unused entries point at one empty slot.
+--   new_bank then takes the first unused index past the retail count: effectively unlimited (CAP - count).
 --
 --   sprites.decode(blob) -> img           an 8bpp sheet → {w, h, pal[0..255] = {r, g, b}, px (top-down bytes)}
 --   sprites.encode(img, template) -> blob  back to a sheet (template = any stock sheet blob: its header is reused)
@@ -25,8 +37,10 @@
 --   img:get(x, y) / img:set(x, y, i) / img:blit(src, sx, sy, w, h, dx, dy[, map]) / img:fill(x, y, w, h, i)
 --   sprites.bank(i) -> {index, res, module, cell_w, cell_h, mirror, frames} | nil
 --   sprites.sheet(i) -> img, blob          bank i's sheet (the user's own data, read from the game's module)
---   sprites.new_bank{like = i, image = img | sheet = blob[, cell_w=, cell_h=, mirror=]} -> index
---                                          (at most as many cells as `like` has frames: its trim records are reused)
+--   sprites.new_bank{like = i, image = img | sheet = blob[, cell_w=, cell_h=, mirror=, retail=]} -> index
+--                                          (at most as many cells as `like` has frames: its trim records are reused;
+--                                          retail = true: one of the game's own unused banks instead of a new one)
+--   sprites.capacity() -> {retail, total, used, free, extended[, error]}   bank counts (extended = tables relocated)
 --   sprites.clip{frames = {..}[, base=0, dur=14, loop=true, loop_to=0, dx={..}, dy={..}]} -> clip (keep it alive)
 --   sprites.set_look(actor, bank)          actor = a char pointer or an actors.list() entry
 --   sprites.set_clips(actor, {stand=, walk=, run=, air=})   clip objects or raw pointers; nil = unchanged
@@ -39,7 +53,21 @@
 --                                                     label; char_stats_init copies the stat table's name there)
 --   actors.hp(actor) -> cur, max / actors.set_hp(actor, cur[, max])   the live stat block (*(char +0x750 / SE +0x760)
 --                                                     +0x54 current, +0x58 base max)
-local mem, sym, log, game, res, edition_fn = ...
+--
+-- NEW CHARACTER TYPES (api 1.10).  The character codes are cases of char_init's compiled switch (an unknown code =
+--   "Unknown Object Type Character." + exit) and every later dispatch (AI, skills, stats) keys on the code the
+--   character carries — there is no table to add a row to.  So a new type = a code of its own that char_init never
+--   sees: a typed hook on char_init (enold 0x41f200; thiscall char + 14 args, the code = the 6th) swaps a defined
+--   code for its BASE (a retail code: its body, AI, stats, sounds) on the way in, and on the way out puts the type's
+--   look / clips / name / HP on the new character and tracks it for the type's Lua callbacks.  Map records and
+--   actors.spawn both go through char_init, so both take the new code.  A map object's code picks its loader by
+--   range: characters are 50001..59999 — a new code must be in there (and not one of the game's).
+--   actors.define{code=, base=[, name=, hp=, bank= index | function(ptr) -> index, clips={stand=, walk=, ...},
+--                 on_spawn=function(a), on_tick=function(a), on_death=function(a)]} -> true | nil, why
+--        on_spawn / on_tick run on free-roam frames (not during events) with the character's actors.list() entry;
+--        on_death once, with its last entry, when its HP reaches 0 or it disappears while its room is still loaded.
+--   actors.defined(code) -> the definition | nil;  actors.list() entries of such characters carry type = the code
+local mem, sym, log, game, res, edition_fn, banksites_fn, hook = ...
 local ffi = require('ffi')
 
 local ED = {
@@ -47,12 +75,19 @@ local ED = {
   ['ense-en'] = { banks = 0xb08, descs = 0x197c, clip = 0x15934, stats = 0x760 },
   ['ense-jp'] = { banks = 0xb04, descs = 0x1988, clip = 0x15934, stats = 0x760 },
 }
-local NBANKS = 925
+local CAP = 8192                                         -- entries in the relocated tables
 local L
-local function layout() if not L then L = ED[edition_fn()] end return L end
+local function layout()
+  if not L then
+    L = ED[edition_fn()]
+    if L then L.count = (L.descs - L.banks) / 4 end
+  end
+  return L
+end
 
 local sprites = {}
 local st = { next_res = 0xE100, mine = {}, clips = {}, header = nil }
+local ext = { on = false, next = nil, keep = {} }       -- the relocated tables (extend())
 
 -- ── bytes ────────────────────────────────────────────────────────────────────────────────────────────────────────
 local function u32s(s, o) local a, b, c, d = s:byte(o + 1, o + 4) return a + b * 256 + c * 65536 + d * 16777216 end
@@ -170,13 +205,76 @@ end
 
 -- ── banks ────────────────────────────────────────────────────────────────────────────────────────────────────────
 local function sys() return sym.va('g_sys') end
-local function slot(i) local l = layout() return l and mem.read_u32(sys() + l.banks + 4 * i) or 0 end
-local function desc(i) local l = layout() return l and mem.read_u32(sys() + l.descs + 4 * i) or 0 end
+local function slot(i)
+  if ext.on then return ext.slots[i] end
+  local l = layout() return l and mem.read_u32(sys() + l.banks + 4 * i) or 0
+end
+local function desc(i)
+  if ext.on then return ext.descs[i] end
+  local l = layout() return l and mem.read_u32(sys() + l.descs + 4 * i) or 0
+end
+local function nbanks() local l = layout() return ext.on and CAP or (l and l.count or 0) end
+local function addr(cd) return tonumber(ffi.cast('uintptr_t', cd)) end
+
+-- Relocate the bank tables (see the header).  Everything is checked before the first byte changes; a refusal leaves
+-- the game untouched and is remembered (new_bank then falls back to the game's own unused banks).
+local function extend()
+  if ext.on then return true end
+  if ext.err then return nil, ext.err end
+  local l, b = layout(), banksites_fn and banksites_fn()
+  if not l or not b then ext.err = 'unknown edition' return nil, ext.err end
+  local olds, oldd = b.sys + b.slots_off, b.sys + b.descs_off
+  if b.sys ~= sys() or b.slots_off ~= l.banks or b.descs_off ~= l.descs or b.count ~= l.count then
+    ext.err = 'bank site table does not match this edition' return nil, ext.err
+  end
+  for i = 0, b.count - 1 do                              -- booted: every retail entry allocated (not latched)
+    if mem.read_u32(olds + 4 * i) == 0 or mem.read_u32(oldd + 4 * i) == 0 then return nil, 'the sprite system is not up yet' end
+  end
+  local function fail(what) ext.err = what log('[sprites] banks not extended: ' .. what) return nil, what end
+  for _, s in ipairs(b.sites) do
+    local want = s[2]
+    if mem.read_u32(s[1]) ~= want then return fail(('site %08x holds %08x, not %08x'):format(s[1], mem.read_u32(s[1]) or 0, want)) end
+    local t = s[3] == 0 and b.slots_off or b.descs_off
+    if want ~= t and want ~= b.sys + t then return fail(('site %08x: unexpected operand'):format(s[1])) end
+  end
+  if mem.read_u32(b.restore_base) ~= olds or mem.read_u32(b.restore_count) ~= b.count then return fail('the display-restore loop differs') end
+  ext.slots, ext.descs = ffi.new('uint32_t[?]', CAP), ffi.new('uint32_t[?]', CAP)
+  ext.null_slot, ext.null_desc = ffi.new('uint8_t[0x44]'), ffi.new('uint8_t[0x14]')   -- no entries: every loop skips it
+  for i = 0, CAP - 1 do
+    if i < b.count then
+      ext.slots[i], ext.descs[i] = mem.read_u32(olds + 4 * i), mem.read_u32(oldd + 4 * i)
+    else
+      ext.slots[i], ext.descs[i] = addr(ext.null_slot), addr(ext.null_desc)
+    end
+  end
+  local news, newd = addr(ext.slots), addr(ext.descs)
+  local done = {}
+  local function put(va, v)
+    local old = mem.read_u32(va)
+    if not mem.patch(va, le32(v)) then return false end
+    done[#done + 1] = { va, old }
+    return true
+  end
+  local ok = true
+  for _, s in ipairs(b.sites) do
+    local new = s[3] == 0 and news or newd
+    if s[2] < 0x10000 then new = (new - b.sys) % 4294967296 end   -- [sys register + index * 4 + offset]
+    if not put(s[1], new) then ok = false break end
+  end
+  ok = ok and put(b.restore_base, news) and put(b.restore_count, CAP)
+  if not ok then
+    for i = #done, 1, -1 do mem.patch(done[i][1], le32(done[i][2])) end
+    return fail('a code patch was refused')
+  end
+  ext.on, ext.next, ext.retail = true, b.count, b.count
+  log(('[sprites] bank tables relocated: %d retail banks + %d new (%d sites)'):format(b.count, CAP - b.count, #b.sites))
+  return true
+end
 
 function sprites.bank(i)
-  if type(i) ~= 'number' or i < 0 or i >= NBANKS then return nil end
+  if type(i) ~= 'number' or i < 0 or i >= nbanks() or i % 1 ~= 0 then return nil end
   local s = slot(i)
-  if s == 0 then return nil end
+  if s == 0 or (ext.on and s == addr(ext.null_slot)) then return nil end
   local d = desc(i)
   local e = mem.read_u32(s)
   return { index = i, res = mem.read_u16(s + 0x40), module = mem.read_u32(s + 0x3c), cell_w = mem.read_u32(s + 0x20),
@@ -193,16 +291,42 @@ function sprites.sheet(i)
   return img, blob or err
 end
 
-local function free_bank()
-  for i = 1, 899 do
-    local s = slot(i)
-    if s ~= 0 and mem.read_u16(s + 0x40) == 0 and mem.read_u32(s) == 0 and not st.mine[i] then return i end
-  end
+-- the game's own unused banks (no DATA id, nothing decoded), short of its dynamic tint clones (the last 25)
+local function retail_free(i)
+  local s = slot(i)
+  return s ~= 0 and mem.read_u16(s + 0x40) == 0 and mem.read_u32(s) == 0 and not st.mine[i]
+end
+local function free_retail_bank()
+  local l = layout()
+  for i = 1, (l and l.count or 0) - 26 do if retail_free(i) then return i end end
+end
+local function count_retail_free()
+  local l, n = layout(), 0
+  for i = 1, (l and l.count or 0) - 26 do if retail_free(i) then n = n + 1 end end
+  return n
+end
+-- a new bank past the retail tables: its own (zeroed, as at boot) slot + descriptor
+local function new_index()
+  if not extend() then return nil end
+  local i = ext.next
+  if i >= CAP then return nil end
+  local sl, de = ffi.new('uint8_t[0x44]'), ffi.new('uint8_t[0x14]')
+  ext.keep[#ext.keep + 1] = { sl, de }
+  ext.slots[i], ext.descs[i] = addr(sl), addr(de)
+  ext.next = i + 1
+  return i
 end
 function sprites.free_banks()
-  local n = 0
-  for i = 1, 899 do local s = slot(i) if s ~= 0 and mem.read_u16(s + 0x40) == 0 and mem.read_u32(s) == 0 and not st.mine[i] then n = n + 1 end end
-  return n
+  if extend() then return CAP - ext.next end
+  return count_retail_free()
+end
+function sprites.capacity()
+  local l = layout()
+  local ok, err = extend()
+  local used = 0
+  for _ in pairs(st.mine) do used = used + 1 end
+  return { retail = l and l.count or 0, total = ok and CAP or (l and l.count or 0), used = used,
+           free = ok and CAP - ext.next or count_retail_free(), extended = ok and true or false, error = err }
 end
 
 local clone_fn
@@ -219,7 +343,9 @@ function sprites.new_bank(o)
   end
   local hd, err = header_of(blob)
   if not hd then return nil, err end
-  local i = free_bank()
+  local i
+  if not o.retail then i = new_index() end
+  i = i or free_retail_bank()
   if not i then return nil, 'no free sprite bank' end
   if not clone_fn then
     local va = sym.va('slot_clone')
@@ -384,3 +510,115 @@ end
 local A, SPR = game.actors, game.sprites
 if A then for k, v in pairs(actors_ext) do A[k] = v end end
 if SPR then for k, v in pairs(sprites) do SPR[k] = v end end
+
+-- ── new character types ──────────────────────────────────────────────────────────────────────────────────────────
+if A then
+  local defs, live, cur = {}, {}, {}                     -- by code; by char pointer; char_init calls in flight
+  local pend                                             -- the type the next char_init makes (actors.spawn)
+  local armed
+  local list0, spawn0 = A.list, A.spawn
+  local function area() local m = game.map and game.map.get() return m and m.area end
+  local function apply(p, d)
+    if d.bank then
+      local b = d.bank
+      if type(b) == 'function' then
+        local ok, r = pcall(b, p)
+        if not ok then log('[actors] type ' .. d.code .. ' bank: ' .. tostring(r)) r = nil end
+        b = r
+      end
+      if b then mem.write_u16(p + 0x48, b) end
+    end
+    if d.clips then
+      sprites.set_clips(p, d.clips)
+      if d.clips.stand then sprites.play(p, d.clips.stand) end
+    end
+    if d.name then actors_ext.set_name(p, d.name) end
+    if d.hp then actors_ext.set_hp(p, d.hp, d.hp) end
+    live[p] = { def = d, area = area(), new = true }
+  end
+  local function ci_pre(ctx)
+    local p = addr(ctx.args[1])
+    live[p] = nil                                        -- the slot is being made into something else
+    local d = pend or defs[ctx.args[7]]
+    pend = nil
+    if d then ctx.args[7] = d.base; cur[#cur + 1] = { p, d } end
+  end
+  local function ci_post(ctx)
+    local c = cur[#cur]
+    if c and c[1] == addr(ctx.args[1]) then cur[#cur] = nil; apply(c[1], c[2]) end
+  end
+  local function call(d, name, a)
+    local f = d[name]
+    if not f then return end
+    local ok, err = pcall(f, a)
+    if not ok then log(('[actors] type %d %s: %s'):format(d.code, name, tostring(err))) end
+  end
+  local function tick()
+    if not next(live) then return end
+    local here, by = area(), {}
+    for _, a in ipairs(list0() or {}) do by[a.ptr] = a end
+    for p, t in pairs(live) do
+      local a, d = by[p], t.def
+      if t.area ~= here then
+        live[p] = nil                                    -- its room is gone: not a death
+      elseif not a then
+        live[p] = nil
+        if t.last then call(d, 'on_death', t.last) end
+      else
+        a.type = d.code
+        local hp, max = actors_ext.hp(a)
+        if t.new then t.new = nil; call(d, 'on_spawn', a) end
+        if hp and max and max > 0 and hp <= 0 then
+          live[p] = nil
+          call(d, 'on_death', a)
+        else
+          t.last = a
+          call(d, 'on_tick', a)
+        end
+      end
+    end
+  end
+  local function arm()
+    if armed then return true end
+    if not hook then return nil, 'no hook layer' end
+    local ci, gp = sym.va('char_init'), sym.va('gimmick_pass')
+    if not (ci and gp) then return nil, 'char_init / gimmick_pass missing on this build' end
+    hook.typed(ci, 'void __thiscall(void *, int, int, int, int, int, int, int16_t, int, int, int, int, int, int, int)',
+               { pre = ci_pre, post = ci_post })
+    hook.typed(gp, 'int __thiscall(void *, void *)', { pre = function() tick() end })
+    armed = true
+    log(('[actors] character types armed (char_init 0x%x)'):format(ci))
+    return true
+  end
+  function A.define(d)
+    assert(type(d) == 'table' and type(d.code) == 'number' and type(d.base) == 'number', 'actors.define{code=, base=, ...}')
+    if d.code <= 50000 or d.code >= 60000 or d.code % 1 ~= 0 then return nil, 'code: a character code is 50001..59999' end
+    if A.valid(d.code) then return nil, ('code %d is one of the game\'s own'):format(d.code) end
+    if not A.valid(d.base) then return nil, ('base %d is not a character of this edition'):format(d.base) end
+    local ok, err = arm()
+    if not ok then return nil, err end
+    local t = {}
+    for k, v in pairs(d) do t[k] = v end
+    defs[d.code] = t
+    return true
+  end
+  function A.defined(code) return defs[code] end
+  function A.spawn(code, o)
+    local d = defs[code]
+    if not d then return spawn0(code, o) end
+    pend = d
+    local slot, err = spawn0(d.base, o)
+    if pend then                                         -- char_init ran unhooked (a spawn from inside another one)
+      pend = nil
+      if slot then for _, a in ipairs(list0() or {}) do if a.slot == slot then apply(a.ptr, d) end end end
+    end
+    return slot, err
+  end
+  function A.list()
+    local t = list0()
+    if t and next(live) then
+      for _, a in ipairs(t) do local lv = live[a.ptr] if lv then a.type = lv.def.code end end
+    end
+    return t
+  end
+end

@@ -10,7 +10,7 @@
 #   arena      Slimes → warped to 210143, 3 hostile slimes spawned → (killed by the test) → the reward cutscene
 #              (+200 CP) → back through the door to the hall
 #   sprites    (api 1.9) the Tester wears a new bank (her stock sheet recoloured), Bit wears bit.bmp + custom clips
-#   bit        talk → wave → the dance (custom clip + spin) → "How were you made?" → Bye; the patrol moves him
+#   bit        talk → wave → the dance (13 s: four parts on custom clips, its own tune) → "How were you made?" → Bye; the patrol moves him
 #   cubes      Glitch Cubes → 2 slimes in cube.bmp, named, 60 HP → removed → each splits into 2 Glitch Bits →
 #              removed → the reward → back through the door
 #   warp mage  "Arche's house" → the house (zone 4 arrival)
@@ -53,6 +53,11 @@ if [ "$(L 'return mod.game.map.get().area')" != 210142 ]; then
 fi
 [ "$(L 'return mod.res.hits("DATA", 4001) >= 1')" = true ] || fail "hall: DATA 4001 not served by the overlay"
 P ".*30"; shot hall.png
+# every cast member stands ON the floor: body bottom = the leader's (a record's y = the top of the sprite cell, whose
+# height differs per character — one y for all left the guard and the witch a tile deep)
+[ "$(L 'local f, bad for _, a in ipairs(mod.game.actors.list()) do if a.leader then f = a.y + a.h end end
+        for _, a in ipairs(mod.game.actors.list()) do if a.handle and a.handle >= 990001 and a.handle <= 990007 and a.y + a.h ~= f then bad = (bad or "") .. a.code .. ":" .. (a.y + a.h - f) .. " " end end
+        return bad or "ok"')" = '"ok"' ] || fail "hall: cast not on the floor line"
 
 # bookshelf (x 32 px; examine = X with the sword sheathed)
 L 'mod.game.coordinates.set(nil, 8000, 52000) return true' >/dev/null
@@ -147,12 +152,15 @@ pick 1
 for _ in $(seq 10); do [ "$(L 'return testroom.bit.mode')" = '"dance"' ] && break; P "ent*6 .*10"; done
 [ "$(L 'return testroom.bit.mode')" = '"dance"' ] || fail "bit: never danced"
 shot bit_dance.png
+P ".*300"; shot bit_dance2.png
 [ "$(L 'return mod.mem.read_u32(mod.mem.read_u32(testroom.bit.ptr + 0x40) + 0x6c) == mod.game.sprites.get_clips(testroom.bit.ptr).stand')" = true ] || fail "bit: the dance clip is not on the body"
+W 'return testroom.bit.mode ~= "dance"' 900 || fail "bit: the dance never ended"
+[ "$(L 'return mod.mem.read_i32(mod.mem.read_u32(testroom.bit.ptr + 0x40) + 4) == testroom.bit.x0')" = true ] || fail "bit: not back on his spot after the dance"
 to_choice || fail "bit: no menu after the dance"; pick 2
 to_choice || fail "bit: no menu after the explanation"; pick 3
 to_end || fail "bit: never ended"
 [ "$(L 'return testroom.bit.mode')" = '"patrol"' ] || fail "bit: not back on patrol"
-echo "    bit: wave, dance (spin $(L 'return testroom.bit.spin')), explanation, back on patrol"
+echo "    bit: wave, dance ($(L 'return ("%.1f s"):format(testroom.bit.took)')), explanation, back on patrol"
 
 # cubes: Glitch Cubes (4) → the cube look, name, HP → removed → 2 + 2 Glitch Bits → removed → the reward
 talk "$(H ARENA)"

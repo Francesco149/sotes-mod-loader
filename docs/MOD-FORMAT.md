@@ -190,6 +190,9 @@ mod.game.script                 -- [api 1.8] EVENT SCRIPTS IN LUA on retail's ow
   s:give(what, n[, quiet]) -> got   the story gift ("You obtained ..."; full bag: retail's refusal); what = an item
                                 --   id or 1 / 2 / 3 = n copper / silver / gold coins
   s:fade_out([ms]) / s:fade_in([ms]) / s:wait([ms]) / s:pause(n) / s:camera(actor[, speed]) / s:sound(id) / s:leader()
+                                --   s:wait(ms) = the tick-counted pause (60 ticks a second: real time); s:pause(n)
+                                --   = n ticks.  (Before api 1.10 s:wait rode the effect wait and always lasted ~80
+                                --   frames, whatever ms said.)
   -- A wait that returns 6 (quit / game over) aborts the script like retail; a Lua error ends the event (logged).
 mod.game.sound                  -- [api 1.8] sound effects
   .play(id[, vol[, freq]])      a stock pool slot (0..464 enold / 482 SE) or a .add handle; vol in 1/100 dB
@@ -200,7 +203,8 @@ mod.game.sound                  -- [api 1.8] sound effects
   .status(id) -> {loaded, voices, playing}   (playing = DSBSTATUS_PLAYING voices; for tests)
 mod.game.sprites                -- [api 1.9] CUSTOM SPRITES on retail's own sprite banks (core/lua/sprites.lua; no hooks)
                                 --   A sheet = a DATA resource (header + 256-colour palette + 8bpp bottom-up pixels,
-                                --   index 0 = transparent) cut into a grid of cells; a bank = one sheet (925 banks);
+                                --   index 0 = transparent) cut into a grid of cells; a bank = one sheet (909 retail
+                                --   banks on enold, 925 SE EN, 929 SE JP — and as many new ones as you like, below);
                                 --   a character draws its track 0 (char +0x48 = the bank) through its body's clip
                                 --   (frame = base + delta[f]); facing left adds the bank's mirror offset.
   .decode(blob) -> img          an 8bpp sheet → img {w, h, pal[0..255] = {r, g, b}, px}  (img:get / set / fill /
@@ -210,12 +214,19 @@ mod.game.sprites                -- [api 1.9] CUSTOM SPRITES on retail's own spri
   .image(w, h[, pal]) -> img    a blank image
   .bank(i) -> {index, res, module, cell_w, cell_h, mirror, frames, decoded, ours}
   .sheet(i) -> img, blob        bank i's sheet, read from the user's own game data
-  .new_bank{like = i, image = img | sheet = blob[, cell_w=, cell_h=, mirror=]} -> index | nil, why
-                                --   retail's slot_clone (0x4179b0 / SE 0x411b10) makes a free bank a copy of `like`'s
+  .new_bank{like = i, image = img | sheet = blob[, cell_w=, cell_h=, mirror=, retail=]} -> index | nil, why
+                                --   retail's slot_clone (0x4179b0 / SE 0x411b10) makes the bank a copy of `like`'s
                                 --   descriptor (cell grid, colour key, mirror offset); its DATA id points at the new
                                 --   bytes in the resource overlay; the per-cell trim records are recomputed.  Same
-                                --   layout as `like` (at most its cell count).  Free banks are few (SE: 4) — share.
+                                --   layout as `like` (at most its cell count).
+                                --   [api 1.10] The bank is a NEW one past the game's own (index ≥ the retail count):
+                                --   on first use the loader relocates the engine's two bank tables into 8192-entry
+                                --   ones of its own (every instruction indexing them is rebased — 97 / 113 / 115
+                                --   sites per edition, each verified first; tools/banksites.py), so banks are no
+                                --   longer a scarce resource (7000+).  retail = true takes one of the game's own
+                                --   unused banks instead (2–4 per edition) — also the fallback on an unknown build.
   .free_banks() -> n
+  .capacity() -> {retail, total, used, free, extended[, error]}   [api 1.10]
   .clip{frames = {..}[, base=, dur=14, loop=true, loop_to=0, dx={..}, dy={..}]} -> clip   an animation (retail's
                                 --   anim_clip: up to 32 frames, dur = ticks per frame, per-frame offsets)
   .set_look(actor, bank)        actor = an actors.list() row or a char pointer
@@ -225,6 +236,24 @@ mod.game.sprites                -- [api 1.9] CUSTOM SPRITES on retail's own spri
 mod.game.actors.name(actor) / .set_name(actor, s)   [api 1.9] the display name (char +0x274, 19 chars: the target
                                 --   window's label)
 mod.game.actors.hp(actor) -> cur, max / .set_hp(actor, cur[, max])   [api 1.9] the live stat block
+mod.game.actors.define{code=, base=[, name=, hp=, bank=, clips=, on_spawn=, on_tick=, on_death=]} -> true | nil, why
+                                --   [api 1.10] a NEW CHARACTER TYPE under its own code.  The game's codes are cases
+                                --   of a compiled switch (nothing to add a row to), so a type = a code char_init
+                                --   never sees: a hook swaps it for `base` (a retail code: its body, AI, stats,
+                                --   sounds) on the way in and puts the type's look (bank = an index or
+                                --   function(char_ptr) -> index), clips ({stand=, walk=, run=, air=}), name and HP
+                                --   on the new character on the way out.  Works wherever a code does: MAP RECORDS
+                                --   and actors.spawn.  code: 50001..59999 (the range the map loader hands to
+                                --   char_init), not one of the game's.  The character carries `base` as its code
+                                --   (everything retail dispatches on); actors.list() rows add type = your code.
+                                --   on_spawn(a) / on_tick(a): free-roam game ticks (60 a second, not during events),
+                                --   a = its actors.list() row; on_death(a): once, when its HP reaches 0 or it
+                                --   disappears while its room is still loaded (a = the last row seen).
+mod.game.actors.defined(code) -> the definition | nil
+-- PLACING A CHARACTER IN A MAP: a record's x / y = the top-left of its SPRITE CELL; char_init hangs the body in the
+-- cell (x centred, feet on the cell's bottom row).  So y = floor - the sheet's cell height, which differs per
+-- character (sprites.bank(track).cell_h: townsfolk 96, guard / witch 128, children 80) — one y for everyone leaves the
+-- tall ones a tile deep in the floor.
 mod.game.attract.set(on) / .get() -- false keeps the title up (idle → no demo); true = retail
 mod.game.save.load([slot])      -> true | nil, err   -- load save `slot` from the title (nil / <0 = the list's
                                 --   default row = last used).  Typed hooks on the title driver (any edition):

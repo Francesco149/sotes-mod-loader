@@ -226,10 +226,44 @@ v2 so far (commits `10a1efe`, `b5b3b2b`, `6cb69d2`):
     the binding registry's toggle (sprites.lua fills the cached tables in place instead) — script/sound toggles inert.
   - **Gate:** `tests/hall.sh R` + sprites / bit / cubes steps — PASS ense-en, ense-jp, enold (first hall.sh runs on JP / enold; banks 49/50 SE-en, 53/54 JP, 43/44 enold).  `ended()` = mode −1 held across 40
     frames (it flickers −1 between messages).
-  - **Open (USER 2026-11-25): "adult NPCs sink into the ground like the guard"** — not reproduced under wine: every
-    cast member's lowest drawn row = Arche's (415, diffed shots), retail's own guard (50150) is placed identically
-    (record y + 32 px, body 9600 high) and draws its robe to the floor line.  Needs the user's screenshot.
-- **Next (modding PoC):** a monster with its own skills / projectiles (skill records + their clips), a portrait / voice in s:say, camera shake, Windows hand-play of the hall.
+  - **"Adult NPCs sink into the ground" (USER 2026-11-25) — FIXED** (testroom 0.4): a map character record's x / y is the
+    top-left of its SPRITE CELL (char_init: body x-centred in the cell, feet on its bottom row), so feet = y + the sheet's
+    cell height — 96 townsfolk, 128 guard (50150) / witch (50300), 80 children.  Retail's maps follow it (opening town DATA
+    1022: guard y 384, townswoman y 416, same street; children at y % 32 == 16).  The hall put everyone at y 480: the two
+    128-px ones started 32 px inside the floor (nothing pushes a body out), the child dropped 16 px onto it.  The earlier
+    "not reproduced under wine" was a wrong read — it reproduces everywhere (bodies: bottom 60800 vs the floor's 57600).
+- **Banks past the end + character types (api 1.10, 2026-11-25)** — RE facts (all three editions; **port-repo findings owed**):
+  - **The bank tables** are two fixed arrays inside the static sys object, slots then descriptors back to back: **909 entries
+    enold, 925 SE EN, 929 SE JP** (not 925 everywhere: `(descs − slots) / 4`; the loop counts 0x38D / 0x39D / 0x3A1 agree).
+    Allocated once in build_title_drive (new 0x44 slot + new 0x14 descriptor per entry, called from WinMain only), freed at
+    exit: the pointers never move.  No indexed WRITE exists — only pointer loops touch the arrays.
+  - **Access census** (`tools/banksites.py`, capstone over every IDA function): 97 / 113 / 115 instructions index a table
+    with a runtime register (absolute `[table + reg*4]`, or `[sys_reg + reg*4 + off]` in the same 6 sys methods per
+    edition: slot_clone, the palette-swap + grade allocators, 2 text drawers, the bank free), 0 odd forms; 12 / 14 / 14
+    whole-table loops (`mov reg, offset table` + count): "Unload Surface Sets" by group (slot +0x42 ≥ k) on state changes,
+    shutdown, and the **display restore** (enold 0x5b14c0 / SE 0x5d9780 / JP 0x5d7420: after a lost-surface restore,
+    re-decode every decoded frame of every bank — it dereferences every entry unchecked).
+  - **Relocation** (`sprites.lua` extend(), on the first new_bank): two 8192-entry arrays, retail pointers mirrored, unused
+    entries → one empty slot / descriptor; every site's disp32 verified then rebased (sys-relative sites: new − g_sys); the
+    restore loop's base + count rebased too.  Constant-index reads and the other loops stay on the old arrays (right for
+    every retail bank).  A mismatch anywhere = nothing written, fallback to the game's unused banks (`retail = true`).
+    Our banks are never unloaded by the group loops (they keep their decoded frames across rooms — memory only).
+  - **`s:wait(ms)` was broken**: the effect wait (+0x20 = 2) with no effect running returns after ~80 frames whatever
+    +0x2c holds (s:wait(5000) = 0.52 s — why Bit's dance was "too brief").  Now = the tick pause (+0x57c, mode 6):
+    **60 ticks / s real time** (pause(300) = 4.79 s at 200 flips / s under wine).
+  - **Character types** (`actors.define`): typed hook on char_init (thiscall char + 14 stack args on every edition, code =
+    the 6th) swaps a defined code for its base, applies look / clips / name / HP after; a second typed hook on
+    gimmick_pass drives on_spawn / on_tick / on_death.  Map objects pick their loader by code range — characters are
+    50001..59999 — so a new code lives there; a map record with code 50990 loads fine (Bit).  The typed-hook dispatcher
+    skips nested calls of the same VA (`rec.busy`), so a spawn from inside a char_init runs unhooked: actors.spawn applies
+    the type itself then.  Type callbacks run on the game tick, `mod.on_frame` on every flip (200 / s under wine): state
+    shared between the two needs care (testroom's wave-clear check waits for the types' death reports).
+  - **Other fixed capacities seen** (not lifted): 32 live characters per room (the pool actors.spawn fills), 32 frames per
+    clip, the 25 dynamic tint clones at the end of the retail banks.
+  - **Gates:** `tests/hall.sh` (Bit from a map record with code 50990, cubes = types 51990 / 51991, banks ≥ the retail
+    count, the dance 12.7 s) + **`tests/banks.sh`** (40 new banks, each drawn on the leader; a retail one; a room change) —
+    PASS enold / ense-en / ense-jp.
+- **Next (modding PoC):** a game-tick callback for mods (on_frame = flips: Bit's patrol speed follows the frame rate), a monster with its own skills / projectiles (skill records + their clips), a portrait / voice in s:say, camera shake, Windows hand-play of the hall.
 - **Next:** more `tests/*.lua` → a fuller Windows runner (`tools/win/` is launch + Lua only: no `--saves` isolation — it uses the real install + Steam saves, backs up / restores `version.dll` by hand) (own scheduled task, never `oss-rhost-runner`).  Host tests (`make -C core tests`) still
   assume WSL interop — port them to run under wine.
 
