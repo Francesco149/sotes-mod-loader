@@ -17,6 +17,7 @@
 #include "hooks.h"            // hooks_entry_c — the picker-poll observer (mod.game.save, fenced)
 #include "oss_mod_api.h"      // OssHookCtx
 #include "prof.h"
+#include "resov.h"          // resov_find — map data a mod serves (mod.res)
 #include "ddraw_present.h"   // ddp_cursor_game — cursor -> game 640x480 screen space (mod.game.mouse)
 #include "loader_internal.h"
 #include "voice.h"
@@ -377,7 +378,7 @@ static int map_data_ok(const sotes_layout *l, uintptr_t areas, uintptr_t rec) {
     uintptr_t mm = sym_va("map_module"), hmod = rd(areas + l->area_count + 4);
     if (!hmod && mm) hmod = rd(mm);
     if (!mm && !hmod) return 1;                       // unknown build: can't tell
-    return FindResourceA((HMODULE)hmod, MAKEINTRESOURCEA(rd16(rec + 0xc)), "DATA") != NULL;
+    return resov_find((HMODULE)hmod, MAKEINTRESOURCEA(rd16(rec + 0xc)), "DATA") != NULL;   // + mod.res overlays
 }
 static void push_room_rec(lua_State *L, const sotes_layout *l, uintptr_t areas, uintptr_t rec) {
     lua_newtable(L);
@@ -488,8 +489,100 @@ static int l_map_warp_status(lua_State *L) {
     lua_pushinteger(L, rdi(rl + l->rl_warp));
     return 2;
 }
+// ── custom rooms: map.add_room{key, like, map} / map.set_exit(room, zone, to, gate) ─────────────────────────────
+// The area table the scene loop searches is a HEAP copy of the exe's static table, rebuilt every session (scene_loop
+// / ts_59df50 copy + area_xref), so an added record or exit would vanish on the next new game / load.  The loader
+// keeps the mods' additions and re-applies them from an observer on area_find (thiscall, ECX = the table; enold
+// 0x561c90 / SE 0x565a20): every room lookup — the scene loop's load of the next room, a save loaded straight into
+// a custom room — sees them.  Idempotent: an existing key is left alone, an exit slot with the zone is rewritten.
+//   add_room: copies the record of `like` (an existing room: kind, tileset, town flag, BGM, name …), sets key + the
+//             u16 map DATA id (+0xc; serve the map with mod.res.set("DATA", id, bytes)), clears its exits (and the
+//             SE W-map id +0x148).  Up to 1024 records (retail ~430).
+//   set_exit: room's zone slot (record +0x1c: {u16 zone, u16 0, i32 to, u16 gate, u16 0} ×20) → room `to`, arriving
+//             at the live zone actor whose id is `gate` there.  A zone device (70101 walk-in / 70102 press-Up door …,
+//             A[0] = zone) in the room's map makes it reachable.
+#define XROOM_MAX 32
+#define XEXIT_MAX 64
+static struct { int32_t key, like; uint16_t map; } g_xroom[XROOM_MAX];
+static struct { int32_t room, to; uint16_t zone, gate; } g_xexit[XEXIT_MAX];
+static int g_nxroom, g_nxexit, g_rooms_hook;
+
+static void rooms_ensure(uintptr_t areas) {
+    const sotes_layout *l = sotes_layout_get();
+    if (!l || !areas || !mem_readable((void *)(areas + l->area_count), 2)) return;
+    for (int i = 0; i < g_nxroom; i++) {
+        if (area_find_rec(l, areas, g_xroom[i].key)) continue;
+        uint16_t n = rd16(areas + l->area_count);
+        uintptr_t tpl = area_find_rec(l, areas, g_xroom[i].like), dst = areas + 4 + (uintptr_t)l->area_size * n;
+        if (!tpl || n >= 1024 || !mem_writable((void *)dst, l->area_size)) continue;
+        memcpy((void *)dst, (const void *)tpl, l->area_size);
+        *(int32_t *)dst = g_xroom[i].key;
+        *(uint16_t *)(dst + 0xc) = g_xroom[i].map;
+        memset((void *)(dst + l->rec_exits), 0, 20 * 12);
+        if (l->rec_wmap) *(uint32_t *)(dst + l->rec_wmap) = 0;
+        *(uint16_t *)(areas + l->area_count) = (uint16_t)(n + 1);
+    }
+    for (int i = 0; i < g_nxexit; i++) {
+        uintptr_t rec = area_find_rec(l, areas, g_xexit[i].room), slot = 0;
+        if (!rec || !mem_writable((void *)(rec + l->rec_exits), 20 * 12)) continue;
+        for (int k = 0; k < 20 && !slot; k++)
+            if (rd16(rec + l->rec_exits + 12 * k) == g_xexit[i].zone) slot = rec + l->rec_exits + 12 * k;
+        for (int k = 0; k < 20 && !slot; k++) {
+            uintptr_t z = rec + l->rec_exits + 12 * k;
+            if (!rd16(z) && !rdi(z + 4)) slot = z;
+        }
+        if (!slot) continue;
+        *(uint16_t *)slot = g_xexit[i].zone;  *(uint16_t *)(slot + 2) = 0;
+        *(int32_t *)(slot + 4) = g_xexit[i].to;
+        *(uint16_t *)(slot + 8) = g_xexit[i].gate; *(uint16_t *)(slot + 10) = 0;
+    }
+}
+static void rooms_area_find_obs(const OssHookCtx *ctx, void *user) { (void)user; rooms_ensure(ctx->ecx); }
+static int rooms_arm(lua_State *L) {
+    if (!g_rooms_hook) {
+        uintptr_t va = sym_va("area_find");
+        if (!va || !(g_rooms_hook = hooks_entry_c(va, rooms_area_find_obs, NULL))) {
+            lua_pushnil(L); lua_pushstring(L, "map: area_find not available on this build"); return 0;
+        }
+    }
+    if (on_engine()) rooms_ensure(areas_any(NULL));
+    return 1;
+}
+static int l_map_add_room(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    lua_getfield(L, 1, "key");  int32_t key = (int32_t)luaL_checkinteger(L, -1);
+    lua_getfield(L, 1, "like"); int32_t like = (int32_t)luaL_checkinteger(L, -1);
+    lua_getfield(L, 1, "map");  int map = (int)luaL_checkinteger(L, -1);
+    lua_pop(L, 3);
+    if (map <= 0 || map > 0xffff) return luaL_error(L, "map.add_room: map must be a u16 DATA id");
+    int i = 0;
+    while (i < g_nxroom && g_xroom[i].key != key) i++;
+    if (i == XROOM_MAX) { lua_pushnil(L); lua_pushstring(L, "map.add_room: too many custom rooms"); return 2; }
+    g_xroom[i].key = key; g_xroom[i].like = like; g_xroom[i].map = (uint16_t)map;
+    if (i == g_nxroom) g_nxroom++;
+    if (!rooms_arm(L)) return 2;
+    lua_pushboolean(L, 1);
+    return 1;
+}
+static int l_map_set_exit(lua_State *L) {
+    int32_t room = (int32_t)luaL_checkinteger(L, 1);
+    int zone = (int)luaL_checkinteger(L, 2);
+    int32_t to = (int32_t)luaL_checkinteger(L, 3);
+    int gate = (int)luaL_optinteger(L, 4, 1);
+    int i = 0;
+    while (i < g_nxexit && !(g_xexit[i].room == room && g_xexit[i].zone == zone)) i++;
+    if (i == XEXIT_MAX) { lua_pushnil(L); lua_pushstring(L, "map.set_exit: too many custom exits"); return 2; }
+    g_xexit[i].room = room; g_xexit[i].zone = (uint16_t)zone; g_xexit[i].to = to; g_xexit[i].gate = (uint16_t)gate;
+    if (i == g_nxexit) g_nxexit++;
+    if (!rooms_arm(L)) return 2;
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
 static void install_map(lua_State *L) {
     lua_newtable(L);
+    lua_pushcfunction(L, l_map_add_room);    lua_setfield(L, -2, "add_room");
+    lua_pushcfunction(L, l_map_set_exit);    lua_setfield(L, -2, "set_exit");
     lua_pushcfunction(L, l_map_get);         lua_setfield(L, -2, "get");
     lua_pushcfunction(L, l_map_rooms);       lua_setfield(L, -2, "rooms");
     lua_pushcfunction(L, l_map_room);        lua_setfield(L, -2, "room");

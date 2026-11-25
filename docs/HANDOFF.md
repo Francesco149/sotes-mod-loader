@@ -133,6 +133,32 @@ v2 so far (commits `10a1efe`, `b5b3b2b`, `6cb69d2`):
   trainer uses `en` on ense-jp; the Items panel still prints JP item names raw — a `mod.text` CP932→UTF-8 helper + a
   CJK font range would fix both.
 - **Hand-play copy (2026-11-24):** `C:\sotes-modded` + desktop shortcut "SotES with mods", auto-refreshed on commit (TESTING.md).
+- **Custom content (api 1.7, 2026-11-25)** — the `testroom` PoC (`../sotes-mods/mods/testroom`): a new door in Arche's house
+  (210140, ground floor left of the front door) → a NEW room 210142 (map DATA 4001 built from the back room's DATA 1026)
+  with a custom NPC (code 50240, handle 990001) whose talk script is Lua.  Loader pieces:
+  - **`mod.res`** (`core/resov.c`) — the resource overlay: the EXE's four kernel32 resource imports patched (lazily, first
+    `set`); `FindResourceA` answers overlay entries (any module, or one) with a fake HRSRC, `LoadResource`/`SizeofResource`
+    serve the bytes.  Maps AND sprite sheets go through it (both `FindResourceA(.., "DATA")`).  `read` = the real one.
+    A mod builds bytes from the user's own data — nothing shipped.
+  - **`map.add_room` / `set_exit`** (`sotes_bindings.c`) — the heap area table is rebuilt every session, so additions are
+    re-applied from a Tier-1 observer on `area_find` (thiscall, ECX = the table, both editions).  `loadable` / warp now
+    consult the overlay (`resov_find`).
+  - **Talk scripts** = a typed pre-hook on `script_engine` claiming (room, ev +0x14 mode 2, ev +0x4 actor +0x1d8 handle)
+    and calling the retail primitives over FFI (`script_begin` … `scene_msg` … `script_wait` … `script_end`); their nested
+    frames re-enter Lua (on_frame / dev server) — fine with the JIT compiled out (FFI calls are plain C calls).
+  - Map format facts (from the port's `tools/extract/map_data.py` + looking): cells = {co, piece, bank, frame, shape, -, -}
+    (`co` = per-piece base + 10 × frame); the house walls are wide panel pieces (113015 2-col / 113035 4-col; door =
+    113035 bank 2230 frame 11); plane 1 draws over plane 0 (the staircase hides a door there).  Doors = invisible 70102
+    devices (A[0] zone) in front of the panel (x + 32 px).  Map NPC record: A[1] handle, A[4] facing (≠ 0 = LEFT), A[6]
+    presence (9 = always).  The SE talk list is world **+0x3794** (enold +0x2790); its probe = a 40 px strip from 8 px in
+    front of the leader (`body_probe_rect`), so the leader must FACE the NPC.
+  - **Bad SE symbol fixed:** `script_end` ense-en/jp were the crosswalk's 0x4981c0 / 0x498100 (a story-flag lookup it
+    calls) — calling it faulted at the end of the first talk.  Real: 0x497bd0 / 0x497b10 (enold prologue, unique;
+    `symgen_manual.tsv`).  Port-repo finding owed (crosswalk TSV).
+  - **Testing note:** under wine the flip rate (~200 fps) is far above the game's input poll — hold movie keys ≥ 10 flips
+    (`L*30` to turn, `V*10` to talk); 1–6-flip taps silently drop.  V (ring 38) = talk; Enter advances messages.
+  - **Gate:** `tests/testroom.sh R` (a `--mods testroom` run, continued) — house overlay hit, door → 210142, 2 talks run +
+    end, back through the door.
 - **Next:** more `tests/*.lua` → a fuller Windows runner (`tools/win/` is launch + Lua only: no `--saves` isolation — it uses the real install + Steam saves, backs up / restores `version.dll` by hand) (own scheduled task, never `oss-rhost-runner`).  Host tests (`make -C core tests`) still
   assume WSL interop — port them to run under wine.
 

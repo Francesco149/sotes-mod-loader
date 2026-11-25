@@ -943,7 +943,7 @@ const sym_row SYM_ROWS[] = {
     { "screen_step", SYM_FUNC, { 0x00499ab0u, 0x004949e0u, 0x00494920u }, { 0xab9204c2u, 0x94e2fa41u, 0x94e2fa41u }, { 1356, 1350, 1350 }, { 3, 1, 1 } },
     { "script_begin", SYM_FUNC, { 0x0049cb60u, 0x004979b0u, 0x004978f0u }, { 0xa5a46ef5u, 0xa5a46ef5u, 0xa5a46ef5u }, { 527, 533, 533 }, { 3, 1, 1 } },
     { "script_cast_add", SYM_FUNC, { 0x00401f50u, 0x004020a0u, 0x004020f0u }, { 0x8a5c09f2u, 0x8a5c09f2u, 0x8a5c09f2u }, { 222, 222, 222 }, { 3, 2, 2 } },
-    { "script_end", SYM_FUNC, { 0x0049cd70u, 0x004981c0u, 0x00498100u }, { 0xb3bc7a84u, 0x7abfe1f4u, 0xa097bb31u }, { 254, 230, 230 }, { 3, 1, 1 } },
+    { "script_end", SYM_FUNC, { 0x0049cd70u, 0x00497bd0u, 0x00497b10u }, { 0xb3bc7a84u, 0x29e6e845u, 0x4b19c4dfu }, { 254, 324, 324 }, { 3, 3, 3 } },
     { "script_engine", SYM_FUNC, { 0x0040c380u, 0x0040a0c0u, 0x0040a110u }, { 0x97ef846du, 0x2b7f0645u, 0xc0204340u }, { 5077, 5270, 5270 }, { 3, 1, 1 } },
     { "script_flag", SYM_FUNC, { 0x0041e2f0u, 0x00419310u, 0x00419300u }, { 0xcdb155d3u, 0xcdb155d3u, 0xcdb155d3u }, { 66, 66, 66 }, { 3, 2, 2 } },
     { "script_flag_set", SYM_FUNC, { 0x0041d190u, 0x00418180u, 0x00418170u }, { 0xd2e5310bu, 0xd2e5310bu, 0xd2e5310bu }, { 779, 779, 779 }, { 3, 2, 2 } },

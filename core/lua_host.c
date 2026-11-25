@@ -19,6 +19,7 @@
 #include "mem.h"
 #include "game_bindings.h"
 #include "executor.h"
+#include "resov.h"
 #include "hooks.h"
 #include "ui.h"
 #include "config.h"
@@ -125,6 +126,7 @@ static void push_mod_table(lua_State *L, const char *name, const char *dir) {
     hooks_push_table(L);                     lua_setfield(L, -2, "hook");     // chained hook registry (P3)
     ui_push_table(L);                        lua_setfield(L, -2, "ui");       // shared ImGui UI host (P5)
     sym_push_lua(L);                         lua_setfield(L, -2, "sym");      // engine symbols by name (v2)
+    resov_push_lua(L);                       lua_setfield(L, -2, "res");      // resource overlay (api 1.7)
     lua_pushstring(L, sym_edition_tag());    lua_setfield(L, -2, "edition");  // "enold" / "ense-en" / "ense-jp"
     lua_pushcfunction(L, l_frame);           lua_setfield(L, -2, "frame");    // presented frames so far
     lua_newtable(L);

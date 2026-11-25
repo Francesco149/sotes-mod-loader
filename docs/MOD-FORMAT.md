@@ -54,6 +54,22 @@ mod.mem.scan("48 8B ?? C3")                            -> addr | nil   (AOB over
 mod.mem.module(name) -> base | nil   mod.mem.base() -> exe base   mod.mem.reloc(va) -> va + ASLR delta
 ```
 
+**`mod.res`** (api 1.7) — the **resource overlay**: add or replace the game's PE resources in memory.  The loader
+patches the EXE's imports of `FindResourceA` / `LoadResource` / `SizeofResource` / `LockResource` (on the first
+`set` only), so the game's own loaders — maps (`load_room` → `FindResourceA(map_module, id, "DATA")`), sprite
+sheets (the bitmap session, `"DATA"` in sotesd.dll) — parse what a mod serves as theirs.  Nothing touches disk;
+build the bytes from the user's own data (`read`) — never ship game bytes in a mod.
+
+```
+mod.res.read(type, id[, hmod])        -> string | nil  the REAL resource (bypasses the overlay); hmod default = the exe
+mod.res.set(type, id, data[, hmod])   -> bool          add / replace (hmod nil = any module); data copied
+mod.res.clear(type, id[, hmod])       -> bool
+mod.res.list()                        -> {{type, id, hmod, size, hits}, ...}   hits = times the game found it
+mod.res.hits(type, id[, hmod])        -> n
+-- type / id: a number (MAKEINTRESOURCE) or a name ("DATA").  Map data module: mod.mem.read_u32(mod.sym.va("map_module"))
+-- (0 = the exe).  Example (../sotes-mods/mods/testroom): parse DATA 1025 (Arche's house), add a door, set it back.
+```
+
 `patch` is the **arbitrary-patching** escape hatch for RE that isn't yet a semantic loader op; once
 a technique is RE'd + generalized it graduates to a `mod.game.*` op (below) and mods stop patching by
 hand.
@@ -101,6 +117,16 @@ mod.game.map.warp(key[, gate[, force]]) -> true | nil, why   warp the party (gat
                                 --   (the countdown armed at 1).  Refused: unknown room, a room without map data
                                 --   (retail would exit "The map data is not found."), an event running, a warp running.
 mod.game.map.warp_status()      -> 'idle' | 'requested' | 'warping', key
+mod.game.map.add_room{key=, like=, map=} -> true | nil, why   (api 1.7) a NEW room: a copy of room `like`'s record
+                                --   (kind, tileset, town flag, BGM, name) with id `key` and map DATA id `map` (u16;
+                                --   serve its bytes with mod.res.set("DATA", map, ...)), no exits.  The area table is
+                                --   rebuilt each session, so the loader re-applies additions on every area_find (a
+                                --   save made in the room loads while the mod is installed).  Keep `like` in the
+                                --   same area (key / 1000) so area state carries.
+mod.game.map.set_exit(room, zone, to[, gate]) -> true | nil, why   (api 1.7) room's exit for `zone` → room `to`,
+                                --   arriving at its zone actor `gate` (default 1).  The zone needs a zone device in
+                                --   the room's MAP (70101 walk-in, 70102 press-Up door; A[0] = zone) — the arrival
+                                --   room needs one with id `gate`, or retail exits "The gate is not found."
 mod.game.map.event()            -> bool    an event script owns the game (cutscene / conversation)
 mod.game.items.give(id[, count]) -> index | nil, why   the engine's room_item_add (its capacity rules; count <= 0 =
                                 --   the item's default); no message

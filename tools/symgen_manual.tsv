@@ -41,3 +41,8 @@ stat_table        data ense-jp  0x65c3a8
 sound_registrar   func enold    0x57b280
 sound_registrar   func ense-en  0x59b3b0
 sound_registrar   func ense-jp  0x599ab0
+# script_end (2026-11-25): the crosswalk's SE pick (0x4981c0 / 0x498100) is a different function (a story-flag lookup
+# on this +0x40ac) — calling it as script_end faulted.  The real one = enold's prologue (51 53 55 56 8b 31 89 4c 24 0c
+# 8b 0d .. 33 db 57 3b cb 74 .. 53 6a 32 53 e8), unique per edition.
+script_end        func ense-en  0x497bd0
+script_end        func ense-jp  0x497b10
