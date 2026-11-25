@@ -148,7 +148,8 @@ builds the loader and refreshes it (`tools/win/deploy.ps1` on the box: first run
 a running game's `version.dll` is renamed aside, the new one applies next launch).  **Auto:** the post-commit hook
 (`tools/git-hooks`, `core.hooksPath`; `../sotes-mods/.git/hooks/post-commit` execs the same, local only) runs it in the
 background when a commit touches `core/` / `mods/` / `loader.toml` / the deploy scripts; log `.git/deploy-modded.log`;
-opt out `DEPLOY_MODDED=0`.  `MODS="trainer dashboard autoload"` to ship more.  It ships `tools/win/modded.oss_loader.cfg`
+opt out `DEPLOY_MODDED=0`.  **Exe = the UNPACKED EN exe** (`sotes_en.exe`; the SteamStub one kept as `sotes_en.steam.exe`) — runs
+without Steam (Steam refuses while the account plays on another machine); uploaded only when its hash differs; `UNPACKED=0` keeps the packed one.  `MODS="trainer dashboard autoload"` to ship more.  It ships `tools/win/modded.oss_loader.cfg`
 (only when absent): windowed takeover = ONE window (the game's own, drawn by the loader; mod panels overlay it, F10),
 starting at 1x, resizes snapping to whole multiples, integer-scaled present.  Looking at it: task **`sml-win-shot`**
 (`shot.ps1`, PrintWindow of each sotes window → `C:\sml-win\shot-N.png` + sizes in `shot.txt`; a screen grab would

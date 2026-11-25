@@ -36,6 +36,14 @@ if (Test-Path "$pay\version.dll") {
 }
 if (Test-Path "$pay\oss_loader.cfg") { if (-not (Test-Path "$dst\oss_loader.cfg")) { Copy-Item "$pay\oss_loader.cfg" $dst } }
 
+# exe: the unpacked EN exe (no SteamStub -> no Steam needed) as sotes_en.exe; the packed one kept as sotes_en.steam.exe
+if (Test-Path "$pay\sotes_en.exe") {
+  if (-not (Test-Path "$dst\sotes_en.steam.exe")) { Rename-Item "$dst\sotes_en.exe" 'sotes_en.steam.exe' }
+  else { Remove-Item "$dst\sotes_en.exe" -ea 0 }
+  Copy-Item "$pay\sotes_en.exe" "$dst\sotes_en.exe"
+  'exe: unpacked sotes_en.exe (SteamStub copy: sotes_en.steam.exe)'
+}
+
 # mods
 New-Item -ItemType Directory -Force "$dst\mods" | Out-Null
 foreach ($m in Get-ChildItem "$pay\mods" -Directory -ea 0) {

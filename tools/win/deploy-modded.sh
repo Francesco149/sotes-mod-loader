@@ -4,6 +4,8 @@
 #
 #   tools/win/deploy-modded.sh                 # build + deploy loader + $MODS
 #   MODS="trainer dashboard autoload" ...      # which ../sotes-mods mods (default: trainer dashboard)
+#   UNPACKED=0 ...                             # keep the SteamStub exe (default: the unpacked EN exe runs as
+#                                              # sotes_en.exe — no Steam needed, e.g. Steam busy on another machine)
 #
 # Run by the post-commit hooks of this repo and ../sotes-mods (tools/git-hooks/post-commit, in the background, log
 # .git/deploy-modded.log of the committing repo).  One deploy at a time (flock).  ssh rules for that box: NO client
@@ -12,6 +14,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 MODS_REPO="${MODS_REPO:-$ROOT/../sotes-mods}"
 MODS="${MODS:-trainer dashboard}"
+UNPACKED="${UNPACKED:-1}"
+UNPACKED_EXE="${UNPACKED_EXE:-/mnt/ephemeral/opensummoners/game/ense/sotes_en.unpacked.exe}"
 exec 9>"${XDG_RUNTIME_DIR:-/tmp}/sotes-deploy-modded.lock"
 flock 9
 
@@ -32,6 +36,12 @@ for m in $MODS; do
   [ -d "$MODS_REPO/mods/$m" ] && cp -r "$MODS_REPO/mods/$m" "$STAGE/payload/mods/" || echo ">> skip $m (not in $MODS_REPO/mods)"
 done
 cp "$ROOT/tools/win/deploy.ps1" "$STAGE/"
+if [ "$UNPACKED" = 1 ] && [ -f "$UNPACKED_EXE" ]; then
+  # 72 MB: upload only when the copy's sotes_en.exe differs (deploy.ps1 swaps it in, the SteamStub one kept aside)
+  want="$(sha256sum "$UNPACKED_EXE" | cut -d' ' -f1)"
+  have="$(ssh "$HOST" '(Get-FileHash C:\sotes-modded\sotes_en.exe -ea 0).Hash' 2>/dev/null | tr -d '\r' | tr A-F a-f || true)"
+  if [ "$have" != "$want" ]; then cp "$UNPACKED_EXE" "$STAGE/payload/sotes_en.exe"; echo ">> + unpacked sotes_en.exe"; fi
+fi
 
 echo ">> upload to $HOST (mods: $MODS)"
 ssh "$HOST" 'New-Item -ItemType Directory -Force C:\sml-win | Out-Null; Remove-Item -Recurse -Force C:\sml-win\payload -ea 0' 2>&1 | grep -v '^\*\*' || true
