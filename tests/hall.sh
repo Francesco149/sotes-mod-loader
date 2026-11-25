@@ -51,7 +51,7 @@ if [ "$(L 'return mod.game.map.get().area')" != 210142 ]; then
   L 'return mod.game.map.warp(210142, 2, true)' >/dev/null
   W 'return mod.game.map.get().area == 210142 and not mod.game.map.event()' || fail "hall never loaded"
 fi
-[ "$(L 'return mod.res.hits("DATA", 4001) >= 1')" = true ] || fail "hall: DATA 4001 not served by the overlay"
+[ "$(L 'return mod.game.maps.hits(4001) >= 1')" = true ] || fail "hall: DATA 4001 not served by the overlay"
 P ".*30"; shot hall.png
 # every cast member stands ON the floor: body bottom = the leader's (a record's y = the top of the sprite cell, whose
 # height differs per character — one y for all left the guard and the witch a tile deep)

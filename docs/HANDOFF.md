@@ -274,6 +274,34 @@ v2 so far (commits `10a1efe`, `b5b3b2b`, `6cb69d2`):
   - **Gates:** `tests/hall.sh` (Bit from a map record with code 50990, cubes = types 51990 / 51991, banks ≥ the retail
     count, the dance 12.7 s) + **`tests/banks.sh`** (40 new banks, each drawn on the leader; a retail one; a room change) —
     PASS enold / ense-en / ense-jp.
+- **First-time setup + shared content modules + the Recettear crossover (api 1.11, 2026-11-25)** — `../sotes-mods/mods/recettear`
+  ("Recettear: Tonkiness Branch"): a door added to the storeroom (210141, widened 4 columns) → a new shop room 210146 where
+  Recette + Tear (their own sprites, composed from Recettear's 32 px cell atlases via `formdata.bin` + `idx/*.idx`, side
+  view; their own portraits in the dialogue box; Recettear's shop theme) run a branch: wholesale stock from Tear, customers
+  walk in, a haggle (max % per customer kind, near-pin, counter-offers, combos), merchant xp / levels, a 4-instalment loan,
+  foot traffic earned by visiting rooms, a cellar (210147) with Recettear's slime / mushroom as monster types.  State =
+  story flags 9910000xx / 992000000 + item id.  Loader pieces (MOD-FORMAT "First-time setup", "Shared content modules"):
+  - **`core/setup.c`** — `setup.lua` + `[setup]`: DllMain checks for a pending setup (files only) and then hooks
+    CreateWindowEx / DialogBoxParam / CreateDialogParam (A + W) so the MAIN thread waits in its first window call; the
+    loader thread shows the consent dialog (MessageBoxW, default No), runs setup.lua behind a progress window, records
+    `mod_data\<mod>\setup.state`, opens the gate.  No pending setup = no hook.  `setup_trust=` in oss_loader.cfg = no dialog
+    (tests).  Looked at under wine (dialog, progress); 21 s for the Recettear conversion in interpreted Lua.
+  - **`core/lua/fs.lua`** (mod.fs, mod.steam), **`image.lua`** (mod.image), **`maps.lua`** (mod.game.maps: testroom's Map
+    code promoted; composable edits; overlays for the map module only), **`core/music.c`** + sound.room_music, 24-bit
+    banks + portraits in s:say, catalog price / icon.  testroom 0.4.1 uses mod.game.maps; both mods load together
+    (`sml up --mods testroom,recettear`): different maps, rooms, DATA ids, handles, codes.
+  - **RE facts (port-repo findings owed):** resource ids collide across modules (map DATA 1026 in the exe vs a sheet in
+    sotesd.dll: an any-module overlay broke the sheet, "Failed Surface Load'1026") — resov now treats NULL and the exe
+    handle as one module; the dialogue portrait = runner +0x84 bank / +0x88 frame (same on SE), box 408 wide, text 36
+    cols; portrait banks = 24-bit sheets of 160 x 176 cells (SE banks 447.., like any other bank: slot_clone works);
+    slot_clone leaves +0x38 = 0 and the frame array is sized from the sheet at decode, so only the trim records limit a
+    clone's cell count; item def +0x60 = price (CP), +0x54 = icon, both editions; bgm_pick → 0 = the engine's own fade
+    to silence; house map 1025 ground floor: cols 21–28 are behind the staircase (plane 1), no free 4-column wall.
+  - **wine:** dialogue text looks unevenly spaced — the engine draws Courier New per character at a 7 px pitch and the
+    prefix has no Courier New (fc-list: none), so a substitute's glyphs sit in 7 px cells.  Not a mod / encoding issue;
+    check on Windows.
+  - **Not done:** enold / ense-jp runs of the mod (ense-en only), selling the player's own loot (needs an item-remove
+    op), new item definitions (Recettear's items + icons), more Recettear cast (sprites for 15 are converted).
 - **Next (modding PoC):** a monster with its own skills / projectiles (skill records + their clips), a portrait / voice in s:say, camera shake, Windows hand-play of the hall.
 - **Next:** more `tests/*.lua` → a fuller Windows runner (`tools/win/` is launch + Lua only: no `--saves` isolation — it uses the real install + Steam saves, backs up / restores `version.dll` by hand) (own scheduled task, never `oss-rhost-runner`).  Host tests (`make -C core tests`) still
   assume WSL interop — port them to run under wine.

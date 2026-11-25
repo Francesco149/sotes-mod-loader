@@ -21,7 +21,7 @@ W 'return not mod.game.map.event()' || fail "an event never ended"
 # 1. house
 [ "$(L 'return mod.game.map.warp(210140, 1, true)')" = true ] || fail "warp to the house refused"
 W 'return mod.game.map.get().area == 210140 and not mod.game.map.event()' || fail "house never loaded"
-[ "$(L 'return mod.res.hits("DATA", 1025) >= 1')" = true ] || fail "house: the game did not load the overlay's DATA 1025"
+[ "$(L 'return mod.game.maps.hits(1025) >= 1')" = true ] || fail "house: the game did not load the overlay's DATA 1025"
 [ "$(L 'for _, e in ipairs(mod.game.map.room(210140).exits) do if e.gate == 4 and e.to == 210142 then return true end end return false')" = true ] \
   || fail "house: no zone-4 exit"
 echo "    house: DATA 1025 from the overlay, zone 4 → 210142"
@@ -31,7 +31,7 @@ L 'mod.game.coordinates.set(nil, 6400, 52000) return true' >/dev/null
 P ".*40"; shot house.png
 P "U*20 .*30"
 W 'return mod.game.map.get().area == 210142 and not mod.game.map.event()' || fail "door: room 210142 never loaded (area $(L 'return mod.game.map.get().area'))"
-[ "$(L 'return mod.res.hits("DATA", 4001) >= 1')" = true ] || fail "room: DATA 4001 not loaded from the overlay"
+[ "$(L 'return mod.game.maps.hits(4001) >= 1')" = true ] || fail "room: DATA 4001 not loaded from the overlay"
 P ".*40"; shot room.png
 echo "    door: Up at the new door → 210142 (DATA 4001)"
 

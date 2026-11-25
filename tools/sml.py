@@ -177,8 +177,15 @@ def cmd_up(a):
         m = json.load(open(os.path.join(d, "run.json")))
         if alive(m["game_pid"]):
             die(f"run {a.run} is up (sml down {a.run})")
+    keep = None
+    if getattr(a, "keep_data", False) and os.path.isdir(os.path.join(d, "mod_data")):
+        keep = d.rstrip("/") + ".mod_data.keep"       # mods' setup output (mod.data_dir) survives the re-up
+        shutil.rmtree(keep, ignore_errors=True)
+        os.rename(os.path.join(d, "mod_data"), keep)
     shutil.rmtree(d, ignore_errors=True)
     os.makedirs(os.path.join(d, "mods"))
+    if keep:
+        os.rename(keep, os.path.join(d, "mod_data"))
     for f in ASSETS:
         src = os.path.join(ed["dir"], f)
         if os.path.exists(src):
@@ -462,6 +469,7 @@ def main():
     p = sp.add_parser("up"); p.add_argument("run"); p.add_argument("--edition", default="ense-en")
     p.add_argument("--mods"); p.add_argument("--saves", default="steam"); p.add_argument("--cfg", nargs="*")
     p.add_argument("--keep-config", action="store_true", help="also copy config.dat (settings + the last title pick)")
+    p.add_argument("--keep-data", action="store_true", help="keep the run's mod_data (mods' first-time setup output) from the previous up")
     p.add_argument("--timeout", type=float, default=90); p.set_defaults(f=cmd_up)
     p = sp.add_parser("ping"); p.add_argument("run"); p.set_defaults(f=cmd_ping)
     p = sp.add_parser("lua"); p.add_argument("run"); p.add_argument("code", nargs="*"); p.add_argument("-f", "--file")

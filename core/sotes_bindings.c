@@ -801,6 +801,7 @@ static int l_items_list(lua_State *L) {
         if (def && mem_readable((void *)(def + 4), 64)) {
             char nm[65]; memcpy(nm, (const void *)(def + 4), 64); nm[64] = 0;
             lua_pushstring(L, nm);                     lua_setfield(L, -2, "name");
+            lua_pushinteger(L, rdi(def + 0x60));       lua_setfield(L, -2, "price");
         }
         lua_rawseti(L, -2, (int)i + 1);
     }
@@ -857,6 +858,9 @@ static void catalog_push(lua_State *L, const sotes_layout *l, uintptr_t t, uint3
         lua_newtable(L);
         lua_pushinteger(L, id); lua_setfield(L, -2, "id");
         lua_pushstring(L, nm);  lua_setfield(L, -2, "name");
+        // +0x54 the icon cell, +0x60 the shop price in CP (both editions; 0 = not for sale: story items)   [api 1.11]
+        lua_pushinteger(L, rdi(d + 0x60)); lua_setfield(L, -2, "price");
+        lua_pushinteger(L, rdi(d + 0x54)); lua_setfield(L, -2, "icon");
         lua_rawseti(L, -2, ++*k);
     }
 }

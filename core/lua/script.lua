@@ -52,7 +52,15 @@
 --   sound.wav(samples, rate) -> bytes   16-bit mono PCM from a Lua array of -1..1 floats
 --   sound.slots() -> n
 --   sound.status(id) -> {loaded, voices, playing}   (a check for tests: did the WAVE load, is a buffer playing)
-local hook, mem, sym, log, game, res, edition_fn = ...
+--
+-- MUSIC (api 1.11).  The game's BGM is picked by the room loop every frame (bgm_pick: the room's kind, its record's
+-- override, a fixed id) and compared with the track that plays; a different answer makes the engine cross-fade.  A
+-- mod's track is a PCM .wav FILE (core/music.c: a DirectSound stream of the loader's own); while it plays, a typed
+-- hook answers bgm_pick with 0 — the engine fades its own music out, and brings the room's back when ours stops.
+--   sound.room_music(room, file | nil[, {loop = true, volume = 0}])   `file` is this room's music while the party is there
+--   sound.music(file | nil[, opts])       play `file` everywhere, until music(nil) (then the rooms' own again)
+--   sound.music_status() -> {file, playing, position, volume} | nil
+local hook, mem, sym, log, game, res, edition_fn, music, on_frame = ...
 local ffi = require('ffi')
 
 local ED = {
@@ -205,10 +213,15 @@ function S:say(text, o)
   o = o or {}
   local actor = o.actor == 'leader' and P.script_leader(self.ev) or o.actor or self.actor
   local name = o.name or self.name
+  -- portrait = a sprite bank of 160 x 176 busts (sprites.new_bank on a portrait bank), frame = its cell: the runner's
+  -- own portrait fields (+0x84 bank, +0x88 frame — what scene_msg fills from the voice table for retail's cast)
+  local bank = o.portrait or self.portrait
+  local wide = (o.face or 0) ~= 0 or (bank or 0) ~= 0
   local r
-  for k, page in ipairs(wrap_pages(text, (o.face or 0) ~= 0 and 36 or 44, 3)) do
+  for k, page in ipairs(wrap_pages(text, wide and 36 or 44, 3)) do
     need('scene_msg')(self.ev, 0, actor, page, 0, 1, (o.own_name or not name) and 1 or 0, name,
       k == 1 and o.voice or 0, 0, o.face or 0)
+    if (bank or 0) ~= 0 then w32(self.ev, 0x84, bank); w16(self.ev, 0x88, o.frame or self.frame or 0) end
     r = wait(self)
   end
   return r
@@ -560,6 +573,54 @@ function sound.wav(samples, rate)
   return 'RIFF' .. le32(36 + #data) .. 'WAVE' .. 'fmt ' .. le32(16) .. le16(1) .. le16(1) .. le32(rate) .. le32(rate * 2)
       .. le16(2) .. le16(16) .. 'data' .. le32(#data) .. data
 end
+
+-- ── music ────────────────────────────────────────────────────────────────────────────────────────────────────────
+local mus = { rooms = {}, forced = nil, cur = nil, armed = false, bad = {} }
+local function music_arm()
+  if mus.armed then return true end
+  local va = sym.va('bgm_pick')
+  if not (va and music and on_frame) then return nil, 'music is unavailable on this build' end
+  hook.typed(va, 'uint16_t __thiscall(void *)', { post = function(ctx) if mus.cur then ctx.ret = 0 end end })
+  on_frame(function()
+    local m = game.map and game.map.get and game.map.get()
+    local want = m and (mus.forced or mus.rooms[m.area]) or nil
+    if want and mus.bad[want.file] then want = nil end
+    if want == mus.cur then return end
+    if want then
+      local ok, err = music.play(want.file, want.loop ~= false, want.volume or 0)
+      if not ok then
+        mus.bad[want.file] = true
+        log('[music] ' .. tostring(want.file) .. ': ' .. tostring(err))
+        want = nil
+        if mus.cur then music.stop() end
+      end
+    else
+      music.stop()
+    end
+    mus.cur = want
+  end)
+  mus.armed = true
+  return true
+end
+local function track(file, o)
+  if file == nil then return nil end
+  o = o or {}
+  return { file = tostring(file), loop = o.loop, volume = o.volume }
+end
+function sound.room_music(room, file, o)
+  assert(type(room) == 'number', 'sound.room_music(room, file[, opts])')
+  local ok, err = music_arm()
+  if not ok then return nil, err end
+  mus.rooms[room] = track(file, o)
+  return true
+end
+function sound.music(file, o)
+  local ok, err = music_arm()
+  if not ok then return nil, err end
+  mus.forced = track(file, o)
+  return true
+end
+function sound.music_status() return music and music.status() or nil end
 
 game.script, game.sound = game.script or {}, game.sound or {}
 for k, v in pairs(script) do game.script[k] = v end

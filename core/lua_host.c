@@ -23,6 +23,7 @@
 #include "hooks.h"
 #include "ui.h"
 #include "config.h"
+#include "setup.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -100,6 +101,7 @@ static void title_lua_init(lua_State *L) {
 // mod.game.script / sound — core/lua/script.lua (typed hooks on script_engine + touch_pass, armed on first use:
 // nothing runs per frame unless a mod uses the API).
 extern const char oss_lua_script[];
+void music_push_lua(lua_State *L);
 static int l_edition_tag(lua_State *L) { lua_pushstring(L, sym_edition_tag()); return 1; }
 static void script_lua_init(lua_State *L) {
     if (luaL_loadstring(L, oss_lua_script) != 0) { ml_log("[script] script.lua: %s", lua_tostring(L, -1)); lua_pop(L, 1); return; }
@@ -110,7 +112,9 @@ static void script_lua_init(lua_State *L) {
     gb_push_lua(L);
     resov_push_lua(L);
     lua_pushcfunction(L, l_edition_tag);   // the edition is detected after this runs: resolved on first use
-    if (lua_pcall(L, 7, 1, 0) != 0) { ml_log("[script] script.lua: %s", lua_tostring(L, -1)); lua_pop(L, 1); return; }
+    music_push_lua(L);                     // the C half of sound.music (core/music.c)
+    exec_push_on_frame(L);                 // its room check runs per presented frame (title included)
+    if (lua_pcall(L, 9, 1, 0) != 0) { ml_log("[script] script.lua: %s", lua_tostring(L, -1)); lua_pop(L, 1); return; }
     lua_pop(L, 1);   // install(): called by the API itself
 }
 // mod.game.sprites — core/lua/sprites.lua (custom sheets in new sprite banks, clips, a character's look; no hooks)
@@ -151,6 +155,28 @@ static void sprites_lua_init(lua_State *L) {
     lua_pushcfunction(L, l_banksites);
     hooks_push_table(L);
     if (lua_pcall(L, 8, 0, 0) != 0) { ml_log("[sprites] sprites.lua: %s", lua_tostring(L, -1)); lua_pop(L, 1); }
+}
+// Pure-Lua shared modules (core/lua/fs.lua → mod.fs + mod.steam, core/lua/image.lua → mod.image): each chunk is
+// called once with (log) and returns a table of {name = module}; every mod's `mod` table gets the same modules.
+extern const char oss_lua_fs[], oss_lua_image[], oss_lua_maps[];
+static struct { char name[16]; int ref; } g_lib[8];
+static int g_nlib;
+static void lib_lua_init(lua_State *L, const char *what, const char *src, int nargs_extra) {
+    if (luaL_loadstring(L, src) != 0) { ml_log("[lua] %s: %s", what, lua_tostring(L, -1)); lua_pop(L, 1); return; }
+    lua_pushcfunction(L, l_title_log);
+    int na = 1;
+    if (nargs_extra) { mem_push_lua(L); sym_push_lua(L); gb_push_lua(L); resov_push_lua(L); na = 5; }
+    if (lua_pcall(L, na, 1, 0) != 0) { ml_log("[lua] %s: %s", what, lua_tostring(L, -1)); lua_pop(L, 1); return; }
+    if (lua_istable(L, -1)) {
+        lua_pushnil(L);
+        while (lua_next(L, -2)) {
+            if (lua_type(L, -2) == LUA_TSTRING && g_nlib < 8) {
+                _snprintf(g_lib[g_nlib].name, sizeof g_lib[0].name, "%s", lua_tostring(L, -2));
+                g_lib[g_nlib++].ref = luaL_ref(L, LUA_REGISTRYINDEX);   // pops the value
+            } else lua_pop(L, 1);
+        }
+    }
+    lua_pop(L, 1);
 }
 static int l_frame(lua_State *L) { lua_pushnumber(L, exec_frame()); return 1; }
 static int l_screen_ctx(lua_State *L) { lua_pushnumber(L, (lua_Number)(uintptr_t)exec_screen_ctx()); return 1; }
@@ -193,6 +219,16 @@ static void push_mod_table(lua_State *L, const char *name, const char *dir) {
     lua_pushcfunction(L, l_shot);            lua_setfield(L, -2, "shot");
     lua_pushcfunction(L, l_screen_ctx);      lua_setfield(L, -2, "ctx");
     lua_setfield(L, -2, "screen");
+    {   // mod.data_dir: <game>\mod_data\<name>\ — the mod's own writable folder (setup output, caches); mod.setup
+        char dd[MAX_PATH];
+        setup_data_dir(name, dd, MAX_PATH);
+        lua_pushstring(L, dd);               lua_setfield(L, -2, "data_dir");
+        setup_push_lua(L, name, dir);        lua_setfield(L, -2, "setup");
+    }
+    for (int i = 0; i < g_nlib; i++) {       // the pure-Lua shared modules: mod.fs / mod.steam / mod.image
+        lua_rawgeti(L, LUA_REGISTRYINDEX, g_lib[i].ref);
+        lua_setfield(L, -2, g_lib[i].name);
+    }
     if (g_input_ref != LUA_NOREF) { lua_rawgeti(L, LUA_REGISTRYINDEX, g_input_ref); lua_setfield(L, -2, "input"); }  // mod.input (shared)                                            // mod.screen.shot(path) / .ctx()
 
     // mod.config — the mod's own settings, schema from <dir>\mod.toml [config], values namespaced in
@@ -351,6 +387,9 @@ int lh_init(void) {
     script_lua_init(g_L);       // mod.game.script / sound (core/lua/script.lua)
     sprites_lua_init(g_L);      // mod.game.sprites (core/lua/sprites.lua)
     config_lua_init(g_L);       // the mod.config factory (mod.toml [config] schema + oss_mods.cfg)
+    lib_lua_init(g_L, "fs.lua", oss_lua_fs, 0);        // mod.fs / mod.steam
+    lib_lua_init(g_L, "image.lua", oss_lua_image, 0);  // mod.image
+    lib_lua_init(g_L, "maps.lua", oss_lua_maps, 1);    // mod.game.maps (map DATA parse / edit / compose)
 
     ml_log("[lua] LuaJIT up (%s, JIT off, FFI on)", LUAJIT_VERSION);
     return 0;
@@ -381,6 +420,30 @@ void lh_run_mod(const char *name, const char *dir, const char *init_lua_path) {
         return;
     }
     ml_log("[lua] mod ok: %s", name);
+}
+
+// Run a mod's setup.lua (loader thread, before the executor arms: no other Lua runs).  1 = ok; else `err`.
+int lh_run_setup(const char *name, const char *dir, const char *setup_path, char *err, unsigned nerr) {
+    if (err && nerr) err[0] = 0;
+    if (!g_L) { if (err) _snprintf(err, nerr, "the Lua host is down"); return 0; }
+    if (!mod_api_ok(name, dir)) { if (err) _snprintf(err, nerr, "the mod needs a different loader API version (see the log)"); return 0; }
+    if (luaL_loadfile(g_L, setup_path) != 0) {
+        if (err) _snprintf(err, nerr, "%s", lua_tostring(g_L, -1));
+        lua_pop(g_L, 1);
+        return 0;
+    }
+    lh_push_env(g_L, name, dir);
+    lua_setfenv(g_L, -2);
+    if (lua_pcall(g_L, 0, 1, 0) != 0) {
+        if (err) _snprintf(err, nerr, "%s", lua_tostring(g_L, -1));
+        lua_pop(g_L, 1);
+        return 0;
+    }
+    int ok = 1;                                           // setup.lua may `return false, "why"`… or nil, "why" via error()
+    if (lua_isboolean(g_L, -1) && !lua_toboolean(g_L, -1)) { ok = 0; if (err) _snprintf(err, nerr, "the setup reported a failure"); }
+    lua_pop(g_L, 1);
+    lua_gc(g_L, LUA_GCCOLLECT, 0);                        // setup works on big buffers: give them back before the game runs
+    return ok;
 }
 
 void lh_push_env(lua_State *L, const char *name, const char *dir) {

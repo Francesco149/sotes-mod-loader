@@ -22,6 +22,9 @@ int  lh_init(void);
 // load/run error is caught + logged; the mod is flagged, the loader continues.
 void lh_run_mod(const char *name, const char *dir, const char *init_lua_path);
 
+// Run a mod's first-time setup.lua in the mod's env (setup.c; loader thread).  1 = finished without error.
+int  lh_run_setup(const char *name, const char *dir, const char *setup_path, char *err, unsigned nerr);
+
 struct lua_State;
 // Push a fresh sandbox env (globals fall through to _G) whose `mod` is a per-mod table for `name`.
 // Used by lh_run_mod and the dev server's persistent env.

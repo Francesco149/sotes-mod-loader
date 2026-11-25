@@ -30,6 +30,7 @@
 #include "prof.h"
 #include "syms.h"
 #include "devserver.h"
+#include "setup.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -149,6 +150,8 @@ static int load_lua_dir(const char *dirname) {
     _snprintf(moddir, MAX_PATH, "%smods\\%s", g_gamedir, dirname);
     _snprintf(init,   MAX_PATH, "%s\\init.lua", moddir);
     if (GetFileAttributesA(init) == INVALID_FILE_ATTRIBUTES) return 0;  // not a Lua mod
+    // First-time setup (setup.lua): consent dialog → the step → recorded.  Declined / failed = no mod this session.
+    if (!setup_mod(dirname, moddir)) { ml_log("[loader] mods\\%s skipped (first-time setup not completed)", dirname); return 0; }
     exec_defer_mod(dirname, moddir, init);
     return 1;
 }
@@ -212,6 +215,8 @@ static DWORD WINAPI loader_thread(void *unused) {
         FindClose(h);
     }
 
+    setup_gate_open();   // every first-time setup is settled: the game's main thread may open its first window
+
     // Arm the main-thread executor: Lua mods init on the ENGINE thread at the first
     // safepoint.  If there's no game window / no profile, fall back to running them here
     // on the loader thread (degraded, but non-game hosts + the test stub still work).
@@ -263,6 +268,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID reserved) {
         int have_mods = (ma != INVALID_FILE_ATTRIBUTES) && (ma & FILE_ATTRIBUTE_DIRECTORY);
         int have_cfg  = GetFileAttributesA(cfgpath) != INVALID_FILE_ATTRIBUTES;
         if (have_mods || g_is_sotes || have_cfg) {
+            if (have_mods) setup_gate_arm_if_needed(GetCurrentThreadId());   // a pending mod setup holds the game's first window
             CreateThread(NULL, 0, loader_thread, NULL, 0, NULL);
         } else {
             ml_log("[loader] not a known game, no mods\\, no cfg — nothing to do");

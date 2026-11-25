@@ -175,6 +175,35 @@ function sprites.encode(img, template)
   return head .. ffi.string(buf, stride * img.h)
 end
 
+-- a mod.image (RGBA) → a 24-bit sheet on a 24-bit template (the dialogue portraits, parallax planes): BGR rows
+-- bottom-up, transparent pixels (alpha < 128) in the template family's colour key, magenta
+function sprites.encode24(img, template)
+  local h, err = header_of(template or '')
+  if not h then return nil, err or 'encode24: needs a 24-bit template sheet' end
+  if h.bpp ~= 24 then return nil, ('encode24: the template is a %d-bit sheet'):format(h.bpp) end
+  local head = template:sub(1, h.pix)
+  local function put(s, off, bytes) return s:sub(1, off) .. bytes .. s:sub(off + #bytes + 1) end
+  head = put(head, h.wo, le32(h.base + img.w))
+  head = put(head, h.ho, le32(h.base + img.h))
+  local w, hh = img.w, img.h
+  local stride = math.floor((w * 3 + 3) / 4) * 4
+  local buf = ffi.new('uint8_t[?]', stride * hh)
+  for y = 0, hh - 1 do
+    local sp, d = img.px + y * w * 4, buf + (hh - 1 - y) * stride
+    for x = 0, w - 1 do
+      local q, t = sp + x * 4, d + x * 3
+      if q[3] >= 128 then
+        local r, g, b = q[0], q[1], q[2]
+        if r > 247 and g < 8 and b > 247 then g = 8 end        -- never the key itself
+        t[0], t[1], t[2] = b, g, r
+      else
+        t[0], t[1], t[2] = 255, 0, 255
+      end
+    end
+  end
+  return head .. ffi.string(buf, stride * hh)
+end
+
 function sprites.bmp(bytes)
   if type(bytes) ~= 'string' or bytes:sub(1, 2) ~= 'BM' then return nil, 'not a BMP' end
   local off = u32s(bytes, 10)
@@ -358,10 +387,17 @@ function sprites.new_bank(o)
   local src = sprites.bank(o.like)
   if not src or src.res == 0 then return nil, 'like: bank ' .. tostring(o.like) .. ' is empty' end
   local blob = o.sheet
+  local truecolor = o.image ~= nil and o.image.pal == nil   -- a mod.image (RGBA) → a 24-bit sheet (`like` = a 24-bit bank)
   if not blob then
     assert(o.image, 'sprites.new_bank: image or sheet')
     local tmpl = res.read('DATA', src.res, src.module ~= 0 and src.module or nil)
-    blob = sprites.encode(o.image, tmpl)
+    if truecolor then
+      local e
+      blob, e = sprites.encode24(o.image, tmpl)
+      if not blob then return nil, e end
+    else
+      blob = sprites.encode(o.image, tmpl)
+    end
   end
   local hd, err = header_of(blob)
   if not hd then return nil, err end
@@ -387,29 +423,29 @@ function sprites.new_bank(o)
   -- the per-frame trim records (slot +0x34, 24 bytes per cell: x left / right, y top / bottom, has opaque pixels, has
   -- key pixels — bs_trim_opaque_rect's result, which the slicer uses instead of scanning) came with the clone from
   -- `like`: recompute them for the new pixels, or a cell that is empty in `like`'s sheet stays invisible here.
-  local aux, naux = mem.read_u32(s + 0x34), 0
-  local srcs = slot(o.like)
-  naux = mem.read_u32(srcs + 0x38)
-  if naux == 0 then                                      -- `like` not decoded yet: its sheet's cell count
-    local sh = header_of(res.read('DATA', src.res, src.module ~= 0 and src.module or nil) or '')
-    if sh then naux = math.floor(sh.w / src.cell_w) * math.floor(sh.h / src.cell_h) end
-  end
+  -- [api 1.11] The records are our own buffer, one per cell of THIS sheet: slot_clone copies `like`'s (as many as
+  -- `like` has frames) and the frame arrays are sized from the sheet at decode, so a sheet with more cells than
+  -- `like` only needed more records.  (Banks past the retail tables are never freed by the engine.)
+  local aux = mem.read_u32(s + 0x34)
   if aux ~= 0 then
-    local img = o.image or sprites.decode(blob)
+    local img = o.image or (hd.bpp == 8 and sprites.decode(blob)) or nil
     local cw, ch = mem.read_u32(s + 0x20), mem.read_u32(s + 0x24)
     local cols, rows = math.floor(hd.w / cw), math.floor(hd.h / ch)
-    if cols * rows > naux then
-      return nil, ('the sheet has %d cells, `like` only %d trim records'):format(cols * rows, naux)
-    end
-    local r = ffi.cast('int32_t *', aux)
-    for c = 0, naux - 1 do
+    local n = math.max(cols * rows, 1)
+    local own = ffi.new('int32_t[?]', 6 * n)
+    ext.keep[#ext.keep + 1] = own
+    local r = own
+    local px, iw = img and img.px, img and img.w
+    for c = 0, n - 1 do
       local x0, x1, y0, y1, op, key = cw, 0, ch, 0, 0, 0
-      if c < cols * rows and img then
+      if img then
         local bx, by = (c % cols) * cw, math.floor(c / cols) * ch
         for y = 0, ch - 1 do
-          local row = img.px + (by + y) * img.w + bx
           for x = 0, cw - 1 do
-            if row[x] ~= 0 then
+            local solid
+            if truecolor then solid = px[((by + y) * iw + bx + x) * 4 + 3] >= 128
+            else solid = px[(by + y) * iw + bx + x] ~= 0 end
+            if solid then
               op = 1
               if x < x0 then x0 = x end
               if x > x1 then x1 = x end
@@ -421,10 +457,11 @@ function sprites.new_bank(o)
           end
         end
       else
-        key = 1
+        x0, x1, y0, y1, op, key = 0, cw - 1, 0, ch - 1, 1, 1   -- unknown pixels: the whole cell
       end
       r[6 * c], r[6 * c + 1], r[6 * c + 2], r[6 * c + 3], r[6 * c + 4], r[6 * c + 5] = x0, x1, y0, y1, op, key
     end
+    mem.write_u32(s + 0x34, addr(own))
   end
   st.mine[i] = { res = id }
   log(('[sprites] bank %d = DATA %d (%dx%d, like %d)'):format(i, id, hd.w, hd.h, o.like))

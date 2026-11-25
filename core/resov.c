@@ -72,6 +72,9 @@ static res_entry *find_entry(HMODULE hmod, const char *type, const char *name, i
         res_entry *e = g_res[i];
         if (!e || !key_eq(e->type, type) || !key_eq(e->name, name)) continue;
         if (any_slot_only ? e->hmod == hmod : (!e->hmod || e->hmod == hmod)) return e;
+        // "the exe" is asked for as NULL or as its module handle: an entry made for either answers both — and ONLY
+        // those (resource ids collide between modules: DATA 1026 is a map in the exe and a sprite sheet in sotesd.dll)
+        if (!any_slot_only && e->hmod && hmod == NULL && e->hmod == GetModuleHandleA(NULL)) return e;
     }
     return NULL;
 }

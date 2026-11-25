@@ -9,6 +9,7 @@ same process; they share one hook/UI registry so they interleave safely.
 ```
 mods\<name>\
   init.lua      # REQUIRED — the entry point the loader runs
+  setup.lua     # optional — a ONE-TIME setup step, run only after the user agrees (see "First-time setup")
   mod.toml      # recommended (REQUIRED to publish to a registry)
   ...           # any assets / extra .lua the mod requires
 ```
@@ -375,6 +376,70 @@ keep the value in a Lua variable and reassign it each frame, e.g. `open = mod.ui
   ON TOP of the game frame (F10 toggles), from the same snapshot — no mod change either way.  The
   overlay is mouse-only; the keyboard stays with the game.  Otherwise the panels show in a companion
   window.
+
+## First-time setup (api 1.11)
+
+A mod that needs to prepare data once — typically: find another game the user owns, read its files, convert them —
+ships **`setup.lua`** beside `init.lua` and describes the step in `mod.toml`:
+
+```toml
+[setup]
+version = "1"        # bump to make the step run again (new conversion, new files)
+summary = "Finds your Steam copy of X, reads ..., writes ... to mod_data\\<mod>. Changes nothing else."
+```
+
+What the loader does, before the game opens its first window (the game's main thread is held meanwhile, so nothing
+fights a fullscreen game and every mod is initialized before the first frame):
+
+1. **Asks the user**, per mod, in a dialog that names the mod, its author, its folder and the mod's own `summary`,
+   with a **security warning**: mods are programs with the same access to the computer as the game, and the loader
+   cannot check what one does.  *No* (the default button) = the game starts **without that mod** and asks again next
+   time.  Nothing of the mod has run at that point.
+2. On *Yes* runs `setup.lua` (loader thread; the full `mod` table, but the game is not up: use `mod.fs`,
+   `mod.steam`, `mod.image`, `mod.config`, `mod.log`) behind a progress window: `mod.setup.progress(frac[, text])`.
+   Write results to **`mod.data_dir`** (`<game>\mod_data\<mod>\`, outside the mod's folder so updates keep it).
+3. Success (no error, not `return false`) is recorded in `mod_data\<mod>\setup.state`; the mod's `init.lua` then loads
+   as usual.  An error shows the message, skips the mod this session and offers the step again next start.
+
+`mod.setup` = `{ done, needed, running, version, progress }`; `init.lua` should start with
+`if not mod.setup.done then return end` when it depends on the data.  Automation / tests: `oss_loader.cfg`
+`setup_trust = <mod>,<mod>` (or `*`) pre-approves without a dialog — never ship a cfg with it.
+
+```
+mod.fs      exists / is_dir / size / read(p[, off, len]) / write(p, data) / list(dir) / mkdir / remove / join, .game_dir
+mod.steam   root() / libraries() / app(appid[, {dir = "Folder", marker = "file.exe"}]) -> {dir, library, name} / hint(path)
+            (registry, the library this game is in, Proton's env, the usual Linux folders through wine's Z:)
+mod.image   true-colour images: new(w, h) / decode(bytes) (BMP 8 / 24 / 32, TGA) / quantize(img[, {colors=}]) ->
+            an indexed image for sprites.new_bank / pack_indexed / unpack_indexed (a cache format);
+            img:get / set / crop / blit / flip_h / scale / key(r, g, b[, tol]) / bounds / bmp
+```
+Example: `../sotes-mods/mods/recettear` (Recettear's archive → sprites, portraits, music).
+
+## Shared content modules (api 1.11)
+
+```
+mod.game.maps                   -- room maps as objects, SHARED between mods (core/lua/maps.lua)
+  .read(id) -> Map              the game's real map;  .parse(bytes) / m:serialize()
+  .edit(id, fn[, who])          change a map the game ships: fn(m).  Edits COMPOSE — every mod's edit of one map is
+                                applied in order to one copy of the real data (two mods can each add a door to the same
+                                room).  Served for the map module only (ids collide between modules: DATA 1026 is a map
+                                in the exe and a sprite sheet in sotesd.dll).
+  .define(id, map | bytes | fn[, who])   a NEW map; refused when the game or another mod has the id
+  .bytes(id) / .owner(id) / .clone(obj)
+  Map: cols, rows, planes, cells, objs; m:cell / set_cell / find / find_all / filter / next_id / widen / add(obj[, first])
+       m:add_door{like = zone, zone =, x =}     m:add_character{like = code | obj, code =, x =, floor =, cell_h =,
+                                                                 handle =, facing =}
+mod.game.sprites.new_bank       -- a sheet may have MORE cells than `like` (its own trim records); image = a mod.image
+                                   (RGBA) + a 24-bit `like` (a portrait bank, 160 x 176 cells) = a 24-bit bank
+mod.game.sprites.encode24(img, template)
+s:say(text, {portrait = bank, frame = n})   the speaker's bust from any bank of 160 x 176 cells (the runner's own
+                                   portrait fields +0x84 / +0x88); the text wraps at 36 columns as with retail's
+mod.game.sound.room_music(room, file | nil[, {loop =, volume =}])   a PCM .wav as that room's music: the loader plays
+                                   it (DirectSound) and answers the engine's bgm_pick with 0 there, so the game fades
+                                   its own BGM out and brings the next room's back by itself
+mod.game.sound.music(file | nil[, opts]) / .music_status()
+mod.game.items.catalog()        -- rows now carry price (CP, def +0x60; 0 = not for sale) and icon (def +0x54)
+```
 
 ### `mod.*` API — roadmap (later phases, see DESIGN.md)
 
