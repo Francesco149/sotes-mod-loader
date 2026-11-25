@@ -109,7 +109,7 @@ def load_xw(a, b):
 def names_rh_hooks(oss):
     src = open(os.path.join(oss, "tools/rhost/rh_hooks.c")).read()
     out = {}
-    for name, va in re.findall(r'"([a-z_][a-z0-9_]*)",\s*0x([0-9a-f]+)u?\)', src):
+    for name, va in re.findall(r'"([a-z_][a-z0-9_]*)",\s*0x([0-9a-f]+)u?\s*[),]', src):
         out.setdefault(int(va, 16), name)
     return out
 

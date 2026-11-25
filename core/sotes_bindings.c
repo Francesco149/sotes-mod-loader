@@ -890,6 +890,16 @@ static void install_items(lua_State *L) {
 #define NCHARS      32
 #define ENT_ALIVE   0x1d0
 #define CH_ORIGIN   0x1f8
+#define ENT_HANDLE  0x1d8   // the map record's talk / script handle (A[1]; actor_by_handle resolves it), every edition
+// entity_set_handle (enold 0x555f00 / SE 0x574610, thiscall e, h): out of the world's handle list (+0x2790 / SE
+// +0x3794 — the talk probe walks it) then in when h != 0, +0x1d8 = h.  What char_init does with a map record's A[1].
+typedef void (__attribute__((thiscall)) *set_handle_t)(uintptr_t e, int32_t h);
+static int set_handle(uintptr_t c, int32_t h) {
+    uintptr_t fn = sym_va("entity_set_handle");
+    if (!fn) return 0;
+    ((set_handle_t)fn)(c, h);
+    return 1;
+}
 #define BODY_W      0x0c
 #define BODY_H      0x10
 #define BODY_FACE   0x2c
@@ -944,6 +954,8 @@ static int l_actors_list(lua_State *L) {
         lua_pushinteger(L, rdi(b + BODY_W));           lua_setfield(L, -2, "w");
         lua_pushinteger(L, rdi(b + BODY_H));           lua_setfield(L, -2, "h");
         lua_pushinteger(L, rdi(b + BODY_FACE));        lua_setfield(L, -2, "facing");
+        lua_pushinteger(L, rdi(c + ENT_HANDLE));       lua_setfield(L, -2, "handle");   // api 1.8
+        lua_pushnumber(L, (lua_Number)c);              lua_setfield(L, -2, "ptr");      // api 1.8
         lua_rawseti(L, -2, ++k);
     }
     return 1;
@@ -1041,7 +1053,23 @@ static int l_actors_spawn(lua_State *L) {
     for (int i = 0; i < NCHARS; i++) if (c && pool_char(w, i) == c) slot = i;
     if (slot < 0) { lua_pushnil(L); lua_pushstring(L, "actors.spawn: the game found no free slot"); return 2; }
     g_spawned[slot] = c;
+    int handle;
+    if (opt_field(L, 2, "handle", &handle)) set_handle(c, handle);   // api 1.8: talkable (mod.game.script)
     lua_pushinteger(L, slot);
+    return 1;
+}
+// mod.game.actors.set_handle(slot, handle) -> true | nil, why   (api 1.8) the actor's script handle (+0x1d8):
+// what a talk / examine event carries — mod.game.script.on_talk(handle, fn) claims it
+static int l_actors_set_handle(lua_State *L) {
+    if (!gb_enabled("actors")) { lua_pushnil(L); return 1; }
+    int slot = (int)luaL_checkinteger(L, 1);
+    int32_t h = (int32_t)luaL_checkinteger(L, 2);
+    uintptr_t w = world_ptr();
+    if (!w || !on_engine()) return refuse_write(L, "actors.set_handle");
+    uintptr_t c = (slot >= 0 && slot < NCHARS) ? pool_char(w, slot) : 0;
+    if (!c || !rd(c + ENT_ALIVE)) { lua_pushnil(L); lua_pushfstring(L, "actors.set_handle: slot %d is empty", slot); return 2; }
+    if (!set_handle(c, h)) { lua_pushnil(L); lua_pushstring(L, "actors.set_handle: entity_set_handle missing"); return 2; }
+    lua_pushboolean(L, 1);
     return 1;
 }
 // mod.game.actors.remove(slot) -> true | nil, why   (party members refused)
@@ -1067,6 +1095,7 @@ static void install_actors(lua_State *L) {
     lua_pushcfunction(L, l_actors_catalog); lua_setfield(L, -2, "catalog");
     lua_pushcfunction(L, l_actors_spawn);  lua_setfield(L, -2, "spawn");
     lua_pushcfunction(L, l_actors_remove); lua_setfield(L, -2, "remove");
+    lua_pushcfunction(L, l_actors_set_handle); lua_setfield(L, -2, "set_handle");
 }
 
 // ══════════════ semantic loader ops — save.load / attract.set ══════════════
@@ -1074,6 +1103,11 @@ static void install_actors(lua_State *L) {
 // lua_host.c fills these tables once the hook layer is up.  Empty here so the toggle registry knows them.
 static void install_attract(lua_State *L) { lua_newtable(L); }
 static void install_save(lua_State *L) { lua_newtable(L); }
+// mod.game.script / mod.game.sound (api 1.8) — core/lua/script.lua: event scripts in Lua over retail's own scene
+// primitives (talk / examine handlers, queued events, messages, choices, shop, storage, books, gifts, heal, fades)
+// and sound effects (stock pools + custom WAVE data through the resource overlay).
+static void install_script(lua_State *L) { lua_newtable(L); }
+static void install_sound(lua_State *L) { lua_newtable(L); }
 
 // ── registration ─────────────────────────────────────────────────────────────
 void sotes_bindings_register(void) {
@@ -1134,4 +1168,14 @@ void sotes_bindings_register(void) {
     gb_register(&MOUSE);
     gb_register(&ATTRACT);
     gb_register(&SAVE);
+    static const gb_def SCRIPT = {
+        "script", "event scripts in Lua — .on_talk(handle, fn) / .run(fn) / .after(fn); the script's `s` = messages, choices, "
+        "shop, storage, books, gifts, heal, fades, sounds (retail's own scene primitives)", install_script, 1
+    };
+    static const gb_def SOUND = {
+        "sound", "sound effects — .play(id[, vol[, freq]]) stock pools; .add(wav) custom WAVE data (resource overlay); .wav(pcm, rate)",
+        install_sound, 1
+    };
+    gb_register(&SCRIPT);
+    gb_register(&SOUND);
 }

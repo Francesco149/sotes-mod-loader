@@ -97,6 +97,22 @@ static void title_lua_init(lua_State *L) {
     g_title_install_ref = luaL_ref(L, LUA_REGISTRYINDEX);
     exec_defer_fn(title_install_deferred);   // runs after the mods' init on the first frame (install is idempotent)
 }
+// mod.game.script / sound — core/lua/script.lua (typed hooks on script_engine + touch_pass, armed on first use:
+// nothing runs per frame unless a mod uses the API).
+extern const char oss_lua_script[];
+static int l_edition_tag(lua_State *L) { lua_pushstring(L, sym_edition_tag()); return 1; }
+static void script_lua_init(lua_State *L) {
+    if (luaL_loadstring(L, oss_lua_script) != 0) { ml_log("[script] script.lua: %s", lua_tostring(L, -1)); lua_pop(L, 1); return; }
+    hooks_push_table(L);
+    mem_push_lua(L);
+    sym_push_lua(L);
+    lua_pushcfunction(L, l_title_log);
+    gb_push_lua(L);
+    resov_push_lua(L);
+    lua_pushcfunction(L, l_edition_tag);   // the edition is detected after this runs: resolved on first use
+    if (lua_pcall(L, 7, 1, 0) != 0) { ml_log("[script] script.lua: %s", lua_tostring(L, -1)); lua_pop(L, 1); return; }
+    lua_pop(L, 1);   // install(): called by the API itself
+}
 static int l_frame(lua_State *L) { lua_pushnumber(L, exec_frame()); return 1; }
 static int l_screen_ctx(lua_State *L) { lua_pushnumber(L, (lua_Number)(uintptr_t)exec_screen_ctx()); return 1; }
 // mod.screen.shot(path) — the current frame as a 24-bit BMP (engine thread only; inside mod code that is always so)
@@ -288,6 +304,7 @@ int lh_init(void) {
     ui_init(g_L);               // the ImGui UI host — builds the shared mod.ui table (P5)
     input_lua_init(g_L);        // mod.input (scripted keyboard through DirectInput)
     title_lua_init(g_L);        // mod.game.save / attract (core/lua/title.lua)
+    script_lua_init(g_L);       // mod.game.script / sound (core/lua/script.lua)
     config_lua_init(g_L);       // the mod.config factory (mod.toml [config] schema + oss_mods.cfg)
 
     ml_log("[lua] LuaJIT up (%s, JIT off, FFI on)", LUAJIT_VERSION);

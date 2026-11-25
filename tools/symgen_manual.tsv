@@ -46,3 +46,11 @@ sound_registrar   func ense-jp  0x599ab0
 # 8b 0d .. 33 db 57 3b cb 74 .. 53 6a 32 53 e8), unique per edition.
 script_end        func ense-en  0x497bd0
 script_end        func ense-jp  0x497b10
+# g_sys = the engine's system object (sound pools at +0x364, the UI windows): the `this` of every sfx_play call
+# (mov ecx, imm32; call sfx_play — 34 / 42 / 41 sites, one constant each edition).  2026-11-25.
+g_sys             data enold    0x8a6b60
+g_sys             data ense-en  0x92af08
+g_sys             data ense-jp  0x926078
+# ts_40fe00 (the input latch reset after an event; SE 0x40bee0): JP's crosswalk had none — JP book_read 0x40ba60
+# calls it first (same prologue as SE's, sys field offsets shifted +0x120).
+ts_40fe00         func ense-jp  0x40bf30
