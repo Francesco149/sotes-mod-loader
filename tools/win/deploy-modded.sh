@@ -3,7 +3,7 @@
 # (C:\sotes-modded, desktop shortcut "SotES with mods"; tools/win/deploy.ps1 does the Windows side).
 #
 #   tools/win/deploy-modded.sh                 # build + deploy loader + $MODS
-#   MODS="trainer dashboard autoload" ...      # which ../sotes-mods mods (default: trainer dashboard)
+#   MODS="trainer dashboard autoload" ...      # which ../sotes-mods mods (default: trainer dashboard testroom)
 #   UNPACKED=0 ...                             # keep the SteamStub exe (default: the unpacked EN exe runs as
 #                                              # sotes_en.exe — no Steam needed, e.g. Steam busy on another machine)
 #
@@ -13,7 +13,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 MODS_REPO="${MODS_REPO:-$ROOT/../sotes-mods}"
-MODS="${MODS:-trainer dashboard}"
+MODS="${MODS:-trainer dashboard testroom}"
 UNPACKED="${UNPACKED:-1}"
 UNPACKED_EXE="${UNPACKED_EXE:-/mnt/ephemeral/opensummoners/game/ense/sotes_en.unpacked.exe}"
 exec 9>"${XDG_RUNTIME_DIR:-/tmp}/sotes-deploy-modded.lock"
