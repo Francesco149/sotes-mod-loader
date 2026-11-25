@@ -11,6 +11,12 @@ package-manager style from git-repo sources.
 > **North star: a bad mod can't crash the game, and two mods can't clobber each other.**
 > Everything is subordinate to that. See [`docs/DESIGN.md`](docs/DESIGN.md).
 
+## Showcase
+
+See what mods built on this loader look like — new rooms, characters, portraits, monsters and a whole
+shop-keeping side game, with screenshots and notes on how each piece is injected:
+**[sotes-mods → Showcase](https://github.com/Francesco149/sotes-mods#showcase)**.
+
 ## Status — P0–P5 done (rolling checkpoint: [`docs/HANDOFF.md`](docs/HANDOFF.md))
 
 Proxy `version.dll` + LuaJIT host (P0) · guarded `mod.mem` + togglable `mod.game.*`
