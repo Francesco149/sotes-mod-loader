@@ -116,21 +116,28 @@ static INT_PTR (WINAPI *o_dbw)(HINSTANCE, LPCWSTR, HWND, DLGPROC, LPARAM);
 static HWND (WINAPI *o_cda)(HINSTANCE, LPCSTR, HWND, DLGPROC, LPARAM);
 static HWND (WINAPI *o_cdw)(HINSTANCE, LPCWSTR, HWND, DLGPROC, LPARAM);
 
-static void gate_wait(void) {
+// Hold only a call made by the GAME'S OWN CODE (the return address lies in the exe image): its launcher dialog or
+// its main window, from WinMain.  A system DLL may create a window from its DllMain during process start — on the
+// main thread, with the loader lock held; holding THAT call deadlocks the consent dialog, whose MessageBox needs
+// the loader lock to load its own DLLs (Windows 11: the game sat there with no window and no dialog; wine's
+// DLLs create no such window, so it passed there).
+static uintptr_t g_exe_lo, g_exe_hi;
+static void gate_wait(void *ret) {
     if (!g_gate_armed || GetCurrentThreadId() != g_gate_tid) return;
+    if ((uintptr_t)ret < g_exe_lo || (uintptr_t)ret >= g_exe_hi) return;
     if (InterlockedExchange(&g_gate_waited, 1) == 0) ml_log("[setup] game start held: a mod's first-time setup is pending");
     WaitForSingleObject(g_gate_evt, INFINITE);
 }
 static HWND WINAPI h_cwa(DWORD a, LPCSTR b, LPCSTR c, DWORD d, int e, int f, int g, int h, HWND i, HMENU j, HINSTANCE k, LPVOID l) {
-    gate_wait(); return o_cwa(a, b, c, d, e, f, g, h, i, j, k, l);
+    gate_wait(__builtin_return_address(0)); return o_cwa(a, b, c, d, e, f, g, h, i, j, k, l);
 }
 static HWND WINAPI h_cww(DWORD a, LPCWSTR b, LPCWSTR c, DWORD d, int e, int f, int g, int h, HWND i, HMENU j, HINSTANCE k, LPVOID l) {
-    gate_wait(); return o_cww(a, b, c, d, e, f, g, h, i, j, k, l);
+    gate_wait(__builtin_return_address(0)); return o_cww(a, b, c, d, e, f, g, h, i, j, k, l);
 }
-static INT_PTR WINAPI h_dba(HINSTANCE a, LPCSTR b, HWND c, DLGPROC d, LPARAM e) { gate_wait(); return o_dba(a, b, c, d, e); }
-static INT_PTR WINAPI h_dbw(HINSTANCE a, LPCWSTR b, HWND c, DLGPROC d, LPARAM e) { gate_wait(); return o_dbw(a, b, c, d, e); }
-static HWND WINAPI h_cda(HINSTANCE a, LPCSTR b, HWND c, DLGPROC d, LPARAM e) { gate_wait(); return o_cda(a, b, c, d, e); }
-static HWND WINAPI h_cdw(HINSTANCE a, LPCWSTR b, HWND c, DLGPROC d, LPARAM e) { gate_wait(); return o_cdw(a, b, c, d, e); }
+static INT_PTR WINAPI h_dba(HINSTANCE a, LPCSTR b, HWND c, DLGPROC d, LPARAM e) { gate_wait(__builtin_return_address(0)); return o_dba(a, b, c, d, e); }
+static INT_PTR WINAPI h_dbw(HINSTANCE a, LPCWSTR b, HWND c, DLGPROC d, LPARAM e) { gate_wait(__builtin_return_address(0)); return o_dbw(a, b, c, d, e); }
+static HWND WINAPI h_cda(HINSTANCE a, LPCSTR b, HWND c, DLGPROC d, LPARAM e) { gate_wait(__builtin_return_address(0)); return o_cda(a, b, c, d, e); }
+static HWND WINAPI h_cdw(HINSTANCE a, LPCWSTR b, HWND c, DLGPROC d, LPARAM e) { gate_wait(__builtin_return_address(0)); return o_cdw(a, b, c, d, e); }
 
 static void *gate_hook(const char *fn, void *detour, void *orig) {
     HMODULE u = GetModuleHandleA("user32.dll");
@@ -163,6 +170,11 @@ void setup_gate_arm_if_needed(unsigned long main_tid) {
     g_gate_evt = CreateEventA(NULL, TRUE, FALSE, NULL);
     if (!g_gate_evt) return;
     g_gate_tid = main_tid;
+    {
+        const unsigned char *b = (const unsigned char *)GetModuleHandleA(NULL);
+        const IMAGE_NT_HEADERS *nt = (const IMAGE_NT_HEADERS *)(b + ((const IMAGE_DOS_HEADER *)b)->e_lfanew);
+        g_exe_lo = (uintptr_t)b; g_exe_hi = g_exe_lo + nt->OptionalHeader.SizeOfImage;
+    }
     MH_STATUS s = MH_Initialize();
     if (s != MH_OK && s != MH_ERROR_ALREADY_INITIALIZED) return;
     g_gate_armed = 1;
