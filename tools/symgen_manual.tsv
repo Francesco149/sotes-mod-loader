@@ -59,3 +59,11 @@ ts_40fe00         func ense-jp  0x40bf30
 # enold's 0x5b1f10 is the same step with another convention (fastcall) — not bound.
 item_use          func ense-en  0x5da1f0
 item_use          func ense-jp  0x5d7e90
+# Items (api 1.13).  item_take (thiscall o, id, n; o +8 = the room — the event runner's): the story scripts' "take
+# item" op.  id 1 / 2 / 3 = n copper / silver / gold off the purse; else ONE inventory record of `id` goes — the
+# unstored one with the smallest count (+8), the records after it move down 16 B, room +0x4010 count - 1, +0x4070 = 0,
+# every party member's stats recomputed.  enold sub_406500, SE sub_4039e0 (crosswalk mnem, read: same body, room
+# fields equal), JP sub_403a30 (crosswalk bytes).
+item_take         func enold    0x406500
+item_take         func ense-en  0x4039e0
+item_take         func ense-jp  0x403a30

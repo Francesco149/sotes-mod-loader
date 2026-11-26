@@ -179,6 +179,8 @@ mod.game.script                 -- [api 1.8] EVENT SCRIPTS IN LUA on retail's ow
   .running() / .pending() / .errors()
   -- fn(s): s.actor, s.handle, s.room, s.name (the box title) and, all retail's own:
   s:say(text[, {name=, actor=('leader'|ptr), own_name=, voice=, face=}])   a message box (\n = retail's %n)
+                                --   api 1.13: no actor (a script.run scene with none given) = the party's leader —
+                                --   retail's box needs one: before, such a say showed nothing and did not wait
   s:narrate(text)               a narration box (kind 3, no speaker — what examine messages use)
                                 --   api 1.9: long text is PAGED: the box holds 3 lines of 44 bytes (36 with a portrait;
                                 --   narration 2 × 60) and retail has no paging — overflow typed past the bottom, only
@@ -425,6 +427,11 @@ mod.game.maps                   -- room maps as objects, SHARED between mods (co
                                 room).  Served for the map module only (ids collide between modules: DATA 1026 is a map
                                 in the exe and a sprite sheet in sotesd.dll).
   .define(id, map | bytes | fn[, who])   a NEW map; refused when the game or another mod has the id
+  .set(id, map | bytes | fn, who)        [api 1.13] new bytes for a map `who` defined — a generated room re-served before
+                                each visit (the game reads a room's map at every load).  m:serialize() writes the
+                                header's cols, rows, planes and object count from the Map (before 1.13 only cols and the
+                                count: a map with more rows than its source was misread — the objects came out of the
+                                cells, a crash in the object loader 0x5b4130)
   .bytes(id) / .owner(id) / .clone(obj)
   Map: cols, rows, planes, cells, objs; m:cell / set_cell / find / find_all / filter / next_id / widen / add(obj[, first])
        m:add_door{like = zone, zone =, x =}     m:add_character{like = code | obj, code =, x =, floor =, cell_h =,
@@ -468,6 +475,11 @@ mod.game.items.icons()        -> {first, added, built, bank, banks, res}
 mod.game.items.equip(index, member)    room_item_equip: the record on the member (roster entry; nil = the first
                                        active), its equip slot freed, stats recomputed (class fit = the caller's)
 mod.game.items.use(index, member) -> used, message    SE only: retail's field use of the record (heal / stat / ...)
+mod.game.items.take(id[, n]) -> taken | nil, why     [api 1.13] n units (default 1) off the bag the story scripts' way:
+                                       retail's item_take (enold 0x406500 / SE 0x4039e0 / JP 0x403a30) removes the
+                                       unstored record of `id` with the smallest count, moves the rest down, recomputes
+                                       the party's stats; a record holding more units than are left to take only has its
+                                       count lowered.  The box is never touched.  -> the units taken.
 mod.game.items.drop(id, where) -> true | nil, why     an item lying on the floor (pickup_spawn, as a foe drops one);
                                        where = an actors entry, a roster member, a char pointer or {x=, y=}
 mod.game.actors.define{..., drops = {{id=, chance= per mille}, ...}, coins = n}

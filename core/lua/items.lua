@@ -410,6 +410,43 @@ function items.use(index, m)
   return r ~= 0, ffi.string(buf)
 end
 
+-- items.take(id[, n]) -> taken | nil, why   [api 1.13] n units (default 1) of `id` off the bag, the story scripts'
+--   way: retail's item_take (enold 0x406500 / SE 0x4039e0 / JP 0x403a30) removes ONE record — the unstored one with
+--   the smallest count — moves the rest down and recomputes the party's stats.  A record holding more units than are
+--   still to take only has its count lowered (what using one does).  Stored records (the box) are never touched.
+--   Returns the units taken (fewer than n when the bag runs out).
+local ROOM_ITEMS, ROOM_NITEMS = 0x2010, 0x4010            -- every edition (fieldxw)
+function items.take(id, n)
+  n = math.floor(tonumber(n) or 1)
+  local f, room = sym.va('item_take'), room_ptr()
+  if not (f and room) then return nil, 'item_take unavailable' end
+  if type(id) ~= 'number' or id <= 3 then return nil, 'take(id): an item id (coins: items.set_gold)' end
+  local o = ffi.new('uint32_t[4]')                        -- the runner retail passes: only +8 (the room) is read
+  o[2] = room
+  local take = ffi.cast('int (__thiscall *)(void *, int, int)', f)
+  local taken = 0
+  while taken < n do
+    local best, bc
+    for i = 0, (mem.read_u16(room + ROOM_NITEMS) or 0) - 1 do
+      local r = room + ROOM_ITEMS + 16 * i
+      if mem.read_i32(r) == id and mem.read_u8(r + 0xa) == 0 then
+        local c = mem.read_u16(r + 8)
+        if not best or c < bc then best, bc = r, c end
+      end
+    end
+    if not best then break end
+    local units, want = math.max(1, bc), n - taken
+    if units > want then
+      if not mem.write_u16(best + 8, bc - want) then return nil, 'refused (not the engine thread?)' end
+      taken = n
+    else
+      take(o, id, 1)
+      taken = taken + units
+    end
+  end
+  return taken
+end
+
 -- ── on the floor ─────────────────────────────────────────────────────────────────────────────────────────────────
 local function body_of(where)                         -- an actors entry (.ptr), a roster member (.actor), a char pointer, or {x=, y=}
   local p = where

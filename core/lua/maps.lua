@@ -18,6 +18,8 @@
 --        (An edit that throws is dropped and logged; the others still apply.)
 --   maps.define(id, src[, who]) -> true | nil, err a NEW map under DATA id `id`: src = a Map, bytes, or
 --        function() -> Map | bytes.  Refused when the game or another mod already has that id.
+--   maps.set(id, src, who)   -> true | nil, err   [api 1.13] new bytes for a map `who` defined (a generated room,
+--        rebuilt before each visit: the game reads its map at every load of the room)
 --   maps.bytes(id)           -> bytes | nil        what the game will load for `id` right now
 --   maps.owner(id)           -> who | nil          who defined a new map
 --   maps.hits(id)            -> n                  how many times the game loaded the served version
@@ -71,7 +73,9 @@ end
 function Map:cell(z, y, x) return self.cells[(self.rows * z + y) * self.cols + x + 1] end
 function Map:set_cell(z, y, x, v) self.cells[(self.rows * z + y) * self.cols + x + 1] = v end
 function Map:serialize()
-  local out = { self.head:sub(1, 0x54), p32(self.cols), self.head:sub(0x59, 0x60), p32(#self.objs), self.head:sub(0x65, 0x68) }
+  -- the header's cols / rows / planes / object count follow the Map (a map resized past its source's rows was served
+  -- with the old row count: the game read the cells short and the objects from the middle of them — a crash)
+  local out = { self.head:sub(1, 0x54), p32(self.cols), p32(self.rows), p32(self.planes), p32(#self.objs), self.head:sub(0x65, 0x68) }
   for i = 1, #self.cells do out[#out + 1] = pack(self.cells[i]) end
   for _, o in ipairs(self.objs) do
     local r = o.rec
@@ -201,6 +205,19 @@ function maps.define(id, src, who)
   if not res.set('DATA', id, src, map_hmod()) then return nil, 'the resource overlay refused' end
   defined[id] = { who = who or '?', bytes = src }
   log(('[maps] DATA %d defined by %s, %d B'):format(id, tostring(who or '?'), #src))
+  return true
+end
+-- maps.set(id, src, who) -> true | nil, err   [api 1.13] serve NEW bytes for a map `who` defined (a generated room
+--   rebuilt before each visit: the game reads the map when it loads the room, so the next load gets these).
+function maps.set(id, src, who)
+  local d = defined[id]
+  if not d then return nil, 'DATA ' .. tostring(id) .. ' is not a defined map (maps.define it first)' end
+  if d.who ~= (who or '?') then return nil, ('DATA %d is defined by %s'):format(id, tostring(d.who)) end
+  if type(src) == 'function' then src = src() end
+  if type(src) == 'table' then src = src:serialize() end
+  if type(src) ~= 'string' then return nil, 'maps.set: nothing to serve' end
+  if not res.set('DATA', id, src, map_hmod()) then return nil, 'the resource overlay refused' end
+  d.bytes = src
   return true
 end
 function maps.bytes(id)

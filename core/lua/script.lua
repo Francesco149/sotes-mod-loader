@@ -213,7 +213,9 @@ end
 S.wrap_pages = wrap_pages
 function S:say(text, o)
   o = o or {}
-  local actor = o.actor == 'leader' and P.script_leader(self.ev) or o.actor or self.actor
+  -- no actor at all (a script.run scene, a speaker not in the room): the party's leader — retail's message box (kind
+  -- 0) needs one; with none it shows nothing and the wait returns at once (api 1.13; before, such a say was silently lost)
+  local actor = o.actor == 'leader' and P.script_leader(self.ev) or o.actor or self.actor or P.script_leader(self.ev)
   local name = o.name or self.name
   -- portrait = a sprite bank of 160 x 176 busts (sprites.new_bank on a portrait bank), frame = its cell: the runner's
   -- own portrait fields (+0x84 bank, +0x88 frame — what scene_msg fills from the voice table for retail's cast)

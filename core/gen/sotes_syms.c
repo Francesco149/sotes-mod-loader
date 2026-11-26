@@ -723,6 +723,7 @@ const sym_row SYM_ROWS[] = {
     { "item_stats_add", SYM_FUNC, { 0x00413a00u, 0x0040dee0u, 0x0040dfa0u }, { 0x532ae5ceu, 0x532ae5ceu, 0x532ae5ceu }, { 286, 286, 286 }, { 3, 2, 2 } },
     { "item_table", SYM_DATA, { 0x006c0cd0u, 0x006a6210u, 0x006a4210u }, { 0x00000000u, 0x00000000u, 0x00000000u }, { 0, 0, 0 }, { 3, 3, 3 } },
     { "item_table_ext", SYM_DATA, { 0x00000000u, 0x0092b210u, 0x00926380u }, { 0x00000000u, 0x00000000u, 0x00000000u }, { 0, 0, 0 }, { 0, 3, 3 } },
+    { "item_take", SYM_FUNC, { 0x00406500u, 0x004039e0u, 0x00403a30u }, { 0x049a43e2u, 0x049a43e2u, 0x049a43e2u }, { 454, 454, 454 }, { 3, 3, 3 } },
     { "item_use", SYM_FUNC, { 0x00000000u, 0x005da1f0u, 0x005d7e90u }, { 0x00000000u, 0x8a7c10c9u, 0x2ff420a0u }, { 0, 1157, 1157 }, { 0, 3, 3 } },
     { "jobs_busy", SYM_FUNC, { 0x0043c170u, 0x00000000u, 0x00000000u }, { 0x2cfe0fd8u, 0x00000000u, 0x00000000u }, { 53, 0, 0 }, { 3, 0, 0 } },
     { "keep_find", SYM_FUNC, { 0x005a3de0u, 0x005c64e0u, 0x005c4230u }, { 0x802735beu, 0x802735beu, 0x802735beu }, { 49, 49, 49 }, { 3, 2, 2 } },
