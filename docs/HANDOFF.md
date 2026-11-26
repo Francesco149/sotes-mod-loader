@@ -338,6 +338,40 @@ v2 so far (commits `10a1efe`, `b5b3b2b`, `6cb69d2`):
     pslot, u16 record, msg, u16*, 0, dry); JP 0x5d7e90 (`symgen_manual.tsv`).
   - Not done: items on enold `use` (fastcall 0x5b1f10 unbound), a Lua `on_use` effect hook, selling Recettear goods
     in the shop (s:shop takes ids: works with new ids, untested), Windows hand-play of the new items.
+- **The Hall of Trials (api 1.13, 2026-11-26)** — `../sotes-mods` recettear 0.3.0: Recettear's first dungeon as side-view
+  cave floors (Recette's menu "The Hall of Trials"; mod files `cave.lua` generator, `dungeon.lua` run logic).  Loader:
+  `items.take` (retail item_take), `maps.set` (re-serve a defined map before each visit), `Map:serialize` writes rows /
+  planes (a resized map was served with the source's row count → objects read out of the cells → crash in 0x5b4130),
+  `s:say` with no actor = the leader (retail's kind-0 box with no actor shows NOTHING and its wait returns at once —
+  every `script.run` line was silently lost).  **Gate:** `tests/hall_of_trials.sh` PASS ense-en (enter by menu, banner,
+  monsters, a retail chest, circle → floor 2, den → home + shelves, fallen, a 2nd seed, two REAL wipes: Try Again +
+  Return To Safety).  A walker bot rode 4 seeds floor 1 → den on terrain alone.  enold / ense-jp: not run (the mod
+  targets sotes_en).  RE facts (all SE-checked; **port-repo findings owed** — a port session runs in parallel):
+  - **Mountain Cave tiles** (DATA 1047..1066): plane 0 backdrop 131001 (set 1450, the lit wall; frame 0 plain) /
+    131002 frames 20-22 (dark rock); plane 1 decor 131021 (1470: 13/19/27 stand on a floor, 8/16/24 hang from a
+    ceiling); plane 2 terrain 131011 (1460): a piece = 64 px (2 × 2 cells, anchored top-left, the other 3 cells empty),
+    black rock + its edge line; frame ↔ shape fixed: open U → 2/16-19 (shape 2), D → 8/20-22 (8), L → 11/28/29 (11),
+    R → 5/24/25 (5), UL 1, UR 3, DL 9, DR 7, inner corners (only a diagonal open) UL 12 / UR 4 / DL 10 / DR 6, else 0
+    — read off every terrain piece's open neighbours in the game's rooms.  `co` = the tile's global id (per frame).
+    Arch = plane-0 131041 frame 2 (set 1480): 128 × 160 px, the cells under it EMPTY (DATA 1049's gate); torch =
+    object 70371.  Jump (Arche): a 128 px step yes, 192 no.
+  - **Map character records**: A[7] (Lua index; 0-based 6) = spawn chance at load — 0 → 70 %, 1 / 9 → 100 %, 2 → 25 %
+    (SE 0x5b4cxx's presence switch after 0x5b4130); monsters need 1 to always appear (most of DATA 1047's have 0).
+  - **Chests** = object 70220: A[2] id (handle = room × 1000 + id when < 1000, composed by the object loader), A[7] item
+    (1 / 2 / 3 = copper / silver / gold, count A[8]), A[8] count.  Opened by the talk / examine keys (touch_pass →
+    touch_actor → switch_set → script mode 3 → SE 0x405890 "You found %s inside the %s." / bag full → put back).  Our
+    item ids work.  The opened state = the **object perpetuity table**: *(room +0x40ac) +0x1804, 2048 × {handle, state,
+    map} (count +0x7804), written at room end (0x58e330), read back at entry; overflow = a fatal exit — so generated
+    rooms must REUSE handles and free their records (the mod zeroes room-key's records before serving a floor).
+  - **Game Over**: the defeat counter room +0x40b0 (SE same) rises with either choice; Try Again loads the checkpoint
+    10020 — written ONLY at room end with result 1 / 2 (a normal exit) and world +0x37b0 (SE; enold +0x27ac) null, so a
+    forced warp never writes one: the checkpoint predates any warp-entered area; Return To Safety loads 10030 (from the
+    same point, healed, −10 % money) at the retry room +0x40d0.  World +0x37b0 ≠ 0 also makes the scene runner
+    auto-advance messages (SE 0x435736).
+  - `item_take` VAs (symgen_manual.tsv): enold 0x406500 / SE 0x4039e0 / JP 0x403a30; `this` only needs +8 = the room.
+  - Recettear side (openrecet has the formats): the dungeon-1 enemy roster = enemylist.txt `ダンジョン１`, item
+    treasure = item.txt `ダ(1M)`; red slime chr08, green chr05 (chr04 is the blue one), kobold chr20, green roper chr24;
+    the EN dungeon name is only in bmp/title/dungeon_title1.tga ("The Hall of Trials").
 - **Next (modding PoC):** a monster with its own skills / projectiles (skill records + their clips), a portrait / voice in s:say, camera shake, Windows hand-play of the hall.
 - **Next:** more `tests/*.lua` → a fuller Windows runner (`tools/win/` is launch + Lua only: no `--saves` isolation — it uses the real install + Steam saves, backs up / restores `version.dll` by hand) (own scheduled task, never `oss-rhost-runner`).  Host tests (`make -C core tests`) still
   assume WSL interop — port them to run under wine.
