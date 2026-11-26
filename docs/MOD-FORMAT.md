@@ -444,9 +444,12 @@ s:say(text, {portrait = bank, frame = n})   the speaker's bust from any bank of 
 mod.game.sound.room_music(room, file | nil[, {loop =, volume =, normalize =}])   a PCM .wav as that room's music, at the
                                    game's own music volume setting (followed live) and levelled to the game's tracks
                                    (-14.7 dB mean); volume = a trim on top, 1/100 dB.  The loader plays
-                                   it (DirectSound) and answers the engine's bgm_pick with 0 there, so the game fades
-                                   its own BGM out and brings the next room's back by itself
-mod.game.sound.music(file | nil[, opts]) / .music_status()
+                                   it (DirectSound); as it starts, the game's BGM is faded out through the engine's own
+                                   BGM change (as events do — the engine re-picks only at room load and now and then
+                                   outside events, so a first visit opening in an event would keep it), bgm_pick
+                                   answers 0 while it plays, and when it stops the room's own track is changed back to
+mod.game.sound.music(file | nil[, opts]) / .music_status()   status: {file, playing, position, volume, mean_db,
+                                   game_bgm = the game's own track id, 0 while silenced}
 mod.game.items.catalog()        -- rows now carry price (CP, def +0x60; 0 = not for sale) and icon (def +0x54)
 ```
 

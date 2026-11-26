@@ -4,7 +4,8 @@
 # Recettear>) and continued into a save.
 #   setup      the setup ran, its data is there, the mod installed (maps edited / defined)
 #   door       the storeroom (210141): the new door (zone 6) by keys → the branch (210146), its map from the overlay
-#   intro      the first-visit scene runs once (story flag); Tear's starter kit lands in the bag (api 1.12)
+#   intro      the first-visit scene runs once (story flag); the game's own BGM off under the shop theme; Tear's
+#              starter kit lands in the bag (api 1.12)
 #   cast       Recette + Tear wear converted sprite banks, stand on the floor line; a portrait bank exists; the shop
 #              music plays and the engine's own BGM pick is silenced
 #   tear       order 5 of the first food item: stock +5, gold down by the wholesale price
@@ -57,6 +58,8 @@ echo "    door: storeroom zone 6 -> 210146"
 # the intro (first visit): runs by itself, once
 W 'return mod.game.map.event() or recettear.fget(recettear.F.INTRO) == 1' 120 || fail "intro: never started"
 P ".*200"; shot intro.png
+# the first visit opens in the intro event, where the room loop never re-picks the BGM: ours must still silence it
+[ "$(L 'local s = mod.game.sound.music_status() return s ~= nil and s.playing and s.game_bgm == 0')" = true ] || fail "intro: the game's own BGM still plays under the shop theme"
 to_end || fail "intro: never ended"
 [ "$(L 'return recettear.fget(recettear.F.INTRO)')" = 1 ] || fail "intro: flag not set"
 [ "$(L 'return mod.game.script.errors()')" = 0 ] || fail "intro: script errors"

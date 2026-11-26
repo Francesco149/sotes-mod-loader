@@ -306,6 +306,17 @@ v2 so far (commits `10a1efe`, `b5b3b2b`, `6cb69d2`):
     fresh enold, -1600 on the SE test config).  Now: level = that master volume (re-read every 20 frames) + a gain to the
     game's tracks' mean (-14.7 dB, measured with ffmpeg on the WMA temp files; Recettear's open.wav is -16.1) + the mod's
     trim.  Port-repo finding owed.  Not checked by ear.
+  - **Stock BGM under the shop theme on the first visit (USER, fixed 2026-11-26):** `bgm_pick` is NOT per frame —
+    retail asks it at room load (0x40c380, before the loader's frame hook sees the new area), now and then from the
+    room loop outside events, and at event-script BGM changes (`si_40a5d0(sys, id, 1, 0, 20, 1)`; `room_bgm_restart`
+    0x4cca70 has bgm_pick INLINED, unhookable).  The first visit opens in the intro event ⇒ no re-pick ⇒ track 7 kept
+    playing.  Now: ours starting calls `si_40a5d0(sys, 0, 1, 0, 20, 1)` (SE 0x408450 same shape: manager `+0x2960`,
+    current id `+0x2964` = manager + 4 on all editions); ours stopping with the game's id still 0 calls `bgm_pick` (the
+    `this` the hook last saw) and changes back to its answer — deferred to a frame with a live room (`[g_world]` and
+    `+0x1038` non-null: a Game Over has neither and bgm_pick faulted there in the Hall's wipe test), dropped if the
+    game set a track itself first.  Probe `music_status().game_bgm`; `tests/recettear.sh`
+    checks it is 0 in the intro.  Music manager: track table `+0x18` (56 B: +0 dev, +4 id), tracks `+0x20` (576 B per
+    id; +40 → state, +20 u16 = 2 while fading out).  Port-repo finding owed.
   - **Windows fixes after the first hand run:** the setup gate held a system DLL's window (loader lock → no dialog): it now
     holds only calls from the exe image; `map.get()` searched the whole area table per call (0.4 ms; mod rooms last) —
     choppy with api 1.11's per-frame callers: one-entry cache.

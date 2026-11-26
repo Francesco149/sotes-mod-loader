@@ -53,15 +53,17 @@
 --   sound.slots() -> n
 --   sound.status(id) -> {loaded, voices, playing}   (a check for tests: did the WAVE load, is a buffer playing)
 --
--- MUSIC (api 1.11).  The game's BGM is picked by the room loop every frame (bgm_pick: the room's kind, its record's
--- override, a fixed id) and compared with the track that plays; a different answer makes the engine cross-fade.  A
--- mod's track is a PCM .wav FILE (core/music.c: a DirectSound stream of the loader's own); while it plays, a typed
--- hook answers bgm_pick with 0 — the engine fades its own music out, and brings the room's back when ours stops.
+-- MUSIC (api 1.11).  The game's BGM is picked by bgm_pick (the room's kind, its record's override, a fixed id): at
+-- room load, and again now and then by the room loop — but never during an event, and a mod room's first visit is
+-- usually one (its intro).  A different answer makes the engine cross-fade.  A mod's track is a PCM .wav FILE
+-- (core/music.c: a DirectSound stream of the loader's own).  When ours starts, the loader asks the engine's own BGM
+-- change (si_40a5d0: what event scripts call; `this` = sys) for track 0 = its fade to silence, and a typed hook
+-- answers bgm_pick with 0 while ours plays; when ours stops, bgm_pick's answer for the room is changed back to.
 --   sound.room_music(room, file | nil[, {loop = true, volume = 0, normalize = true}])   `file` is this room's music while
 --                                         the party is there.  It plays at the game's own music volume setting, levelled
 --                                         to the game's tracks; volume = the mod's trim on top (1/100 dB)
 --   sound.music(file | nil[, opts])       play `file` everywhere, until music(nil) (then the rooms' own again)
---   sound.music_status() -> {file, playing, position, volume} | nil
+--   sound.music_status() -> {file, playing, position, volume, game_bgm} | nil   game_bgm: the game's own track id (0 = off)
 local hook, mem, sym, log, game, res, edition_fn, music, on_frame = ...
 local ffi = require('ffi')
 
@@ -610,11 +612,28 @@ local function level(t)
   local gain = (t.normalize ~= false and st and st.mean_db) and (GAME_MEAN_DB - st.mean_db) * 100 or 0
   return math.max(-10000, math.min(0, math.floor(master() + gain + (t.volume or 0))))
 end
+-- the game's own BGM: the id it plays (the word after the manager: enold sys +0x2888, SE +0x2964), and a change to
+-- `id` the way retail's events make one: (id, keep 1, no force-restart 0, 20, fade the others out 1)
+local function game_bgm()
+  local sys = sym.va('g_sys')
+  if not (sys and mus.zdm_off) then return nil end
+  return mem.read_u16(sys + mus.zdm_off + 4)
+end
+local function game_bgm_set(id)
+  local sys, va = sym.va('g_sys'), sym.va('si_40a5d0')
+  if not (sys and va) then return end
+  mus.change = mus.change or ffi.cast('void (__thiscall *)(void *, int, int, int, int, int)', va)
+  mus.change(ffi.cast('void *', sys), id, 1, 0, 20, 1)
+end
 local function music_arm()
   if mus.armed then return true end
   local va = sym.va('bgm_pick')
   if not (va and music and on_frame) then return nil, 'music is unavailable on this build' end
-  hook.typed(va, 'uint16_t __thiscall(void *)', { post = function(ctx) if mus.cur then ctx.ret = 0 end end })
+  mus.pick = ffi.cast('uint16_t (__thiscall *)(void *)', va)
+  hook.typed(va, 'uint16_t __thiscall(void *)', { post = function(ctx)
+    mus.pick_this = ctx.args[1]
+    if mus.cur then ctx.ret = 0 end
+  end })
   on_frame(function()
     local m = game.map and game.map.get and game.map.get()
     local want = m and (mus.forced or mus.rooms[m.area]) or nil
@@ -634,11 +653,29 @@ local function music_arm()
         local v = level(want)
         music.volume(v)
         log(('[music] level %d (game music volume %d, track mean %.1f dB)'):format(v, master(), (music.status() or {}).mean_db or 0))
+        local g = game_bgm()
+        if not mus.cur and g and g ~= 0 then        -- the game's track goes now, not at the next pick (none in events)
+          game_bgm_set(0)
+          log(('[music] the game\'s BGM %d faded out'):format(g))
+        end
       end
     else
       music.stop()
     end
+    if mus.cur and not want then mus.restore = true end
     mus.cur = want
+  end)
+  -- ours stopped: the room's own track back — on a frame with a live room only (bgm_pick reads world +0x1038, the
+  -- room record: a Game Over / title has none and it faults), and not if the game has already set one itself
+  on_frame(function()
+    if not mus.restore or mus.cur then mus.restore = nil return end
+    local g = game_bgm()
+    if g == nil or g ~= 0 then mus.restore = nil return end
+    local w = world()
+    if not (mus.pick_this and w ~= 0 and mem.read_u32(w + 0x1038) ~= 0 and game.map.get()) then return end
+    mus.restore = nil
+    local id = mus.pick(mus.pick_this)
+    if id ~= 0 then game_bgm_set(id) log(('[music] the game\'s BGM %d back'):format(id)) end
   end)
   mus.armed = true
   return true
@@ -661,7 +698,11 @@ function sound.music(file, o)
   mus.forced = track(file, o)
   return true
 end
-function sound.music_status() return music and music.status() or nil end
+function sound.music_status()
+  local st = music and music.status() or nil
+  if st then st.game_bgm = game_bgm() end        -- the id the game's own BGM is set to (0 = silenced for ours)
+  return st
+end
 
 game.script, game.sound = game.script or {}, game.sound or {}
 for k, v in pairs(script) do game.script[k] = v end
