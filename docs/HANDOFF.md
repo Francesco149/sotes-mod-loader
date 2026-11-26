@@ -356,7 +356,7 @@ v2 so far (commits `10a1efe`, `b5b3b2b`, `6cb69d2`):
     Arch = plane-0 131041 frame 2 (set 1480): 128 × 160 px, the cells under it EMPTY (DATA 1049's gate); torch =
     object 70371.  Jump (Arche): a 128 px step yes, 192 no.
   - **Map character records**: A[7] (Lua index; 0-based 6) = spawn chance at load — 0 → 70 %, 1 / 9 → 100 %, 2 → 25 %
-    (SE 0x5b4cxx's presence switch after 0x5b4130); monsters need 1 to always appear (most of DATA 1047's have 0).
+    (SE sub_5b4e60, run after the object loader 0x5b4130: a failed roll unloads the character); monsters need 1 to always appear (most of DATA 1047's have 0).
   - **Chests** = object 70220: A[2] id (handle = room × 1000 + id when < 1000, composed by the object loader), A[7] item
     (1 / 2 / 3 = copper / silver / gold, count A[8]), A[8] count.  Opened by the talk / examine keys (touch_pass →
     touch_actor → switch_set → script mode 3 → SE 0x405890 "You found %s inside the %s." / bag full → put back).  Our
