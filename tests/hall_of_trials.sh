@@ -12,6 +12,9 @@
 #   fallen    a defeat during a run (the counter room +0x40b0 the game's Game Over raises): all finds but one are taken,
 #             Tear's scene, back to the branch
 #   again     a second run gets another seed (another layout)
+#   wipe      a REAL defeat (the party at 1 HP among red slimes -> the game's Game Over), once with Try Again (the
+#             checkpoint predates the run: the saved item is handed back), once with Return To Safety (the defeat save:
+#             the finds are taken): 3 finds -> 2 lost, 1 kept, back at the branch
 # PASS / FAIL on stdout, exit 1 on a FAIL.  Looks: SHOTS=DIR writes a PNG per stage there.
 set -u
 R=$1; SML="$(dirname "$0")/../tools/sml"
@@ -49,9 +52,12 @@ onto_circle() {
 [ "$(L 'return #recettear.A.hall.pool > 30 and #recettear.A.hall.floors >= 4 and recettear.A.chars.circle ~= nil')" = true ] || fail "setup data: hall tables / circle"
 to_end || fail "an event never ended"
 # room in the bag (the Steam save carries SE's 80): 30 unworn records into storage, as the box does
-L 'local w = mod.mem.read_u32(mod.sym.va("g_world")) local room = mod.mem.read_u32(w + 0x3788)
-   local k = 0 for i = mod.mem.read_u16(room + 0x4010) - 1, 0, -1 do local r = room + 0x2010 + 16 * i
-   if k < 30 and mod.mem.read_u32(r + 4) == 0 and mod.mem.read_u8(r + 0xa) == 0 then mod.mem.write_u8(r + 0xa, 1) k = k + 1 end end return k' >/dev/null
+room_in_bag() {
+  L 'local w = mod.mem.read_u32(mod.sym.va("g_world")) local room = mod.mem.read_u32(w + 0x3788)
+     local k = 0 for i = mod.mem.read_u16(room + 0x4010) - 1, 0, -1 do local r = room + 0x2010 + 16 * i
+     if k < 30 and mod.mem.read_u32(r + 4) == 0 and mod.mem.read_u8(r + 0xa) == 0 and mod.mem.read_i32(r) < 70400000 then mod.mem.write_u8(r + 0xa, 1) k = k + 1 end end return k' >/dev/null
+}
+room_in_bag
 if [ "$(L 'return (mod.game.map.get() or {}).area')" != 210146 ]; then
   L 'return mod.game.map.warp(210146, 2, true)' >/dev/null
   at 210146 || fail "the branch never loaded"
@@ -153,5 +159,39 @@ FALL=$(L "local f = $H.run.last_fall return f and (f.found .. ' ' .. f.lost .. '
 at 210146 || fail "fallen: not back at the branch"
 P ".*120"; to_end
 echo "    fallen: 3 finds -> 2 lost, 1 kept, back at the branch; again: seed $SEED2 != $SEED1"
+
+# a real wipe, both of the game's choices: the party at 1 HP among red slimes until the Game Over screen (world == 0)
+wipe() {   # $1 = the Game Over menu keys
+  to_end
+  room_in_bag                                                # (a Game Over's reload undid the last one)
+  L "return {$H.start()}" >/dev/null
+  at 240901 || fail "wipe: no floor 1"
+  P ".*120"; to_end
+  L 'mod.game.items.give(70400002, 1) mod.game.items.give(70403105, 2) return true' >/dev/null
+  P ".*100"                                                  # (the run's finds are tracked every 30 frames)
+  [ "$(L "local n = 0 for _, f in ipairs($H.finds()) do n = n + f.n end return n")" = 3 ] || fail "wipe $2: the finds did not reach the bag"
+  for k in 1 2 3 4; do L "mod.game.actors.spawn(51972, {dx = 3000 + 2000 * $k})" >/dev/null; done
+  local over=0
+  for k in $(seq 60); do
+    L "for _, r in ipairs(mod.game.roster.members()) do if r.hp > 1 then mod.game.roster.set(r.code, {hp = 1}) end end return true" >/dev/null
+    P "R*10 .*30"
+    [ "$(L 'return mod.mem.read_u32(mod.sym.va("g_world"))')" = 0 ] && { over=1; break; }
+  done
+  [ $over = 1 ] || fail "wipe: no Game Over"
+  P ".*300"; shot "gameover_$2.png"
+  P "$1"
+  for _ in $(seq 60); do [ "$(L 'return mod.game.map.get() ~= nil')" = true ] && break; sleep 1; done
+  W "return $H.run.last_fall ~= nil and $H.run.last_fall.found > 0 or mod.game.map.event()" 200 || fail "wipe $2: no fallen scene"
+  P ".*80"; shot "wipe_$2.png"
+  to_end
+  W "return (mod.game.map.get() or {}).area == 210146 and mod.game.map.warp_status() == 'idle'" 400 || fail "wipe $2: not back at the branch"
+  P ".*120"; to_end
+  FALL=$(L "local f = $H.run.last_fall return f and (f.found .. ' ' .. f.lost .. ' ' .. tostring(f.kept ~= nil)) or 'none'")
+  [ "$FALL" = '"3 2 true"' ] || fail "wipe $2: $FALL (3 found, 2 lost, 1 kept expected)"
+  echo "    wipe ($2): the game's Game Over -> 3 finds, 2 lost, 1 kept -> the branch"
+}
+wipe "ent*8 .*100" try_again
+wipe "D*8 .*30 ent*8 .*100" return_to_safety
+
 [ "$(L 'return mod.game.script.errors()')" = 0 ] || fail "script errors"
 echo "PASS  hall_of_trials.sh"
