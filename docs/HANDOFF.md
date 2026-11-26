@@ -311,6 +311,33 @@ v2 so far (commits `10a1efe`, `b5b3b2b`, `6cb69d2`):
     choppy with api 1.11's per-frame callers: one-entry cache.
   - **Not done:** enold / ense-jp runs of the mod (ense-en only), selling the player's own loot (needs an item-remove
     op), new item definitions (Recettear's items + icons), more Recettear cast (sprites for 15 are converted).
+- **New items (api 1.12, 2026-11-26)** — `core/lua/items.lua` (embedded, after sprites.lua): `items.define{id, like, …}` /
+  `def` / `icon` / `icons` / `equip` / `use` (SE) / `drop`, `actors.define{drops, coins}`; MOD-FORMAT "New items".  Gate
+  **`tests/items.sh`** + `tests/mods/itemtest` (retail rows + recoloured retail icons only) PASS ense-en / ense-jp / enold.
+  `../sotes-mods` recettear 0.2.0: five Recettear items (setup 2 reads `data/item.txt` + `bmp/item/itemCC.bmp`, cell =
+  id % 100), Tear's starter kit (intro end, or her next talk for older saves; flag 991000008), cellar drops;
+  `tests/recettear.sh` PASS with the kit step.  RE facts (**port-repo findings owed** — a port session runs in parallel):
+  - **The item table** is one static array scanned inline from its base to a 0 id everywhere (SE then the generated-gear
+    table sys+0x308: 512 × 940 B, ids **910000 + slot**, built from the save / W-map drops by 0x54ea90, rows not in the
+    bag or on the floor are cleared).  Every code reference is the BASE (`[T]`, `[reg*4+T]`, imm32 T): 77 / 106 / 106,
+    and the 4-byte value occurs nowhere else in the file → relocation = one dword per site (`tools/itemsites.py`).
+  - Row fields (both editions): +4 name[0x50], +0x54 u16 icon, +0x58 use effect (SE: 8 HP, 17 MP, 18 permanent stat,
+    9 revive, 10 cure, 19 recall, 20 photo, 21 key, 24 tome), +0x5c target, +0x60 price, +0x64 unit, u16 +0x66 list
+    kind, +0x68/+0x6c/+0x70 effect numbers, +0x78 equip slot, +0x7c class fit, +0x80..+0x94 stats, +0xac desc[0x200],
+    +0x2ac category (≥ 900 key), +0x2b8 member-bound.  enold 0x5b1f10 case 10 (= SE 18): stat +0x68 (1..6 atk / def /
+    spirit / resist / max HP / max MP) gains +0x6c + rand·+0x70.  **Gear records carry count 0** (one record each).
+  - SE carry caps (room_item_add 0x404db0): 80 unstored normal items, 128 clothes (slot 5..8).  A save holding an
+    unknown id loads fine; the game drops those records.  Wearer id = pslot +0xa10 SE / +0x9f0 enold.
+  - **The icon sheet** (DATA 1451 in the exe, 256 × 1024 8-bit, 128 palette entries unused) feeds TWO banks: the menus'
+    (50 / 56 / 60) and the world's (437 / 446 / 450) — the pickup sparkle (particle 100143, SE 0x575770 stores the id at
+    +0x25c) draws the item's icon from the latter.  The slicer (SE 0x412a10) makes per-cell trim records (+0x34) on the
+    FIRST decode and reuses them; a taller sheet needs them cleared ("Failed Surface Load" otherwise).
+  - Drops: `foe_drops` (SE 0x5dcca0, thiscall char, coins, item, chance ‰) → `pickup_spawn(kind, body, id)` (item kind
+    100162 enold / **100168 SE**: a small chest, bank 444 frame 24); touched only by the leader in state ≤ 0
+    (+0x204); "You got %s." in the world's 8-line queue; pickups time out.  SE item use = **0x5da1f0** (thiscall room,
+    pslot, u16 record, msg, u16*, 0, dry); JP 0x5d7e90 (`symgen_manual.tsv`).
+  - Not done: items on enold `use` (fastcall 0x5b1f10 unbound), a Lua `on_use` effect hook, selling Recettear goods
+    in the shop (s:shop takes ids: works with new ids, untested), Windows hand-play of the new items.
 - **Next (modding PoC):** a monster with its own skills / projectiles (skill records + their clips), a portrait / voice in s:say, camera shake, Windows hand-play of the hall.
 - **Next:** more `tests/*.lua` → a fuller Windows runner (`tools/win/` is launch + Lua only: no `--saves` isolation — it uses the real install + Steam saves, backs up / restores `version.dll` by hand) (own scheduled task, never `oss-rhost-runner`).  Host tests (`make -C core tests`) still
   assume WSL interop — port them to run under wine.
