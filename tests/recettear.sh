@@ -4,7 +4,7 @@
 # Recettear>) and continued into a save.
 #   setup      the setup ran, its data is there, the mod installed (maps edited / defined)
 #   door       the storeroom (210141): the new door (zone 6) by keys → the branch (210146), its map from the overlay
-#   intro      the first-visit scene runs once (story flag)
+#   intro      the first-visit scene runs once (story flag); Tear's starter kit lands in the bag (api 1.12)
 #   cast       Recette + Tear wear converted sprite banks, stand on the floor line; a portrait bank exists; the shop
 #              music plays and the engine's own BGM pick is silenced
 #   tear       order 5 of the first food item: stock +5, gold down by the wholesale price
@@ -37,6 +37,10 @@ area() { L 'return (mod.game.map.get() or {}).area'; }
 [ "$(L 'return recettear ~= nil and mod.setup.done ~= nil and mod.game.maps ~= nil')" = true ] || fail "no recettear mod / api 1.11 (setup not done?)"
 [ "$(L 'return mod.fs.exists(recettear.A.source) and recettear.A.chars.recette.n > 0 and (recettear.A.faces.recette or 0) > 0')" = true ] || fail "setup data incomplete"
 W 'return not mod.game.map.event()' || fail "an event never ended"
+# room in the bag for the kit (the Steam save carries SE's 80): 20 unworn records into storage, as the box does
+L 'local w = mod.mem.read_u32(mod.sym.va("g_world")) local room = mod.mem.read_u32(w + 0x3788)
+   local k = 0 for i = mod.mem.read_u16(room + 0x4010) - 1, 0, -1 do local r = room + 0x2010 + 16 * i
+   if k < 20 and mod.mem.read_u32(r + 4) == 0 and mod.mem.read_u8(r + 0xa) == 0 then mod.mem.write_u8(r + 0xa, 1) k = k + 1 end end return k' >/dev/null
 if [ "$(area)" != 210141 ]; then
   L 'return mod.game.map.warp(210141, 2, true)' >/dev/null
   W 'return (mod.game.map.get() or {}).area == 210141 and mod.game.map.warp_status() == "idle" and not mod.game.map.event()' || fail "storeroom never loaded"
@@ -57,6 +61,14 @@ to_end || fail "intro: never ended"
 [ "$(L 'return recettear.fget(recettear.F.INTRO)')" = 1 ] || fail "intro: flag not set"
 [ "$(L 'return mod.game.script.errors()')" = 0 ] || fail "intro: script errors"
 echo "    intro: ran, flag set"
+# api 1.12: Tear's starter kit — Recettear's own items as new items of this game (needs room in the bag: SE carries
+# 80 normal items; a full bag gets retail's "bag is full" instead)
+if [ "$(L 'return mod.game.items.defined ~= nil and mod.game.items.defined(recettear.IT.longsword) == true')" = true ]; then
+  KIT=$(L 'local n = {} for _, it in ipairs(mod.game.items.list()) do if it.id >= 70400000 then n[it.name] = (n[it.name] or 0) + math.max(1, it.count) end end
+           return recettear.fget(recettear.F.KIT) == 1 and n["Longsword"] and n["Windbreaker"] and n["Ham Sandwich"] == 3 and n["Strong Concoction"] and n["Ferromin"] and true or n')
+  [ "$KIT" = true ] || fail "kit: $KIT"
+  echo "    kit: Longsword, Windbreaker, 3 Ham Sandwiches, Strong Concoction, Ferromin (new item rows, Recettear's icons)"
+fi
 
 # cast: on the leader's floor line, in our banks; a portrait; the music
 [ "$(L 'local f, bad, n = nil, nil, 0 for _, a in ipairs(mod.game.actors.list()) do if a.leader then f = a.y + a.h end end
