@@ -2,7 +2,7 @@
 # tests/hall_of_trials.sh R — the recettear mod's Hall of Trials (loader api 1.13: maps.set, items.take) end to end on a
 # running `sml` run R started with `--mods recettear` (setup 3 done: `--cfg setup_trust=recettear`, OSS_STEAM=<a Steam
 # library with Recettear>) and continued into a save.
-#   enter     Recette's menu "The Hall of Trials" -> Yes -> floor 1 (room 240901, its map re-served: DATA 4021)
+#   enter     Recette's menu "The Hall of Trials" -> Yes -> floor 1 (room 245901, its map re-served: DATA 4021)
 #   floor 1   the banner scene; Recettear's monsters (map records of the mod's types) on the floor; the chest records
 #             of this floor freed in the object perpetuity table; a chest opened by the talk key (retail's chest)
 #   circle    walking onto the magic circle asks "Go to the next floor?" -> Yes -> floor 2, a different layout
@@ -37,11 +37,12 @@ talk() {
   W 'return mod.game.map.event()' 60 || fail "talk $1: no event"
 }
 at() { W "return (mod.game.map.get() or {}).area == $1 and mod.game.map.warp_status() == 'idle'" "${2:-300}"; }
+floor() { at "$(L "return recettear.hall().room_of($1)")" "${2:-300}"; }   # floor n's room (240900 / 245900 + n by its look)
 H='recettear.hall()'
 # the leader onto the circle: from 60 px left of it, walking right until the prompt
 onto_circle() {
-  local x; x=$(L "return $H.run.info.exit.x * 100 - 6000")
-  L "mod.game.coordinates.set(nil, $x, $H.run.info.exit.feet * 100 - 9000) return true" >/dev/null
+  local x; x=$(L "return $H.run.exit.x * 100 - 6000")
+  L "mod.game.coordinates.set(nil, $x, $H.run.exit.feet * 100 - 9000) return true" >/dev/null
   P ".*60"
   for _ in $(seq 10); do P "R*20 .*10"; [ "$(L 'return mod.game.map.event()')" = true ] && return 0; done
   return 1
@@ -73,7 +74,7 @@ to_choice || fail "enter: no Yes / No"
 shot enter.png
 pick 1
 to_end
-at 240901 || fail "enter: floor 1 never loaded"
+floor 1 || fail "enter: floor 1 never loaded"
 [ "$(L 'return mod.game.maps.hits(4021) >= 1')" = true ] || fail "floor 1: DATA 4021 not served"
 SEED1=$(L "return $H.run.seed")
 [ "$(L "return recettear.fget($H.F.RUNS)")" = $((RUNS0 + 1)) ] || fail "enter: run counter"
@@ -87,15 +88,25 @@ N=$(L 'local n = 0 for _, a in ipairs(mod.game.actors.list()) do if a.type and a
 [ "$N" -ge 3 ] || fail "floor 1: $N monsters"
 [ "$(L 'for _, a in ipairs(mod.game.actors.list()) do if a.type == 50989 then return true end end return false')" = true ] || fail "floor 1: no circle"
 echo "    floor 1: banner, $N Recettear monsters, the circle"
+# the floor: a maze of chambers (0.4), every one reachable from the start's; the monsters at Recettear's strength
+MAZE=$(L "local i = $H.run.info local seen, q, n = { [i.start] = true }, { i.start }, 0
+  while q[n + 1] do n = n + 1 for _, o in pairs(q[n].link) do if not seen[o] then seen[o] = true q[#q + 1] = o end end end
+  local shafts = 0 for _, c in ipairs(i.chambers) do if c.up then shafts = shafts + 1 end end
+  return i.theme .. ' ' .. #i.chambers .. ' ' .. n .. ' ' .. tostring(seen[i.exit] == true) .. ' ' .. shafts")
+set -- $(echo "$MAZE" | tr -d '"')
+[ "$1" = hall ] && [ "$2" = "$3" ] && [ "$4" = true ] || fail "floor 1: maze $MAZE (hall, all chambers reachable, the exit among them)"
+ATK=$(L 'for _, a in ipairs(mod.game.actors.list()) do if a.type == 51975 then local sb = mod.mem.read_u32(a.ptr + (mod.edition == "enold" and 0x750 or 0x760)) return mod.mem.read_i32(sb + 0x64) .. "/" .. mod.mem.read_i32(sb + 0x58) end end')
+[ "$ATK" = '"18/30"' ] || fail "floor 1: a green slime's attack / HP = $ATK (18/30 expected: Recettear's scale)"
+echo "    maze: $2 chambers, $5 shaft(s), all reachable; green slime attack / HP $ATK"
 CH=$(L 'local m = mod.game.maps.parse(mod.game.maps.bytes(4021)) for _, o in ipairs(m.objs) do if o.rec[5] == 70220 then return o.rec[2] .. " " .. o.rec[3] .. " " .. o.A[7] .. " " .. o.A[8] end end')
 set -- $(echo "$CH" | tr -d '"')
 CX=$1; CY=$2; CID=$3; CN=$4
 L "for _, a in ipairs(mod.game.actors.list()) do if a.type and a.type ~= 50989 then mod.game.actors.remove(a.slot) end end return true" >/dev/null   # (no foe near: touch_pass refuses then)
 L "_G.hall_g0 = mod.game.items.gold() _G.hall_n0 = #mod.game.items.list() return true" >/dev/null
 # the chest stands at one end of a stretch of floor: come at it along that floor, from whichever side is floor
-for side in "+100 L" "-80 R"; do
+for side in "+44 L" "-36 R"; do                            # (close by: the chest may stand on a raised step)
   set -- $side
-  L "mod.game.coordinates.set(nil, ($CX $1) * 100, ($CY - 100) * 100) return true" >/dev/null
+  L "mod.game.coordinates.set(nil, ($CX $1) * 100, ($CY - 60) * 100) return true" >/dev/null
   P ".*80"
   for _ in $(seq 8); do P "$2*12 .*10 V*10 .*60"; [ "$(L 'return mod.game.map.event()')" = true ] && break 2; done
 done
@@ -111,7 +122,7 @@ to_choice || fail "circle: no Yes / No"
 shot circle.png
 pick 1
 to_end
-at 240902 || fail "circle: floor 2 never loaded"
+floor 2 || fail "circle: floor 2 never loaded"
 [ "$(L 'return mod.game.maps.hits(4022) >= 1')" = true ] || fail "floor 2: DATA 4022 not served"
 DROPS=$(L 'local d = mod.game.actors.defined(51975) return d and d.drops and #d.drops or 0')
 [ "$DROPS" -ge 1 ] || fail "floor 2: green slimes have no drop table"
@@ -120,7 +131,7 @@ to_end
 
 # den: floor 5 (jumped to), its circle leads home
 L "return {$H.go(5)}" >/dev/null
-at 240905 || fail "den never loaded"
+floor 5 || fail "den never loaded"
 P ".*120"; to_end
 UNITS='local n = 0 for _, it in ipairs(mod.game.items.list()) do if (it.id == 70400002 or it.id == 70403105) and not it.stored and it.owner == 0 then n = n + math.max(1, it.count) end end return n'
 U0=$(L "$UNITS")
@@ -143,7 +154,7 @@ echo "    den: circle -> the branch; $F0 finds onto the shelves (clears $(L "ret
 
 # fallen: a run, finds, then a defeat (the counter the Game Over raises), Recettear's rule
 L "return {$H.start()}" >/dev/null
-at 240901 || fail "fallen: no floor 1"
+floor 1 || fail "fallen: no floor 1"
 P ".*120"; to_end
 SEED2=$(L "return $H.run.seed")
 [ "$SEED2" != "$SEED1" ] || fail "again: the same seed twice"
@@ -165,7 +176,7 @@ wipe() {   # $1 = the Game Over menu keys
   to_end
   room_in_bag                                                # (a Game Over's reload undid the last one)
   L "return {$H.start()}" >/dev/null
-  at 240901 || fail "wipe: no floor 1"
+  floor 1 || fail "wipe: no floor 1"
   P ".*120"; to_end
   L 'mod.game.items.give(70400002, 1) mod.game.items.give(70403105, 2) return true' >/dev/null
   P ".*100"                                                  # (the run's finds are tracked every 30 frames)

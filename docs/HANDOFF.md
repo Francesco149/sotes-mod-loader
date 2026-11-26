@@ -372,6 +372,50 @@ v2 so far (commits `10a1efe`, `b5b3b2b`, `6cb69d2`):
   - Recettear side (openrecet has the formats): the dungeon-1 enemy roster = enemylist.txt `ダンジョン１`, item
     treasure = item.txt `ダ(1M)`; red slime chr08, green chr05 (chr04 is the blue one), kobold chr20, green roper chr24;
     the EN dungeon name is only in bmp/title/dungeon_title1.tga ("The Hall of Trials").
+- **The Hall of Trials 0.4 (2026-11-26, no loader change)** — `../sotes-mods` 08b357a: `floors.lua` replaces `cave.lua`
+  (a maze of chambers: doorways + shafts on one-way ledges; brick halls 1F / 2F / vault, caves 3F / 4F), monsters'
+  stats written at spawn.  `tests/hall_of_trials.sh` PASS ense-en (+ maze reachability, green slime 18 / 30); rooms are
+  now 245900 + n (brick) / 240900 + n (cave) — the test asks `hall.room_of(n)`.  Give the run ~400 idle frames after
+  `continue` before the test (its first talk raced the arrival once).  Dev aids: `recettear.hall().reload()` re-reads
+  floors.lua from the run's mods dir; an offline preview = host `luajit` + core/lua/maps.lua with stub `res` → the
+  served bytes → a PIL renderer over sheets dumped with `sprites.sheet(bank)` (scratch only, not committed).
+  RE facts (SE-checked in game; **port-repo findings owed**):
+  - **Where things stand in the cave** (DATA 1049): terrain pieces sit on a 64 px grid; the walkable surface is 32 px
+    INSIDE a top piece (shape 2 = its lower half), so the arch (131041, 128 x 160) has its bottom at piece top + 32,
+    floor decor (plane 1, 131021) is anchored one CELL below the piece grid (bottom = piece top + 32), ceiling decor
+    starts 32 px inside the ceiling piece, a chest record's y = surface − 64, a torch's = surface − 176.  0.3 put all
+    of these on the piece boundary (the "floating" arch and rocks).
+  - **Cave dressing**: lit wall 131001 uses the terrain's frame ↔ open-side convention (1 2 3 / 11 0 5 / 9 8 7, top
+    variants 24 25, bottom 28 29, interior 0 16 17) over dark 131002 (21 / 22); 131021 columns = head / shaft.. / foot
+    in three kinds (8 9 13, 16 17 19, 24 25 27), hanging 1 | 16 18 | 24 26, standing 0 | 28 27; **131004 frame 15 = a
+    plank: wall art + a one-way ledge, 64 px wide, feet at piece top + 32** (climbed in game).
+  - **The grey ruins** (DATA 1057..1066, rooms 2451xx; sheets 1052 / 1054 / 1055 / 1057 / 1051): 32 px cells.  Terrain
+    121001: same convention (top 2 16 17, under 8 18 19, left-open 11 22 23, right-open 5 20 21, inner corners 12 4
+    10 6, interior 0 = black); retail gives every under-side frame (7 8 9 18 19) shape 1, the rest 0.  Surface = the
+    cell's top.  Backdrop 11001 frames 16..19; panels 11000 (corners 1 3 9 7, edges 2 8 11 5, inside 0 20..23);
+    11060 (64 px): frieze 12..17, reliefs 1 2, niche 4, brazier 5; pillars 11050 on plane 1 (64 px: capital 2, shaft
+    1, base 0; ivy 52 56 / 55 54); **11211 frame 25 = a 32 px stone shelf, one-way** (jumped up through and stood on
+    in game); doorway 11310 (128 x 128, bottom on the floor, the cells under it empty): 0 stairs up, 1 stairs down, 2
+    a wooden door; door device y = floor − 32, torch y = floor − 144.  121002 frames 24 / 25 = a 1:2 stair pair
+    (+ inner corner 12), 121003 (sheet 1057) 16 / 17 floor variants, 18 / 19 the stair's under-side.
+  - Cells may use any family's pieces whatever the room (a brick map loads in a cave room's record and back); cell
+    word 2 ("set") is not read by the decoder (port: map_decode.c).
+  - **Arche's jump** (SE, flat floor): apex 48 px for a tap, 59 px with the key held 28 frames, 79 at 40, 106 at 60.
+    A 128 px step is NOT reachable (0.3's note said it was); the ledges rise 64.  Walking starts slowly (14 px in the
+    first 30 frames), the first frames of the opposite direction only turn her.
+  - **A monster's live stat block** (char +0x760 SE / +0x750 enold): +0x54 / +0x58 HP, +0x64 ATK, +0x68 DEF, +0x6c
+    SPI, +0x70 RES (as the party's), then SE +0xe8 level, **+0xf4 EXP given, +0xf8 coins, +0xfc drop item, +0x100
+    drop chance** (enold one dword lower from 0xd4 on — the EXP / coin offsets there are inferred, not run).  Seen on
+    the SE's default difficulty: Green Slime 51010 34 HP / 18 / 14 / 3 EXP, Blue 51011 55 / 30 / 26 / 10, Kobold
+    51030 112 / 40 / 32 / 58, Myconid 51024 97 / 44 / 28 / 60 (the table's values scaled by difficulty).
+  - Area table (SE): records of 344 bytes; +0 key, +4 area, +12 map DATA id, exits from +28 ({to, gate, ?} triples),
+    +0x10c / +0x110 / +0x114 tileset / type / town.
+  - Recettear side (openrecet): the Hall is ONE look (xfile/uturikomi00: renga_kabe brick wall, renga_hasira pillar,
+    red_jutan carpet, uturikomi_yuka floor) on a 3 x 5 / 5 x 5 backtracker maze, no boss (5F: a chest + the return
+    door), trapped chests spawn slimes; `bmpdata.bin` carries newer data/enemy.txt + item.txt than lnkdatas.bin and
+    the game reads it first — **setup.lua still reads lnkdatas.bin only** (item rows may be the older ones).
+  - Not done: Recettear's own textures as tiles (piece → bank is hardcoded in the decoder: needs a decode hook or a
+    post-decode rewrite of the cells' bank), traps / trapped chests, stairs (121002) inside chambers, enold / JP.
 - **Next (modding PoC):** a monster with its own skills / projectiles (skill records + their clips), a portrait / voice in s:say, camera shake, Windows hand-play of the hall.
 - **Next:** more `tests/*.lua` → a fuller Windows runner (`tools/win/` is launch + Lua only: no `--saves` isolation — it uses the real install + Steam saves, backs up / restores `version.dll` by hand) (own scheduled task, never `oss-rhost-runner`).  Host tests (`make -C core tests`) still
   assume WSL interop — port them to run under wine.
