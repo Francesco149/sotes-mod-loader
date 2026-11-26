@@ -443,6 +443,47 @@ mod.game.sound.music(file | nil[, opts]) / .music_status()
 mod.game.items.catalog()        -- rows now carry price (CP, def +0x60; 0 = not for sale) and icon (def +0x54)
 ```
 
+## New items (api 1.12)
+
+`core/lua/items.lua` (embedded) adds to `mod.game.items`.  Items of a mod's own, **past the retail table** — no
+retail row is replaced and no free slot is used up: the static item table (enold 215 rows of 736 B, SE 306 of 940 B,
+0-id-terminated, scanned inline everywhere) is relocated into a 4095-row copy on the first `define`, every one of its
+77 / 106 / 106 references rebased (`tools/itemsites.py`; each verified before anything is written).  A row is a copy
+of a game row (`like`) with fields replaced, so the item behaves as the game's own of that kind: equip slot, class
+fit, list kind, use effect, carry caps, shop / sell, saves.
+
+```
+mod.game.items.define{id=, like=[, name=, desc=, price=, icon=, attack=, defense=, spirit=, resist=, max_hp=,
+                      max_mp=, use = {effect=, a=, b=, c=}, set = {[offset] = int32}]} -> id | nil, why
+    id     the number saves store: never a retail id, never 910000..910511 (SE's generated gear), stable across
+           versions of the mod.  A save holding it loaded WITHOUT the mod: the game drops those records (no crash).
+    like   a retail (or defined) id: the row copied
+    icon   a cell number, or a 32 x 32 image (mod.image RGBA, or an indexed sprites image) — see items.icon
+    use    a consumable's effect (+0x58) and numbers (+0x68 a / +0x6c b / +0x70 c).  SE: 8 = HP a + b*rand,
+           17 = MP, 18 = a permanent stat (a: 1 attack 2 defense 3 spirit 4 resist 5 max HP 6 max MP; b + c*rand)
+mod.game.items.def(id)        -> {id, ptr, name, desc, price, icon, kind, slot, fit, attack.., effect, a, b, c, ours}
+mod.game.items.defined(id) / .capacity() -> {retail, defined, total, extended, error}
+mod.game.items.icon(img)      -> cell   appended to the icon sheet (below)
+mod.game.items.icons()        -> {first, added, built, bank, banks, res}
+mod.game.items.equip(index, member)    room_item_equip: the record on the member (roster entry; nil = the first
+                                       active), its equip slot freed, stats recomputed (class fit = the caller's)
+mod.game.items.use(index, member) -> used, message    SE only: retail's field use of the record (heal / stat / ...)
+mod.game.items.drop(id, where) -> true | nil, why     an item lying on the floor (pickup_spawn, as a foe drops one);
+                                       where = an actors entry, a roster member, a char pointer or {x=, y=}
+mod.game.actors.define{..., drops = {{id=, chance= per mille}, ...}, coins = n}
+                                       the type's drops: the first through retail's own drop roll (foe_drops), the
+                                       rest rolled after it at the same spot; coins replaces its money
+mod.game.items.catalog()               also lists the defined items (ours = true)
+```
+
+**Icons.** The item icons are one 8-bit sheet (256 x 1024, 8 cells a row) that two banks are cut from — the menus'
+(50 enold / 56 SE EN / 60 SE JP) and the world's (437 / 446 / 450: the pickup sparkle shows the picked item's icon).
+New icons go in rows appended below the retail cells (cell 256 on), take the 128 palette entries no retail icon uses
+(median cut over every mod's icons; each pixel the nearest of the whole palette), and the sheet is rebuilt at most
+once a frame under a new DATA id of the resource overlay.  Both banks switch to it; a decoded one is freed with
+retail's `sprite_set_free` and its per-cell trim records (+0x34, made once at the first decode and reused) cleared so
+the slicer makes a set for the taller sheet.
+
 ### `mod.*` API — roadmap (later phases, see DESIGN.md)
 
 ```

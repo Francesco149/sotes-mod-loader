@@ -1,0 +1,11 @@
+[mod]
+id          = "itemtest"
+name        = "Item test (loader gate)"
+version     = "0.1.0"
+description = "tests/items.sh's mod: four new items cloned from retail rows (a sword, an armour, a food, a stat drop) with recoloured retail icons, and a slime type that drops two of them. Built from the user's own game data only."
+authors     = ["Francesco149"]
+target_games = ["sotes_en"]
+
+[loader]
+api         = "1.12"
+min_version = "0.1.0"

@@ -20,6 +20,10 @@ _oss_lua_script:
 _oss_lua_sprites:
     .incbin "lua/sprites.lua"
     .byte 0
+    .globl _oss_lua_items
+_oss_lua_items:
+    .incbin "lua/items.lua"
+    .byte 0
     .globl _oss_lua_fs
 _oss_lua_fs:
     .incbin "lua/fs.lua"

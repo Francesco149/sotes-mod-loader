@@ -156,6 +156,40 @@ static void sprites_lua_init(lua_State *L) {
     hooks_push_table(L);
     if (lua_pcall(L, 8, 0, 0) != 0) { ml_log("[sprites] sprites.lua: %s", lua_tostring(L, -1)); lua_pop(L, 1); }
 }
+// mod.game.items additions (api 1.12) — core/lua/items.lua: item definitions past the retail table (relocated), icons
+// appended to the icon sheet, items on the floor, character types' drops
+extern const char oss_lua_items[];
+// the running edition's item-table sites (tools/itemsites.py) → {table, row_size, rows, icon_bank, pickup_kind,
+// sites = {va, ...}} | nil
+#include "sotes_itemsites.h"
+static int l_itemsites(lua_State *L) {
+    int ed = sym_edition();
+    if (ed < 0 || ed > 2) { lua_pushnil(L); return 1; }
+    const ItemSites *b = &g_itemsites[ed];
+    lua_newtable(L);
+    lua_pushnumber(L, b->table); lua_setfield(L, -2, "table");
+    lua_pushnumber(L, b->row_size); lua_setfield(L, -2, "row_size");
+    lua_pushnumber(L, b->rows); lua_setfield(L, -2, "rows");
+    lua_pushnumber(L, b->icon_bank); lua_setfield(L, -2, "icon_bank");
+    lua_pushnumber(L, b->pickup_kind); lua_setfield(L, -2, "pickup_kind");
+    lua_newtable(L);
+    for (int i = 0; i < b->nsites; i++) { lua_pushnumber(L, b->sites[i]); lua_rawseti(L, -2, i + 1); }
+    lua_setfield(L, -2, "sites");
+    return 1;
+}
+static void items_lua_init(lua_State *L) {
+    if (luaL_loadstring(L, oss_lua_items) != 0) { ml_log("[items] items.lua: %s", lua_tostring(L, -1)); lua_pop(L, 1); return; }
+    mem_push_lua(L);
+    sym_push_lua(L);
+    lua_pushcfunction(L, l_title_log);
+    gb_push_lua(L);
+    resov_push_lua(L);
+    lua_pushcfunction(L, l_edition_tag);
+    lua_pushcfunction(L, l_itemsites);
+    hooks_push_table(L);
+    exec_push_on_frame(L);
+    if (lua_pcall(L, 9, 0, 0) != 0) { ml_log("[items] items.lua: %s", lua_tostring(L, -1)); lua_pop(L, 1); }
+}
 // Pure-Lua shared modules (core/lua/fs.lua → mod.fs + mod.steam, core/lua/image.lua → mod.image): each chunk is
 // called once with (log) and returns a table of {name = module}; every mod's `mod` table gets the same modules.
 extern const char oss_lua_fs[], oss_lua_image[], oss_lua_maps[];
@@ -386,6 +420,7 @@ int lh_init(void) {
     title_lua_init(g_L);        // mod.game.save / attract (core/lua/title.lua)
     script_lua_init(g_L);       // mod.game.script / sound (core/lua/script.lua)
     sprites_lua_init(g_L);      // mod.game.sprites (core/lua/sprites.lua)
+    items_lua_init(g_L);        // mod.game.items additions (core/lua/items.lua; after sprites: icons, actors.define)
     config_lua_init(g_L);       // the mod.config factory (mod.toml [config] schema + oss_mods.cfg)
     lib_lua_init(g_L, "fs.lua", oss_lua_fs, 0);        // mod.fs / mod.steam
     lib_lua_init(g_L, "image.lua", oss_lua_image, 0);  // mod.image

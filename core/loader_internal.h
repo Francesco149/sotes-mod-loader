@@ -18,9 +18,9 @@
 // load); MINOR bumps on an ADDITIVE change (older mods still load, newer mods needing the new minor
 // refuse on an older loader).  A mod declares what it needs in mod.toml `[loader] api = "MAJ.MIN"`
 // (absent = assume "1.0").  Native mods have their own OSS_ABI_VERSION (struct-growth) in oss_mod_api.h.
-#define OSS_API_VERSION "1.11"   // 1.1: mod.game.camera / map / flags / items; 1.2: sandbox ops (warp / rooms / give / set); 1.3: dialogue.skip; 1.4: actors; 1.5: voice.status; 1.6: ui.combo_search; 1.7: mod.res + map.add_room / set_exit; 1.8: mod.game.script / sound + actors handle / ptr / set_handle; 1.9: mod.game.sprites + paged s:say / narrate; 1.10: sprite banks past the retail tables (relocation), actors.define; 1.11: first-time setup (setup.lua, mod.setup / data_dir), mod.fs / steam / image, mod.game.maps, portraits + 24-bit banks, items.take, sound.music
+#define OSS_API_VERSION "1.12"   // 1.12: items.define (item table relocation) / def / icon / drop + actors.define drops / coins; 1.1: mod.game.camera / map / flags / items; 1.2: sandbox ops (warp / rooms / give / set); 1.3: dialogue.skip; 1.4: actors; 1.5: voice.status; 1.6: ui.combo_search; 1.7: mod.res + map.add_room / set_exit; 1.8: mod.game.script / sound + actors handle / ptr / set_handle; 1.9: mod.game.sprites + paged s:say / narrate; 1.10: sprite banks past the retail tables (relocation), actors.define; 1.11: first-time setup (setup.lua, mod.setup / data_dir), mod.fs / steam / image, mod.game.maps, portraits + 24-bit banks, items.take, sound.music
 #define OSS_API_MAJOR   1
-#define OSS_API_MINOR   11   // keep in step with OSS_API_VERSION (the gate compares these)
+#define OSS_API_MINOR   12   // keep in step with OSS_API_VERSION (the gate compares these)
 
 #ifdef __cplusplus
 extern "C" {          // the UI host (ui.cpp) is C++; give the shared C decls C linkage

@@ -54,3 +54,8 @@ g_sys             data ense-jp  0x926078
 # ts_40fe00 (the input latch reset after an event; SE 0x40bee0): JP's crosswalk had none — JP book_read 0x40ba60
 # calls it first (same prologue as SE's, sys field offsets shifted +0x120).
 ts_40fe00         func ense-jp  0x40bf30
+# Items (api 1.12).  item_use (thiscall room, pslot, u16 record, char *msg, u16 *lines, 0, dry): SE's use of an
+# inventory record on a member (the quick-use / auto-heal path calls it; dry = 1 only asks "would it do anything").
+# enold's 0x5b1f10 is the same step with another convention (fastcall) — not bound.
+item_use          func ense-en  0x5da1f0
+item_use          func ense-jp  0x5d7e90
